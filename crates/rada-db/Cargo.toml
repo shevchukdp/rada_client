@@ -1,0 +1,17 @@
+[package]
+name = "rada-db"
+description = "SQLite index module for the Ukrainian legislation database (cards + FTS5 + dictionaries)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rusqlite.workspace = true
+encoding_rs.workspace = true
+anyhow.workspace = true
+thiserror.workspace = true
+flate2.workspace = true
+serde.workspace = true
+rada-core.workspace = true

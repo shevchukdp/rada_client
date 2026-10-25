@@ -1,0 +1,24 @@
+# Build artifacts
+/target/
+**/target/
+
+# Runtime data (index DBs, dumps, caches) — never commit the data.
+/data/
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite.gz
+doc.txt
+doc-update.txt
+
+# Editor / OS noise
+.idea/
+.vscode/
+*.swp
+Thumbs.db
+desktop.ini
+
+# Any accidental credential material
+*.env
+*.credentials
+git-credentials*
