@@ -99,7 +99,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         ui.label("Нічого не знайдено. Перевірте фільтри або спростіть запит.");
                     }
                 }
-                for h in &hits {
+                for (i, h) in hits.clone().into_iter().enumerate() {
                     let meta = format!(
                         "{}   №{} від {}   [{}]   ред. {}",
                         h.nreg,
@@ -115,7 +115,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         .add_sized([avail, 46.0], egui::Button::new(text).wrap())
                         .clicked()
                     {
-                        app.open_reader(h.clone());
+                        app.open_reader_from(hits.clone(), i);
                     }
                 }
 

@@ -24,9 +24,14 @@ official open-data API:
   - **Пошук** — local FTS5 search with filters (status/type/date/number),
     paging, live name resolver; **export of the results list** (.md/.txt).
   - **Читалка** — live JSON card + clean text with an **edition switcher**,
-    `.md`/`.txt` export, "open on the site" link.
+    `.md`/`.txt` export (annotations appended), **"find in text"**
+    (case-insensitive, match counter, » / « jump-to-match, matches highlighted),
+    "open on the site" link, and **results paging** (‹ / › — move through the
+    search results list you opened a document from).
   - **Анотації** — bookmarks / comments / highlights, stored inside the
-    index itself (survive snapshot restores — auto-backed-up).
+    index itself (survive snapshot restores — auto-backed-up). Saved
+    "highlight" annotations are **painted gold in the document text**, with a
+    "» текст" button that scrolls to the passage.
   - **Оновлення** — the live recently-updated feed (`r.tsv`), rows open the
     reader.
   - **Головна** — index status (documents, size, dictionaries),

@@ -5,6 +5,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ---
 
+## 2026-10-27
+
+### 0.3.0: читалка-level функції — виділення в тексті, пошук у тексті, гортіння результатів / 0.3.0: reader power features — in-text highlights, find-in-text, results paging
+
+- **UKR:** 1) **Виділення видно прямо в тексті**: збережені анотації «виділення» тепер підсвічуються золотим фоном усередині тексту документа; у панелі анотацій з'явився кнопка «» текст» з автогортінням до потрібного речення. 2) **Пошук у тексті** (find-bar): поле в читалці, реєстр_case-insensitive пошуку кирилицею, лічильник «збіг i/N», кнопки » та «, усі збіги підсвічуються блакитним, поточний — яскравішим, з автогортінням. 3) **Перегортання результатів прямо з читалки**: header показує «‹ 3 / 57 ›» — кнопки ‹/› відкривають сусідній документ зі сторінки результатів пошуку, без повернення на сторінку Пошук. 4) **Експорт з анотаціями**: `.md`/`.txt` експорт документа тепер містить секцію «Примітки та виділення» в кінці. 5) Пайплайн снапшотів: `publish-snapshot.ps1` тепер виконує `dict` до стиснення — щомісячні снапшоти міститимуть словники з коробки. Тести: 31/31 (додано 4: філби пошуку, стилізацію сегментів, експорт-додаток).
+- **ENG:** 1) **Highlights visible in the text**: saved "highlight" annotations are now rendered with gold backgrounds inside the document body; the annotations panel gained a "» текст" (jump-to-passage) button with auto-scroll to the sentence. 2) **Find-in-text** (find-bar): a field in the reader, case-insensitive Cyrillic matching, a "збіг i/N" counter, » / « buttons, all matches dim-cyan, the current match bright-cyan, with auto-scroll. 3) **Results paging from the reader**: the header shows "‹ 3 / 57 ›" — ‹/› open the adjacent document from the search results page without going back. 4) **Exports include annotations**: `.md`/`.txt` export now ends with a "Примітки та виділення" (notes) section. 5) Snapshot pipeline: `publish-snapshot.ps1` now runs `dict` before compression — monthly snapshots will ship with dictionaries pre-loaded. Tests: 31/31 (4 new: find spans, segment styling, export appendix).
+
+---
+
 ## 2026-10-26
 
 ### Модульна архітектура (3 крата) / Modular architecture (3 crates)

@@ -112,6 +112,8 @@ pub struct App {
     pub home: views::HomeState,
     pub search: views::SearchState,
     pub reader: Option<views::ReaderState>,
+    /// Results list the reader was opened from (for prev/next paging).
+    pub nav: Option<(Vec<rada_db::SearchHit>, usize)>,
     pub arrivals: views::ArrivalsState,
     pub dicts: views::Dicts,
     pub index_status: Option<IndexStatus>,
@@ -145,6 +147,7 @@ impl App {
             home: views::HomeState::default(),
             search: views::SearchState::default(),
             reader: None,
+            nav: None,
             arrivals: views::ArrivalsState::default(),
             dicts: views::Dicts::default(),
             index_status: None,
@@ -286,6 +289,7 @@ impl App {
     /// background (paced by the shared client).
     pub fn open_reader(&mut self, hit: rada_db::SearchHit) {
         self.page = Page::Reader;
+        self.nav = None;
         let mut r = views::ReaderState::new(hit);
         let card_run = self.next_run();
         let text_run = self.next_run();
@@ -297,6 +301,29 @@ impl App {
         self.load_annotations();
         self.fetch_card(card_run);
         self.fetch_text(text_run, None);
+    }
+
+    /// Open the document at `pos` of the visible results list and remember
+    /// the list so the reader can page through it (prev/next).
+    pub fn open_reader_from(&mut self, hits: Vec<rada_db::SearchHit>, pos: usize) {
+        if pos >= hits.len() {
+            return;
+        }
+        self.open_reader(hits[pos].clone());
+        self.nav = Some((hits, pos));
+    }
+
+    /// Prev/next document inside the remembered results list.
+    pub fn nav_step(&mut self, delta: i64) {
+        let Some((hits, i)) = self.nav.clone() else {
+            return;
+        };
+        let ni = i as i64 + delta;
+        if ni < 0 || ni >= hits.len() as i64 {
+            return;
+        }
+        self.open_reader(hits[ni as usize].clone());
+        self.nav = Some((hits, ni as usize));
     }
 
     pub fn open_reader_by_nreg(
