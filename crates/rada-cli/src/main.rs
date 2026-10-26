@@ -6,6 +6,7 @@
 //! - `search`    local title search (FTS5 + filters);
 //! - `card`      live JSON card for a document;
 //! - `text`      clean text of a document (current or a given edition);
+//! - `dict`      load reference dictionaries (stan/typs/organs) from the live API;
 //! - `snapshot`  create / restore gzip snapshots;
 //! - `status`    index statistics;
 //! - `web`       local web UI (search, reader, annotations, export).
@@ -87,6 +88,12 @@ enum Cmd {
         #[arg(long)]
         edition: Option<String>,
     },
+    /// Load the reference dictionaries (stan / typs / organs) from the live API.
+    Dict {
+        /// Load only this kind (`stan`, `typs`, `organs`). Default: all three.
+        #[arg(long)]
+        kind: Option<String>,
+    },
     /// Resolve a human name to an nreg via the live `find/a` endpoint.
     /// Prints the nreg when the query is unambiguous, else an error.
     Resolve {
@@ -159,6 +166,7 @@ fn run() -> Result<()> {
         } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, json),
         Cmd::Card { nreg } => cmd_card(&nreg, cli.pace),
         Cmd::Text { nreg, edition } => cmd_text(&nreg, edition.as_deref(), cli.pace),
+        Cmd::Dict { kind } => cmd_dict(&cli.db, cli.pace, kind.as_deref()),
         Cmd::Resolve { text } => cmd_resolve(&text.join(" "), cli.pace),
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
         Cmd::Status => cmd_status(&cli.db),
@@ -203,7 +211,10 @@ fn cmd_sync(db: &PathBuf, pace: u64) -> Result<()> {
     let mut conn = rada_db::open(db)?;
 
     eprintln!("[sync] refreshing dictionaries ...");
-    rada_db::sync::refresh_dicts(&mut conn, |kind| Ok(c.dictionary(kind)?))?;
+    let failed = rada_db::sync::refresh_dicts(&mut conn, |kind| Ok(c.dictionary(kind)?))?;
+    if !failed.is_empty() {
+        eprintln!("[sync] dictionaries not loaded: {}", failed.join(", "));
+    }
 
     eprintln!("[sync] fetching updated-documents feed ...");
     let updates = c.updated_docs()?;
@@ -237,6 +248,22 @@ fn cmd_sync(db: &PathBuf, pace: u64) -> Result<()> {
         "[sync] applied {applied}, failed {failed} (of {} updated)",
         updates.len()
     );
+    Ok(())
+}
+
+fn cmd_dict(db: &PathBuf, pace: u64, kind: Option<&str>) -> Result<()> {
+    let c = client(pace);
+    let mut conn = rada_db::open(db)?;
+    let kinds: Vec<String> = match kind {
+        Some(k) => vec![k.to_string()],
+        None => vec!["stan".into(), "typs".into(), "organs".into()],
+    };
+    for k in &kinds {
+        eprintln!("[dict] fetching {k} ...");
+        let raw = c.dictionary(k)?;
+        let n = rada_db::dict::load_simple_dict(&mut conn, k, &raw)?;
+        eprintln!("[dict] {k}: {n} entries");
+    }
     Ok(())
 }
 

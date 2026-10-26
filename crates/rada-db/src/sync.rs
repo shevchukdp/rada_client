@@ -67,13 +67,27 @@ where
 
 /// Convenience: load the three standard dictionaries in one call.
 /// `fetch_dict` returns raw bytes for a dictionary name.
-pub fn refresh_dicts<F>(conn: &mut Connection, mut fetch_dict: F) -> Result<()>
+///
+/// Tolerant: a kind that fails to fetch or load (e.g. the server does not
+/// publish that file) is skipped; the list of failed kinds (or
+/// `"{kind}: {error}"` for load errors) is returned so the caller can
+/// surface it without aborting the rest of the sync.
+pub fn refresh_dicts<F>(conn: &mut Connection, mut fetch_dict: F) -> Result<Vec<String>>
 where
     F: FnMut(&str) -> Result<Vec<u8>>,
 {
+    let mut failed = Vec::new();
     for kind in ["stan", "typs", "organs"] {
-        let raw = fetch_dict(kind).with_context(|| format!("fetch dict {kind}"))?;
-        load_simple_dict(conn, kind, &raw)?;
+        let raw = match fetch_dict(kind) {
+            Ok(raw) => raw,
+            Err(e) => {
+                failed.push(format!("{kind}: {e}"));
+                continue;
+            }
+        };
+        if let Err(e) = load_simple_dict(conn, kind, &raw) {
+            failed.push(format!("{kind}: {e}"));
+        }
     }
-    Ok(())
+    Ok(failed)
 }

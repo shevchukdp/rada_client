@@ -74,6 +74,19 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         ui.add_space(8.0);
         ui.separator();
 
+        // ---- export the current results page (offline) --------------
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Експорт списку (поточна сторінка):").small());
+            let has = !app.search.hits.is_empty();
+            if ui.add_enabled(has, egui::Button::new("Експорт .md")).clicked() {
+                app.export_search_list(true);
+            }
+            if ui.add_enabled(has, egui::Button::new("Експорт .txt")).clicked() {
+                app.export_search_list(false);
+            }
+        });
+        ui.add_space(6.0);
+
         // ---- results ------------------------------------------------
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -313,6 +326,51 @@ impl SearchState {
     }
     pub fn set_offset(&mut self, v: usize) {
         self.offset_field = v;
+    }
+
+    /// Build the export text (md or txt) of the current results page.
+    pub fn export_list(&self, md: bool) -> String {
+        use rada_core::models::StatusId;
+        let q = self.query.trim();
+        let q_label = if q.is_empty() { "усі" } else { q };
+        if md {
+            let mut s = String::new();
+            s.push_str(&format!(
+                "# Пошук: «{q_label}» — {} док. (поточна сторінка з {total})\n\n",
+                self.hits.len(),
+                total = self.total
+            ));
+            for h in &self.hits {
+                s.push_str(&format!("## {} — №{}\n\n", h.nazva, h.nreg));
+                s.push_str(&format!(
+                    "- **Стан:** {}\n- **Номер:** {} від {}\n- **Ред.:** {}\n\n",
+                    StatusId(h.status).label(),
+                    h.org_num,
+                    fmt_date(&h.org_date),
+                    fmt_date(&h.poddat),
+                ));
+            }
+            s
+        } else {
+            let mut s = String::new();
+            s.push_str(&format!(
+                "Пошук: «{q_label}» — {} док. (поточна сторінка з {total})\n\n",
+                self.hits.len(),
+                total = self.total
+            ));
+            for h in &self.hits {
+                s.push_str(&format!(
+                    "{} — №{}\nСтан: {} · №{} від {} · ред. {}\n\n",
+                    h.nazva,
+                    h.nreg,
+                    StatusId(h.status).label(),
+                    h.org_num,
+                    fmt_date(&h.org_date),
+                    fmt_date(&h.poddat),
+                ));
+            }
+            s
+        }
     }
 
     /// Map the UI state to an index query; validates date inputs.

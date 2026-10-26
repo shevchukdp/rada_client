@@ -3,52 +3,59 @@
 Portable desktop client for browsing and working with the Ukrainian
 legislation database **«Законодавство України»** (`zakon.rada.gov.ua`).
 
-A single static Windows `.exe` that keeps a **local, full-text-searchable
-SQLite index** of ~295 000 document cards, fetches document bodies on
-demand from the official open-data API, and lets you search, read,
-bookmark, annotate and export legislation.
+Two static Windows `.exe` files, zero end-user dependencies (no .NET, no
+Python). The client keeps a **local, full-text-searchable SQLite index** of
+~295 000 document cards and fetches document bodies on demand from the
+official open-data API:
 
-> Status: **core + web UI are built, tested and verified against the live
-> API.** Snapshot/release automation and packaging are the remaining
-> phase — see [PLAN.md](PLAN.md).
+| Executable | Role |
+|---|---|
+| `rada-client-gui.exe` | **The app.** One egui window: search, document reader (live card/text/editions), annotations, live arrivals feed, index status, one-click snapshot download. |
+| `rada-client.exe` | CLI: build/sync the index, search, live lookups, snapshots, the local web UI. |
+
+> Status: **v0.2.0** — GUI, CLI, web UI, snapshot release automation all
+> built, tested and verified against the live API. Releases:
+> [v0.2.0 (GUI)](https://github.com/shevchukdp/rada_client/releases/tag/v0.2.0)
+> + monthly index snapshots. Roadmap: [PLAN.md](PLAN.md).
 
 ## Features (implemented)
 
+- **Native GUI (egui 0.29)** — dark theme, Ukrainian labels:
+  - **Пошук** — local FTS5 search with filters (status/type/date/number),
+    paging, live name resolver; **export of the results list** (.md/.txt).
+  - **Читалка** — live JSON card + clean text with an **edition switcher**,
+    `.md`/`.txt` export, "open on the site" link.
+  - **Анотації** — bookmarks / comments / highlights, stored inside the
+    index itself (survive snapshot restores — auto-backed-up).
+  - **Оновлення** — the live recently-updated feed (`r.tsv`), rows open the
+    reader.
+  - **Головна** — index status (documents, size, dictionaries),
+    one-click **live sync** and **snapshot download** with progress.
+  - Dictionaries are **auto-loaded on startup** when empty (3 paced
+    requests), so filters work out of the box.
 - **Full local index** of all 295 340 document cards (metadata + titles),
   built from the official `doc.txt` dump, with an **FTS5** full-text index.
-- **Search by requisites**: title (FTS / substring), publisher, document
-  type, status, adoption-date range, document number. Sub-millisecond to
-  tens-of-ms on a laptop.
-- **Live API client** for the official `data.rada.gov.ua` open-data
-  endpoint (correct `User-Agent`, gzip, 5–7 s pacing, rate-limit aware).
-  - Document JSON card (all editions)
-  - Clean plain-text body, current or a specific edition
-  - Recently-updated feed (`/laws/main/r.tsv`)
-  - Reference dictionaries (status / types / publishers)
-- **Incremental sync** (`sync`) to keep the index current without a
-  full rebuild.
-- **Gzip snapshots** (`snapshot create/restore`) for offline
-  distribution / monthly publishing, plus **`snapshot fetch`** to pull
-  the latest published monthly snapshot straight from the GitHub release
-  (no rebuild required).
-- A **local web UI** (`web`): one embedded HTML page (vanilla JS, zero
-  external assets) with a search form (title + all filters + paging), a
-  document reader with an **edition switcher**, the live
-  recently-updated feed, **bookmarks / highlights / comments** (stored
-  inside the index itself), and **TXT / Markdown / HTML export** —
-  single document or the whole search page at once.
-- A **modular Rust workspace**: the database is an independent crate
-  (`rada-db`) that can be reused or swapped without touching the client.
+- **Live API client** for `data.rada.gov.ua` (correct `User-Agent: OpenData`,
+  gzip, paced 5 s per request, rate-limit aware): document JSON card with
+  editions, clean text (current or specific edition), updated feed,
+  reference dictionaries, name→nreg resolver.
+- **Incremental sync** (`sync`) + **gzip snapshots** (`snapshot
+  create/restore`) and **`snapshot fetch`** (pull the published monthly
+  snapshot straight from the GitHub release — no rebuild).
+- **Local web UI** (`web`) — one embedded HTML page (vanilla JS, zero
+  external assets) with the same search/reader/annotations/export.
+- **Modular Rust workspace** — the database is an independent crate
+  (`rada-db`) that can be reused or swapped without touching the clients.
 
 ## Build
 
 Requires a Rust toolchain for `x86_64-pc-windows-gnu` with a working
 64-bit `dlltool`. On this machine that is `C:\rada\toolchain\w64devkit`
-(prepend its `bin` to `PATH`), then:
+(prepend its `bin` to `PATH`; `windres` is needed for the exe icon), then:
 
 ```powershell
 cargo build --release
-# → target\release\rada-client.exe  (static, ~a few MB)
+# → target\release\rada-client-gui.exe (~12 MB) and rada-client.exe (~8.6 MB)
 ```
 
 Run the test suite (offline, no network):
@@ -59,13 +66,30 @@ cargo test
 
 ## Use
 
-The data directory holds the SQLite index (default `data/zakon-index.sqlite`).
+### GUI (default experience)
+
+Double-click `rada-client-gui.exe`. The index defaults to
+`.\data\zakon-index.sqlite` next to the exe; if it is missing, the home
+page offers **“Отримати снапшот”** (the published monthly snapshot, ~70 MB,
+downloaded + restored with progress).
+
+Launch arguments:
 
 ```powershell
-# 1) Build the full index from the official dump (~51 MB, auto-downloaded).
-.\rada-client.exe init
+.\rada-client-gui.exe --db C:\path\to\index.sqlite --pace 5
+.\rada-client-gui.exe --query "закон про вищу освіту"   # start on Search, pre-filled
+.\rada-client-gui.exe --nreg 2041-15                     # open a document in the reader
+.\rada-client-gui.exe --start arrivals                    # start on the feed page
+```
 
-#    …or from an already-downloaded dump file:
+### CLI (automation / advanced)
+
+```powershell
+# 1) Fast offline start: pull the published monthly snapshot (~70 MB, no rebuild).
+.\rada-client.exe snapshot fetch
+
+#    …or build the full index from the official dump (~51 MB, auto-downloaded).
+.\rada-client.exe init
 .\rada-client.exe init --dump C:\path\to\doc.txt
 
 # 2) Search the local index (title + any filters).
@@ -76,6 +100,9 @@ The data directory holds the SQLite index (default `data/zakon-index.sqlite`).
 .\rada-client.exe card 2755-17          # JSON card with all editions
 .\rada-client.exe text 2755-17          # clean current text
 .\rada-client.exe text 2755-17 --edition 20101202
+.\rada-client.exe resolve "податковий кодекс"   # name → nreg
+.\rada-client.exe dict                   # load dictionaries (stan/typs/organs)
+.\rada-client.exe dict --kind typs
 
 # 4) Keep the index current.
 .\rada-client.exe sync                   # dictionaries + updated-documents feed
@@ -87,13 +114,9 @@ The data directory holds the SQLite index (default `data/zakon-index.sqlite`).
 .\rada-client.exe snapshot create data\zakon-index.sqlite.gz
 .\rada-client.exe snapshot restore data\zakon-index.sqlite.gz out.sqlite
 
-#    …or fast offline start: pull the published monthly snapshot
-#    (~70 MB, no rebuild) from the GitHub release:
-.\rada-client.exe snapshot fetch
-
 # 7) Local web UI (search + reader + annotations + export).
 .\rada-client.exe web --port 8742
-.\rada-client.exe web --open        # also open the browser
+.\rada-client.exe web --open            # also open the browser
 # → http://127.0.0.1:8742
 ```
 
@@ -106,6 +129,9 @@ The data directory holds the SQLite index (default `data/zakon-index.sqlite`).
   ≤ 200 MB/day. Never poll `/api/token` or `/api/limits` per request.
 - **Encodings:** `doc.txt` and dictionary files are **Windows-1251**;
   all `/laws/*` HTML/JSON responses are UTF-8.
+- **Dictionary files:** the types dictionary is published as `typ.txt`
+  (not `typs.txt`); the client maps the local kind `typs` → `typ.txt`.
+  A missing dictionary is skipped, never fatal to a sync.
 - **`nreg` URL encoding:** percent-encode each `/`-segment separately,
   keep the slashes (`254к/96-вр` → `254%D0%BA/96-%D0%B2%D1%80`).
 - **Document bodies are fetched on demand** (not stored in the index).
@@ -125,12 +151,14 @@ Full details, data-distribution model and roadmap: [PLAN.md](PLAN.md).
 ## Repository layout
 
 ```
-crates/rada-core   domain types + data.rada.gov.ua API client
+crates/rada-core   domain types + data.rada.gov.ua API client (+ GitHub REST)
 crates/rada-db     SQLite index module (schema, import, search, dict,
                    incremental sync, gzip snapshots, annotations)
 crates/rada-web    local web UI (embedded page + JSON API, tiny_http)
-crates/rada-cli    `rada-client` binary (init/sync/search/card/text/
+crates/rada-cli    `rada-client` binary (init/sync/dict/search/card/text/
                    resolve/snapshot/status/web)
+crates/rada-gui    `rada-client-gui` binary (egui app window)
+assets/icon        exe icon source (embedded via windres build scripts)
 ```
 
 ## Attribution & terms

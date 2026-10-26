@@ -58,6 +58,9 @@ pub enum Msg {
         res: Option<String>,
     },
     Exported(Outcome<PathBuf>),
+    /// Dictionaries-only live fetch finished (auto-run at startup when empty).
+    /// Ok(list of failed dict kinds; empty = all loaded), Err = fatal.
+    DictsFetched(Outcome<Vec<String>>),
 }
 
 pub enum FetchProg {
@@ -228,6 +231,24 @@ impl App {
                 },
             };
             let _ = tx.send(msg);
+        });
+    }
+
+    /// Live-fetch only the dictionaries (3 paced requests) — run automatically
+    /// when the index exists but the dict tables are empty (e.g. after a
+    /// snapshot restore, where dicts are not part of the dump).
+    pub fn fetch_dicts_live(&mut self) {
+        let client = self.client.clone();
+        let db = self.db_path.clone();
+        self.spawn(move |tx| {
+            let res = (|| {
+                let mut conn = rada_db::open(&db).map_err(|e| e.to_string())?;
+                let failed =
+                    rada_db::sync::refresh_dicts(&mut conn, |kind| Ok(client.dictionary(kind)?))
+                        .map_err(|e| format!("{e:#}"))?;
+                Ok(failed)
+            })();
+            let _ = tx.send(Msg::DictsFetched(res));
         });
     }
 
@@ -473,11 +494,20 @@ impl App {
                 }
             };
             let _ = tx.send(Msg::SyncLine("оновлення словників ...".into()));
-            if let Err(e) =
-                rada_db::sync::refresh_dicts(&mut conn, |kind| Ok(client.dictionary(kind)?))
-            {
-                let _ = tx.send(Msg::SyncDone(Err(format!("{e:#}"))));
-                return;
+            let dict_failed =
+                match rada_db::sync::refresh_dicts(&mut conn, |kind| Ok(client.dictionary(kind)?))
+                {
+                    Ok(failed) => failed,
+                    Err(e) => {
+                        let _ = tx.send(Msg::SyncDone(Err(format!("{e:#}"))));
+                        return;
+                    }
+                };
+            if !dict_failed.is_empty() {
+                let _ = tx.send(Msg::SyncLine(format!(
+                    "словники: не завантажено {}",
+                    dict_failed.join(", ")
+                )));
             }
             let _ = tx.send(Msg::SyncLine("фід оновлень /laws/main/r.tsv ...".into()));
             let updates = match client.updated_docs() {
@@ -590,6 +620,29 @@ impl App {
         });
     }
 
+    /// Export the current search results page (offline, from the index)
+    /// as md/txt through a save dialog.
+    pub fn export_search_list(&mut self, md: bool) {
+        if self.search.hits.is_empty() {
+            return;
+        }
+        let body = self.search.export_list(md);
+        let ext = if md { "md" } else { "txt" };
+        let q = self.search.query.trim();
+        let name_q = if q.is_empty() { "all".to_string() } else { sanitize(q) };
+        let default_name = format!("zakon-{name_q}-list.{ext}");
+        let Some(path) = rfd::FileDialog::new().set_file_name(default_name).save_file()
+        else {
+            return;
+        };
+        self.spawn(move |tx| {
+            let res = std::fs::write(&path, &body)
+                .map(|_| path)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Exported(res));
+        });
+    }
+
     // -----------------------------------------------------------------
     // frame
     // -----------------------------------------------------------------
@@ -605,9 +658,37 @@ impl App {
 
     fn apply(&mut self, msg: Msg) {
         match msg {
-            Msg::Status(st) => self.index_status = Some(st),
+            Msg::Status(st) => {
+                let dicts_empty = st.dicts.iter().all(|(_, c)| *c == 0);
+                let auto_fetch = st.docs > 0 && dicts_empty;
+                self.index_status = Some(st);
+                if auto_fetch {
+                    self.toast(
+                        "словники порожні — завантажую наживо (3 запити, ~15 с)",
+                        gold(),
+                    );
+                    self.fetch_dicts_live();
+                }
+            }
             Msg::Dicts { stan, typs, organs } => {
                 self.dicts = views::Dicts { stan, typs, organs };
+            }
+            Msg::DictsFetched(res) => match res {
+                Ok(failed) => {
+                    if failed.is_empty() {
+                        self.toast("словники завантажено", ok());
+                    } else {
+                        self.toast(
+                            format!("словники: не завантажено {}", failed.join(", ")),
+                            err(),
+                        );
+                    }
+                    self.refresh_dicts();
+                    self.refresh_index_state();
+                }
+                Err(e) => {
+                    self.toast(format!("словники: {e}"), err());
+                }
             }
             Msg::Search { run, res } => {
                 if run == self.search.run {

@@ -192,9 +192,12 @@ impl RadaClient {
     }
 
     /// One dictionary file, e.g. `stan`, `typs`, `organs` (Windows-1251).
+    /// The server publishes the types dictionary as `typ.txt` while the
+    /// local table kind is called `typs`.
     pub fn dictionary(&self, name: &str) -> Result<Vec<u8>, ApiError> {
+        let file = if name == "typs" { "typ" } else { name };
         self.get_bytes(&format!(
-            "{DATA_BASE}/ogd/zak/laws/data/csv/{name}.txt"
+            "{DATA_BASE}/ogd/zak/laws/data/csv/{file}.txt"
         ))
     }
 
