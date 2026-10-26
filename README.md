@@ -28,7 +28,9 @@ bookmark, annotate and export legislation.
 - **Incremental sync** (`sync`) to keep the index current without a
   full rebuild.
 - **Gzip snapshots** (`snapshot create/restore`) for offline
-  distribution / monthly publishing.
+  distribution / monthly publishing, plus **`snapshot fetch`** to pull
+  the latest published monthly snapshot straight from the GitHub release
+  (no rebuild required).
 - A **local web UI** (`web`): one embedded HTML page (vanilla JS, zero
   external assets) with a search form (title + all filters + paging), a
   document reader with an **edition switcher**, the live
@@ -84,6 +86,10 @@ The data directory holds the SQLite index (default `data/zakon-index.sqlite`).
 # 6) Snapshots for distribution.
 .\rada-client.exe snapshot create data\zakon-index.sqlite.gz
 .\rada-client.exe snapshot restore data\zakon-index.sqlite.gz out.sqlite
+
+#    …or fast offline start: pull the published monthly snapshot
+#    (~70 MB, no rebuild) from the GitHub release:
+.\rada-client.exe snapshot fetch
 
 # 7) Local web UI (search + reader + annotations + export).
 .\rada-client.exe web --port 8742

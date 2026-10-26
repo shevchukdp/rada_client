@@ -91,7 +91,7 @@ mod tests {
     use crate::schema::migrate;
 
     fn seeded() -> Connection {
-        let mut conn = Connection::open_in_memory().unwrap();
+        let conn = Connection::open_in_memory().unwrap();
         migrate(&conn).unwrap();
         conn
     }

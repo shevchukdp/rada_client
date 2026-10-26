@@ -10,7 +10,7 @@
 //! - `status`    index statistics;
 //! - `web`       local web UI (search, reader, annotations, export).
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use anyhow::Result;
@@ -121,6 +121,16 @@ enum SnapCmd {
     Create { out: PathBuf },
     /// Restore a gzip snapshot into a new database file.
     Restore { snapshot: PathBuf, to: PathBuf },
+    /// Download the published snapshot from the GitHub release and
+    /// restore it into a local database file (the fast offline path).
+    Fetch {
+        /// Exact asset name (default: the latest `*.sqlite.gz` asset).
+        #[arg(long)]
+        name: Option<String>,
+        /// Output DB path (default: the global `--db` path).
+        #[arg(long)]
+        to: Option<PathBuf>,
+    },
 }
 
 fn main() {
@@ -321,6 +331,10 @@ fn cmd_resolve(text: &str, pace: u64) -> Result<()> {
 
 fn cmd_snapshot(db: &PathBuf, what: SnapCmd) -> Result<()> {
     match what {
+        SnapCmd::Fetch { name, to } => {
+            let out = to.clone().unwrap_or_else(|| db.clone());
+            cmd_snapshot_fetch(name.as_deref(), &out)
+        }
         SnapCmd::Create { out } => {
             let size = rada_db::snapshot::create(db, &out)?;
             println!(
@@ -352,6 +366,23 @@ fn cmd_web(db: &PathBuf, host: &str, port: u16, open: bool, pace: u64) -> Result
         pace_secs: pace,
         open_browser: open,
     })
+}
+
+fn cmd_snapshot_fetch(name: Option<&str>, out: &Path) -> Result<()> {
+    let gh = rada_core::GitHub::default();
+    let url = gh.latest_snapshot_url("shevchukdp", "rada_client", name)?;
+    eprintln!("[fetch] {url}");
+    let gz = out.with_extension("sqlite.gz.tmp");
+    let size = gh.download(&url, &gz)?;
+    eprintln!(
+        "[fetch] {} MB downloaded; restoring to {}",
+        size / (1 << 20),
+        out.display()
+    );
+    let restored = rada_db::snapshot::restore(&gz, out)?;
+    let _ = std::fs::remove_file(&gz);
+    println!("restored {}", restored.display());
+    Ok(())
 }
 
 fn cmd_status(db: &PathBuf) -> Result<()> {

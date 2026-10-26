@@ -8,6 +8,9 @@
 *.sqlite-shm
 *.sqlite-wal
 *.sqlite.gz
+# …except the published monthly snapshots (LFS-tracked, nested per month)
+!snapshots/
+!snapshots/**/*.sqlite.gz
 doc.txt
 doc-update.txt
 

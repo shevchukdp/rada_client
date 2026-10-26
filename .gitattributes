@@ -1,0 +1,3 @@
+# Monthly index snapshots are Git-LFS-tracked; the rest of the repo is plain.
+# (a slash-free pattern matches by basename, at any depth)
+*.sqlite.gz filter=lfs diff=lfs merge=lfs

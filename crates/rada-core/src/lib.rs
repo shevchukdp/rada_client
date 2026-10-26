@@ -13,9 +13,11 @@
 //!   HTML/JSON responses are UTF-8.
 
 pub mod api;
+pub mod github;
 pub mod models;
 
 pub use api::RadaClient;
+pub use github::GitHub;
 pub use models::*;
 
 /// Base URL of the open-data API host.
