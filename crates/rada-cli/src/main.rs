@@ -7,7 +7,8 @@
 //! - `card`      live JSON card for a document;
 //! - `text`      clean text of a document (current or a given edition);
 //! - `snapshot`  create / restore gzip snapshots;
-//! - `status`    index statistics.
+//! - `status`    index statistics;
+//! - `web`       local web UI (search, reader, annotations, export).
 
 use std::path::PathBuf;
 use std::time::Instant;
@@ -100,6 +101,18 @@ enum Cmd {
     },
     /// Print index statistics.
     Status,
+    /// Start the local web UI (search, reader, annotations, export).
+    Web {
+        /// Address to bind.
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        /// Port to bind.
+        #[arg(long, default_value_t = 8742)]
+        port: u16,
+        /// Open a browser automatically.
+        #[arg(long)]
+        open: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -139,6 +152,7 @@ fn run() -> Result<()> {
         Cmd::Resolve { text } => cmd_resolve(&text.join(" "), cli.pace),
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
         Cmd::Status => cmd_status(&cli.db),
+        Cmd::Web { host, port, open } => cmd_web(&cli.db, &host, port, open, cli.pace),
     }
 }
 
@@ -322,6 +336,22 @@ fn cmd_snapshot(db: &PathBuf, what: SnapCmd) -> Result<()> {
             Ok(())
         }
     }
+}
+
+fn cmd_web(db: &PathBuf, host: &str, port: u16, open: bool, pace: u64) -> Result<()> {
+    if !db.exists() {
+        eprintln!(
+            "[web] hint: no index at {} — run `rada-client init` first",
+            db.display()
+        );
+    }
+    rada_web::serve(&rada_web::WebConfig {
+        db_path: db.clone(),
+        host: host.to_string(),
+        port,
+        pace_secs: pace,
+        open_browser: open,
+    })
 }
 
 fn cmd_status(db: &PathBuf) -> Result<()> {

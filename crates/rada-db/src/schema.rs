@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 /// Bring the database to the current schema (idempotent).
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -58,6 +58,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             label TEXT NOT NULL,
             PRIMARY KEY (kind, id)
         );
+        -- User annotations (bookmarks / highlights / comments).
+        CREATE TABLE IF NOT EXISTS annotations(
+            id         INTEGER PRIMARY KEY,
+            nreg       TEXT NOT NULL,
+            kind       TEXT NOT NULL CHECK(kind IN ('bookmark','highlight','comment')),
+            text       TEXT NOT NULL DEFAULT '',
+            span_start INTEGER,
+            span_end   INTEGER,
+            created_at TEXT NOT NULL DEFAULT ''
+        );
+        CREATE INDEX IF NOT EXISTS idx_ann_nreg ON annotations(nreg);
         "#,
     )
     .context("apply schema")?;

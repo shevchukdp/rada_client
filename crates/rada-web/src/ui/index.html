@@ -1,0 +1,498 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rada_client — Законодавство України</title>
+<style>
+  :root {
+    --bg: #111622; --panel: #1a2233; --panel2: #212b40; --fg: #e8edf7;
+    --muted: #93a0b8; --accent: #ffb300; --ok: #4caf7d; --err: #ff6b6b;
+    --line: #2c3850;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.5 system-ui, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 10px 16px; background: var(--panel); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 5;
+  }
+  header h1 { font-size: 17px; margin: 0; color: var(--accent); }
+  .tabs { display: flex; gap: 6px; }
+  .tabs button {
+    background: transparent; color: var(--muted); border: 1px solid var(--line);
+    border-radius: 8px; padding: 6px 14px; cursor: pointer; font-size: 14px;
+  }
+  .tabs button.active { background: var(--panel2); color: var(--fg); border-color: var(--accent); }
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  footer {
+    padding: 10px 16px; color: var(--muted); font-size: 13px;
+    border-top: 1px solid var(--line); text-align: center;
+  }
+  form#search-form {
+    display: flex; gap: 8px; flex-wrap: wrap; align-items: center;
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 10px; margin-bottom: 12px;
+  }
+  input, select, button {
+    background: var(--panel2); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 7px; padding: 6px 10px;
+    font-size: 14px;
+  }
+  input { min-width: 0; }
+  #q { flex: 1; min-width: 220px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #222; font-weight: 600; border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  .hint { color: var(--muted); font-size: 13px; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+  #results-meta, #doc-head { margin: 10px 0; font-size: 14px; color: var(--muted); }
+  #doc-head { font-size: 17px; color: var(--fg); font-weight: 600; }
+  .hit {
+    padding: 8px 12px; border: 1px solid var(--line); border-radius: 8px;
+    margin: 6px 0; cursor: pointer;
+  }
+  .hit:hover { background: var(--panel); border-color: var(--accent); }
+  .hit a { color: var(--fg); text-decoration: none; font-weight: 500; }
+  .hit .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .pager { display: flex; gap: 10px; align-items: center; margin: 12px 0; }
+  pre#doc-text {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    padding: 14px; white-space: pre-wrap; font-family: "Consolas", monospace;
+    font-size: 14px; max-height: 60vh; overflow: auto;
+  }
+  #annotations { list-style: none; padding: 0; margin: 10px 0; }
+  #annotations li {
+    display: flex; gap: 8px; align-items: center; padding: 6px 10px;
+    border: 1px solid var(--line); border-radius: 7px; margin: 5px 0;
+    font-size: 14px;
+  }
+  #annotations li .tag {
+    font-size: 11px; text-transform: uppercase; color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 5px; padding: 1px 6px;
+  }
+  #annotations li.comment .tag { color: var(--ok); border-color: var(--ok); }
+  #annotations li.highlight .tag { color: #6db3ff; border-color: #6db3ff; }
+  #annotations li .del {
+    margin-left: auto; background: transparent; color: var(--muted);
+    border-color: var(--line); border-radius: 5px; line-height: 1;
+  }
+  #doc-pane {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 14px; margin-top: 14px;
+  }
+  #status-box { background: var(--panel); border: 1px solid var(--line);
+    border-radius: 10px; padding: 14px; font-family: "Consolas", monospace; font-size: 13px;
+    white-space: pre-wrap; }
+  [hidden] { display: none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>rada_client · Законодавство України</h1>
+  <nav class="tabs">
+    <button data-tab="search" class="active">Пошук</button>
+    <button data-tab="arrivals">Нові документи</button>
+    <button data-tab="status">Індекс</button>
+  </nav>
+</header>
+
+<main>
+  <section id="tab-search">
+    <form id="search-form">
+      <input id="q" placeholder="Пошук назви (кілька слів → повнотекстовий пошук)…" autocomplete="off">
+      <select id="f-status"><option value="">Статус (усі)</option></select>
+      <select id="f-typ"><option value="">Тип (усі)</option></select>
+      <input id="f-number" placeholder="№ (частина)" size="12">
+      <input id="f-date-from" placeholder="Від 20200101" size="12">
+      <input id="f-date-to" placeholder="До 20261231" size="12">
+      <button class="primary" type="submit">Пошук</button>
+    </form>
+    <div id="results-meta"></div>
+    <div id="results"></div>
+    <div class="pager">
+      <button id="prev" type="button">← Раніше</button>
+      <button id="next" type="button">Далі →</button>
+      <span id="page-info" class="hint"></span>
+    </div>
+    <div class="row">
+      <span class="hint">Експорт сторінки:</span>
+      <select id="bulk-fmt">
+        <option value="txt">TXT</option>
+        <option value="md">Markdown</option>
+        <option value="html">HTML</option>
+      </select>
+      <button id="bulk-export" type="button">Експорт сторінки</button>
+      <span class="hint">до 50 документів, ≈5 с на кожен (живий API)</span>
+    </div>
+  </section>
+
+  <section id="tab-arrivals" hidden>
+    <div class="row">
+      <button id="arrivals-load" type="button">Завантажити (живий фід, ≈5 с)</button>
+      <span class="hint">документи, оновлені з минулого серверного збігу</span>
+    </div>
+    <div id="arrivals"></div>
+  </section>
+
+  <section id="tab-status" hidden>
+    <button id="status-refresh" type="button">Оновити</button>
+    <div id="status-box" style="margin-top:10px"></div>
+  </section>
+
+  <div id="doc-pane" hidden>
+    <div id="doc-head"></div>
+    <div class="row">
+      <span class="hint">Редакція:</span>
+      <select id="editions" disabled></select>
+      <button id="load-text" type="button">Текст</button>
+      <span id="live-note" class="hint"></span>
+    </div>
+    <pre id="doc-text" hidden></pre>
+    <div class="row">
+      <button id="btn-bookmark" type="button">🔖 Зберегти</button>
+      <button id="btn-highlight" type="button">Підсвітити виділене</button>
+      <input id="comment-input" placeholder="Коментар до документу…" size="30">
+      <button id="btn-comment" type="button">Коментар</button>
+    </div>
+    <div class="row">
+      <span class="hint">Експорт:</span>
+      <select id="export-fmt">
+        <option value="txt">TXT</option>
+        <option value="md">Markdown</option>
+        <option value="html">HTML</option>
+      </select>
+      <button id="btn-export" type="button">Завантажити файл</button>
+      <a id="site-link" class="hint" target="_blank">на zakon.rada.gov.ua ↗</a>
+    </div>
+    <ul id="annotations"></ul>
+  </div>
+</main>
+
+<footer id="foot">rada_client</footer>
+
+<script>
+"use strict";
+const $ = (id) => document.getElementById(id);
+const state = {
+  limit: 50, offset: 0,
+  nregs: [],          // nregs of the current results page (bulk export)
+  curNreg: null,
+  curCard: null,
+  curText: "",
+  statusLabels: new Map(),
+};
+
+function api(path, opts) {
+  return fetch(path, opts).then(async (r) => {
+    if (r.status === 204) return null;
+    let data = null;
+    try { data = await r.json(); } catch (_) {}
+    if (!r.ok) throw new Error(data && data.error ? data.error : "HTTP " + r.status);
+    return data;
+  });
+}
+
+function encNreg(nreg) { return nreg.split("/").map(encodeURIComponent).join("/"); }
+
+function fmtEd(d) {
+  const s = String(d);
+  return s.length === 8 ? s.slice(6,8) + "." + s.slice(4,6) + "." + s.slice(0,4) : s;
+}
+
+function setLive(msg) { $("live-note").textContent = msg; }
+
+async function init() {
+  try {
+    const s = await api("/api/status");
+    $("foot").textContent =
+      "rada_client · локальний індекс · " + s.docs + " документів · імпорт: " +
+      (s.last_import || "—") + " · анотацій: " + s.annotations;
+  } catch (e) {
+    $("foot").textContent = "не вдалося з’єднатися з індексом: " + e.message;
+  }
+  fillDict("f-status", "status");
+  fillDict("f-typ", "typs");
+  doSearch(0);
+}
+
+async function fillDict(selectId, kind) {
+  const sel = $(selectId);
+  try {
+    const d = await api("/api/dict/" + kind);
+    for (const it of d.items) {
+      const o = document.createElement("option");
+      o.value = String(it.id);
+      o.textContent = it.id + " — " + it.label;
+      sel.appendChild(o);
+      if (kind === "status") state.statusLabels.set(String(it.id), it.label);
+    }
+  } catch (_) {}
+}
+
+function statusLabel(id) {
+  return state.statusLabels.get(String(id)) || String(id);
+}
+
+async function doSearch(offset) {
+  state.offset = offset;
+  const p = new URLSearchParams();
+  p.set("limit", String(state.limit));
+  p.set("offset", String(offset));
+  if ($("q").value.trim()) p.set("q", $("q").value.trim());
+  if ($("f-status").value) p.set("status", $("f-status").value);
+  if ($("f-typ").value) p.set("typ", $("f-typ").value);
+  if ($("f-number").value.trim()) p.set("number", $("f-number").value.trim());
+  if ($("f-date-from").value.trim()) p.set("date_from", $("f-date-from").value.trim());
+  if ($("f-date-to").value.trim()) p.set("date_to", $("f-date-to").value.trim());
+  const meta = $("results-meta");
+  meta.textContent = "Завантаження…";
+  $("results").innerHTML = "";
+  try {
+    const d = await api("/api/search?" + p.toString());
+    state.nregs = d.hits.map(h => h.nreg);
+    meta.textContent = "Знайдено: " + d.total + " (показано " + d.hits.length + ")";
+    const list = $("results");
+    for (const h of d.hits) {
+      const div = document.createElement("div");
+      div.className = "hit";
+      const a = document.createElement("a");
+      a.textContent = h.nazva;
+      a.onclick = (ev) => { ev.preventDefault(); openDoc(h.nreg); };
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent =
+        h.nreg + " · [" + statusLabel(h.status) + "] · №" + (h.org_num || "—") +
+        " від " + (h.org_date ? fmtEd(h.org_date) : "—") + " · ред. " +
+        (h.poddat ? fmtEd(h.poddat) : "—");
+      div.appendChild(a); div.appendChild(sub);
+      list.appendChild(div);
+    }
+    $("page-info").textContent = "сторінка " + (Math.floor(offset / state.limit) + 1);
+  } catch (e) {
+    meta.textContent = "Помилка: " + e.message;
+  }
+}
+
+async function openDoc(nreg) {
+  state.curNreg = nreg;
+  state.curText = "";
+  const pane = $("doc-pane");
+  pane.hidden = false;
+  $("doc-head").textContent = "Завантаження картки (живий API, ≈5 с)…";
+  $("editions").disabled = true;
+  $("editions").innerHTML = "";
+  $("doc-text").hidden = true;
+  setLive("картка · pacing ≈5 с/запит…");
+  const enc = encNreg(nreg);
+  $("site-link").href = "https://zakon.rada.gov.ua/go/" + enc;
+  try {
+    const d = await api("/api/doc/" + enc + "/card");
+    state.curCard = d.card;
+    $("doc-head").textContent =
+      d.card.nazva + "  (" + nreg + ")  [" + d.status_label + "]";
+    const sel = $("editions");
+    sel.innerHTML = "";
+    const cur = document.createElement("option");
+    cur.value = "";
+    cur.textContent = "поточна редакція";
+    sel.appendChild(cur);
+    for (const ed of (d.card.eds || [])) {
+      const o = document.createElement("option");
+      o.value = String(ed.datred);
+      o.textContent = "ред. " + fmtEd(ed.datred) +
+        (ed.pages ? " · " + ed.pages + " с." : "");
+      sel.appendChild(o);
+    }
+    sel.disabled = false;
+    loadAnnotations(nreg);
+    loadText("");
+  } catch (e) {
+    $("doc-head").textContent = "Помилка картки: " + e.message;
+    setLive("");
+  }
+}
+
+async function loadText(edition) {
+  if (!state.curNreg) return;
+  const enc = encNreg(state.curNreg);
+  setLive((edition ? "текст ред. " + fmtEd(edition) + " · " : "текст (поточна редакція) · ") + "pacing ≈5 с…");
+  const pre = $("doc-text");
+  pre.hidden = false;
+  pre.textContent = "Завантаження тексту…";
+  let url = "/api/doc/" + enc + "/text";
+  if (edition) url += "?edition=" + encodeURIComponent(edition);
+  try {
+    const d = await api(url);
+    state.curText = d.text;
+    pre.textContent = d.text;
+    setLive("");
+  } catch (e) {
+    pre.textContent = "Помилка: " + e.message;
+  }
+}
+
+async function loadAnnotations(nreg) {
+  const ul = $("annotations");
+  ul.innerHTML = "";
+  try {
+    const d = await api("/api/annotations?nreg=" + encodeURIComponent(nreg));
+    for (const a of d.items) {
+      const li = document.createElement("li");
+      li.className = a.kind;
+      const tag = document.createElement("span");
+      tag.className = "tag";
+      tag.textContent = a.kind;
+      const tx = document.createElement("span");
+      tx.textContent = a.text || "(збережено)";
+      const del = document.createElement("button");
+      del.className = "del";
+      del.type = "button";
+      del.textContent = "×";
+      del.onclick = async () => {
+        try { await api("/api/annotations/" + a.id, { method: "DELETE" }); loadAnnotations(nreg); }
+        catch (e) { alert("Помилка: " + e.message); }
+      };
+      li.appendChild(tag); li.appendChild(tx); li.appendChild(del);
+      ul.appendChild(li);
+    }
+  } catch (_) {}
+}
+
+async function addAnn(kind, text, spanStart, spanEnd) {
+  try {
+    await api("/api/annotations", {
+      method: "POST",
+      body: JSON.stringify({
+        nreg: state.curNreg, kind, text,
+        span_start: spanStart == null ? null : spanStart,
+        span_end: spanEnd == null ? null : spanEnd,
+      }),
+    });
+    loadAnnotations(state.curNreg);
+  } catch (e) { alert("Помилка: " + e.message); }
+}
+
+// ---- arrivals -------------------------------------------------------------
+async function loadArrivals() {
+  const el = $("arrivals");
+  el.textContent = "Завантаження живого фіду (pacing ≈5 с)…";
+  try {
+    const d = await api("/api/arrivals?limit=100");
+    el.innerHTML = "";
+    if (!d.items.length) { el.textContent = "Фід порожній."; return; }
+    for (const it of d.items) {
+      const div = document.createElement("div");
+      div.className = "hit";
+      const a = document.createElement("a");
+      a.textContent = it.nazva;
+      a.onclick = (ev) => {
+        ev.preventDefault();
+        switchTab("search");
+        openDoc(it.nreg);
+      };
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = it.nreg + " · " + it.status + " · " + (it.publics || "—");
+      div.appendChild(a); div.appendChild(sub);
+      el.appendChild(div);
+    }
+  } catch (e) {
+    el.textContent = "Помилка: " + e.message;
+  }
+}
+
+async function loadStatusTab() {
+  try {
+    const s = await api("/api/status");
+    $("status-box").textContent = JSON.stringify(s, null, 2);
+  } catch (e) {
+    $("status-box").textContent = e.message;
+  }
+}
+
+function switchTab(name) {
+  document.querySelectorAll("header .tabs button").forEach(b =>
+    b.classList.toggle("active", b.dataset.tab === name));
+  for (const t of ["search", "arrivals", "status"]) {
+    $("tab-" + t).hidden = (t !== name);
+  }
+  if (name === "status") loadStatusTab();
+}
+
+// ---- wiring ---------------------------------------------------------------
+document.querySelectorAll("header .tabs button").forEach(b =>
+  b.addEventListener("click", () => switchTab(b.dataset.tab)));
+
+$("search-form").addEventListener("submit", (ev) => { ev.preventDefault(); doSearch(0); });
+$("prev").onclick = () => doSearch(Math.max(0, state.offset - state.limit));
+$("next").onclick = () => doSearch(state.offset + state.limit);
+
+$("editions").onchange = () => loadText($("editions").value || "");
+$("load-text").onclick = () => loadText($("editions").value || "");
+$("btn-bookmark").onclick = () => addAnn("bookmark", "", null, null);
+$("btn-highlight").onclick = () => {
+  const selText = window.getSelection().toString();
+  if (!selText) { alert("Виділіть фрагмент тексту спочатку."); return; }
+  let start = null, end = null;
+  if (state.curText) {
+    start = state.curText.indexOf(selText);
+    if (start >= 0) end = start + selText.length;
+  }
+  addAnn("highlight", selText, start, end);
+};
+$("btn-comment").onclick = () => {
+  const inp = $("comment-input");
+  if (!inp.value.trim()) return;
+  addAnn("comment", inp.value.trim(), null, null);
+  inp.value = "";
+};
+
+$("btn-export").onclick = () => {
+  location.href = "/api/export/" + encNreg(state.curNreg) +
+    "?fmt=" + $("export-fmt").value +
+    ($("editions").value ? "&edition=" + encodeURIComponent($("editions").value) : "");
+};
+
+$("bulk-export").onclick = async () => {
+  if (!state.nregs.length) { alert("Спочатка виконайте пошук."); return; }
+  const btn = $("bulk-export");
+  const fmt = $("bulk-fmt").value;
+  btn.disabled = true;
+  btn.textContent = "Збираю (≈" + (state.nregs.length * 5) + " с)…";
+  try {
+    const r = await fetch("/api/export/bulk", {
+      method: "POST",
+      body: JSON.stringify({ nregs: state.nregs, fmt }),
+    });
+    if (!r.ok) {
+      const j = await r.json().catch(() => null);
+      throw new Error(j && j.error ? j.error : "HTTP " + r.status);
+    }
+    const blob = await r.blob();
+    const cd = r.headers.get("content-disposition") || "";
+    const m = cd.match(/filename="?([^";]+)"?/);
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = m ? m[1] : "rada-bulk." + fmt;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  } catch (e) {
+    alert("Помилка експорту: " + e.message);
+  }
+  btn.disabled = false;
+  btn.textContent = "Експорт сторінки";
+};
+
+$("arrivals-load").onclick = loadArrivals;
+$("status-refresh").onclick = loadStatusTab;
+
+init();
+</script>
+</body>
+</html>

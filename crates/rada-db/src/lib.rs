@@ -6,13 +6,15 @@
 //! - [`search`] — title search (FTS5 + LIKE) with filters and paging;
 //! - [`dict`]   — reference dictionaries (status/type/publisher);
 //! - [`sync`]   — incremental updates from `/laws/main/r.tsv`;
-//! - [`snapshot`] — gzip snapshot export/import for offline distribution.
+//! - [`snapshot`] — gzip snapshot export/import for offline distribution;
+//! - [`annotations`] — user bookmarks / highlights / comments.
 //!
 //! Measured performance (295 340 docs, 2026-10-26):
 //! - full dump parse ≈ 1 s, raw file 51.7 MB;
 //! - index + FTS5 ≈ 187 MB on disk, ≈ 43 MB gzip;
 //! - FTS5 title search ≈ 2 ms, LIKE ≈ 250–350 ms.
 
+pub mod annotations;
 pub mod build;
 pub mod dict;
 pub mod schema;
@@ -24,6 +26,7 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use std::path::Path;
 
+pub use annotations::Annotation;
 pub use schema::migrate;
 pub use search::{SearchHit, SearchQuery};
 

@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/rada-core", "crates/rada-db", "crates/rada-cli"]
+members = [
+    "crates/rada-core",
+    "crates/rada-db",
+    "crates/rada-cli",
+    "crates/rada-web",
+]
 
 [workspace.package]
 version = "0.1.0"
@@ -21,9 +26,11 @@ flate2 = "1"
 clap = { version = "4", features = ["derive"] }
 anyhow = "1"
 thiserror = "1"
+tiny_http = "0.12"
 
 rada-core = { path = "crates/rada-core" }
 rada-db = { path = "crates/rada-db" }
+rada-web = { path = "crates/rada-web" }
 
 [profile.release]
 opt-level = 2

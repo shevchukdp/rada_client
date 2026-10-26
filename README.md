@@ -8,9 +8,9 @@ SQLite index** of ~295 000 document cards, fetches document bodies on
 demand from the official open-data API, and lets you search, read,
 bookmark, annotate and export legislation.
 
-> Status: **core is built, tested and verified against the live API.**
-> The local web UI (reader, annotations, export) is the next phase —
-> see [PLAN.md](PLAN.md).
+> Status: **core + web UI are built, tested and verified against the live
+> API.** Snapshot/release automation and packaging are the remaining
+> phase — see [PLAN.md](PLAN.md).
 
 ## Features (implemented)
 
@@ -29,6 +29,12 @@ bookmark, annotate and export legislation.
   full rebuild.
 - **Gzip snapshots** (`snapshot create/restore`) for offline
   distribution / monthly publishing.
+- A **local web UI** (`web`): one embedded HTML page (vanilla JS, zero
+  external assets) with a search form (title + all filters + paging), a
+  document reader with an **edition switcher**, the live
+  recently-updated feed, **bookmarks / highlights / comments** (stored
+  inside the index itself), and **TXT / Markdown / HTML export** —
+  single document or the whole search page at once.
 - A **modular Rust workspace**: the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the client.
 
@@ -78,6 +84,11 @@ The data directory holds the SQLite index (default `data/zakon-index.sqlite`).
 # 6) Snapshots for distribution.
 .\rada-client.exe snapshot create data\zakon-index.sqlite.gz
 .\rada-client.exe snapshot restore data\zakon-index.sqlite.gz out.sqlite
+
+# 7) Local web UI (search + reader + annotations + export).
+.\rada-client.exe web --port 8742
+.\rada-client.exe web --open        # also open the browser
+# → http://127.0.0.1:8742
 ```
 
 ## Data & API notes (verified 2026-10-26)
@@ -110,8 +121,10 @@ Full details, data-distribution model and roadmap: [PLAN.md](PLAN.md).
 ```
 crates/rada-core   domain types + data.rada.gov.ua API client
 crates/rada-db     SQLite index module (schema, import, search, dict,
-                   incremental sync, gzip snapshots)
-crates/rada-cli    `rada-client` binary (init/sync/search/card/text/snapshot)
+                   incremental sync, gzip snapshots, annotations)
+crates/rada-web    local web UI (embedded page + JSON API, tiny_http)
+crates/rada-cli    `rada-client` binary (init/sync/search/card/text/
+                   resolve/snapshot/status/web)
 ```
 
 ## Attribution & terms

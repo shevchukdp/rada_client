@@ -1,0 +1,16 @@
+[package]
+name = "rada-web"
+description = "Local web UI for the rada index (embedded single page + JSON API)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[dependencies]
+rada-core.workspace = true
+rada-db.workspace = true
+tiny_http.workspace = true
+serde_json.workspace = true
+anyhow.workspace = true
+rusqlite.workspace = true
