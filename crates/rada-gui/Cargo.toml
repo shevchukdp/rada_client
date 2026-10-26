@@ -1,0 +1,25 @@
+[package]
+name = "rada-gui"
+description = "Desktop GUI for the Ukrainian legislation index (search, reader, annotations, export)"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "rada-client-gui"
+path = "src/main.rs"
+
+[dependencies]
+eframe = { version = "0.29", default-features = false, features = ["glow", "default_fonts"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+rfd = "0.15"
+anyhow.workspace = true
+serde_json.workspace = true
+rada-core.workspace = true
+rada-db.workspace = true
+
+[build-dependencies]
+# none: build.rs drives `windres` directly (see the rada-cli build.rs comment
+# for why a static-archive approach like `winres` fails on GNU ld)

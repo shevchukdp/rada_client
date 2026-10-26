@@ -85,6 +85,35 @@ pub fn remove(conn: &Connection, id: i64) -> Result<bool> {
     Ok(n > 0)
 }
 
+/// Every annotation in the index (used to back them up before a snapshot
+/// restore overwrites the database file).
+pub fn all(conn: &Connection) -> Result<Vec<Annotation>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT id, nreg, kind, text, span_start, span_end, created_at
+             FROM annotations ORDER BY id",
+        )
+        .context("prepare annotations all")?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok(Annotation {
+                id: r.get(0)?,
+                nreg: r.get(1)?,
+                kind: r.get(2)?,
+                text: r.get(3)?,
+                span_start: r.get(4)?,
+                span_end: r.get(5)?,
+                created_at: r.get(6)?,
+            })
+        })
+        .context("run annotations all")?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.context("next annotation row")?);
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

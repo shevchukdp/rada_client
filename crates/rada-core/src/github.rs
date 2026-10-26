@@ -88,6 +88,18 @@ impl GitHub {
 
     /// Download `url` to `out`; returns the file size in bytes.
     pub fn download(&self, url: &str, out: impl AsRef<Path>) -> Result<u64> {
+        self.download_with_progress(url, out, |_| {})
+    }
+
+    /// Download `url` to `out`, calling `on_tick(bytes_so_far)` as chunks
+    /// arrive (used by the GUI progress indicator). Streaming avoids the
+    /// giant in-memory buffer the plain download uses.
+    pub fn download_with_progress(
+        &self,
+        url: &str,
+        out: impl AsRef<Path>,
+        mut on_tick: impl FnMut(u64),
+    ) -> Result<u64> {
         let out = out.as_ref();
         if let Some(parent) = out.parent() {
             if !parent.as_os_str().is_empty() {
@@ -95,7 +107,7 @@ impl GitHub {
                     .with_context(|| format!("create dir {}", parent.display()))?;
             }
         }
-        let resp = self
+        let mut resp = self
             .http
             .get(url)
             .send()
@@ -106,9 +118,22 @@ impl GitHub {
         }
         let mut file = std::fs::File::create(out)
             .with_context(|| format!("create {}", out.display()))?;
-        let bytes = resp.bytes().map_err(|e| anyhow!("stream: {e}"))?;
-        file.write_all(&bytes)?;
-        Ok(bytes.len() as u64)
+        let mut total: u64 = 0;
+        let mut buf = [0u8; 65536];
+        loop {
+            match std::io::Read::read(&mut resp, &mut buf) {
+                Ok(0) => break,
+                Ok(n) => {
+                    file.write_all(&buf[..n])
+                        .with_context(|| format!("write {}", out.display()))?;
+                    total += n as u64;
+                    on_tick(total);
+                }
+                Err(e) => return Err(anyhow!("stream: {e}")),
+            }
+        }
+        file.flush().ok();
+        Ok(total)
     }
 }
 
