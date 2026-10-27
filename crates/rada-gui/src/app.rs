@@ -49,6 +49,10 @@ pub enum Msg {
         run: u64,
         res: Outcome<Vec<UpdatedDoc>>,
     },
+    /// Every annotation + document title (favorites page).
+    Favorites(Outcome<Vec<(rada_db::Annotation, String)>>),
+    /// Live bulk-export progress (done / total documents).
+    LiveExport { done: u64, total: u64 },
     SyncLine(String),
     SyncDone(Outcome<(usize, usize)>),
     FetchProgress(FetchProg),
@@ -87,6 +91,7 @@ pub enum Page {
     Search,
     Reader,
     Arrivals,
+    Favorites,
 }
 
 /// Launch-time options (CLI `--start`, `--query`, `--nreg`).
@@ -115,6 +120,7 @@ pub struct App {
     /// Results list the reader was opened from (for prev/next paging).
     pub nav: Option<(Vec<rada_db::SearchHit>, usize)>,
     pub arrivals: views::ArrivalsState,
+    pub fav: views::FavoritesState,
     pub dicts: views::Dicts,
     pub index_status: Option<IndexStatus>,
     pub toasts: Vec<Toast>,
@@ -160,6 +166,7 @@ impl App {
             reader: None,
             nav: None,
             arrivals: views::ArrivalsState::default(),
+            fav: views::FavoritesState::default(),
             dicts: views::Dicts::default(),
             index_status: None,
             toasts: Vec::new(),
@@ -191,6 +198,7 @@ impl App {
             match p.to_lowercase().as_str() {
                 "search" => self.page = Page::Search,
                 "arrivals" => self.page = Page::Arrivals,
+                "favorites" => self.page = Page::Favorites,
                 "home" => self.page = Page::Home,
                 _ => {}
             }
@@ -486,6 +494,25 @@ impl App {
         });
     }
 
+    /// Rebuild the favorites list (all annotations + titles, newest first).
+    pub fn load_favorites(&mut self) {
+        self.fav.loading = true;
+        self.fav.loaded = true;
+        let db = self.db_path.clone();
+        self.spawn(move |tx| {
+            let _ = tx.send(Msg::Favorites(favorites_snapshot(&db, None)));
+        });
+    }
+
+    /// Delete an annotation and re-list favorites from the *same* worker —
+    /// a separate reload would race the delete.
+    pub fn delete_annotation_fresh(&mut self, id: i64) {
+        let db = self.db_path.clone();
+        self.spawn(move |tx| {
+            let _ = tx.send(Msg::Favorites(favorites_snapshot(&db, Some(id))));
+        });
+    }
+
     /// Replace the text of an existing annotation in place, then re-list it.
     pub fn edit_annotation(&mut self, id: i64, text: String) {
         let Some(r) = self.reader.as_ref() else { return };
@@ -681,12 +708,11 @@ impl App {
         });
     }
 
-    /// Export the currently open document (md/txt) through a save dialog.
-    pub fn export_reader(&mut self, md: bool) {
+    /// Export the currently open document (md/txt/html) through a save dialog.
+    pub fn export_reader(&mut self, fmt: &str) {
         let Some(r) = self.reader.as_ref() else { return };
-        let body = r.export_doc(md);
-        let ext = if md { "md" } else { "txt" };
-        let default_name = format!("zakon-{}.{}", sanitize(&r.hit.nreg), ext);
+        let body = r.export_doc(fmt);
+        let default_name = format!("zakon-{}.{}", sanitize(&r.hit.nreg), fmt);
         let Some(path) = rfd::FileDialog::new().set_file_name(default_name).save_file()
         else {
             return;
@@ -715,6 +741,88 @@ impl App {
             return;
         };
         self.spawn(move |tx| {
+            let res = std::fs::write(&path, &body)
+                .map(|_| path)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Exported(res));
+        });
+    }
+
+    /// Live bulk export of the current results page: fetches each document's
+    /// text (paced by the shared client, ~5 s/doc), appends saved annotations
+    /// and writes md/txt. Progress arrives as `Msg::LiveExport`.
+    pub fn export_search_list_live(&mut self, md: bool) {
+        if self.search.live_export.is_some() || self.search.hits.is_empty() {
+            return;
+        }
+        let hits = self.search.hits.clone();
+        let ext = if md { "md" } else { "txt" };
+        let q = self.search.query.trim().to_string();
+        let name_q = if q.is_empty() {
+            "all".to_string()
+        } else {
+            sanitize(&q)
+        };
+        let default_name = format!("zakon-{name_q}-full.{ext}");
+        let Some(path) = rfd::FileDialog::new().set_file_name(default_name).save_file()
+        else {
+            return;
+        };
+        let client = self.client.clone();
+        let db = self.db_path.clone();
+        self.search.live_export = Some((0, hits.len() as u64));
+        self.spawn(move |tx| {
+            let total = hits.len() as u64;
+            let mut body = String::new();
+            if md {
+                body.push_str(&format!(
+                    "# Пошук: «{}» — повний текст, {} док.\n\n",
+                    if q.is_empty() { "усі" } else { &q },
+                    hits.len()
+                ));
+            } else {
+                body.push_str(&format!(
+                    "Пошук: «{}» — повний текст, {} док.\n\n\n",
+                    if q.is_empty() { "усі" } else { &q },
+                    hits.len()
+                ));
+            }
+            for (i, h) in hits.iter().enumerate() {
+                match client.show_text(&h.nreg) {
+                    Ok(t) if md => {
+                        body.push_str(&format!("## {} — №{}\n\n```\n{}\n```\n\n", h.nazva, h.nreg, t.trim_end()));
+                    }
+                    Ok(t) => {
+                        body.push_str(&format!("{} — №{}\n\n{}\n\n\n", h.nazva, h.nreg, t.trim_end()));
+                    }
+                    Err(e) if md => {
+                        body.push_str(&format!("## {} — №{}\n\n> текст отримати не вдалося: {e}\n\n", h.nazva, h.nreg));
+                    }
+                    Err(e) => {
+                        body.push_str(&format!("{} — №{}\n(текст отримати не вдалося: {e})\n\n\n", h.nazva, h.nreg));
+                    }
+                }
+                let _ = tx.send(Msg::LiveExport { done: (i + 1) as u64, total });
+            }
+            if let Ok(conn) = rada_db::open(&db) {
+                let nregs: Vec<&str> = hits.iter().map(|h| h.nreg.as_str()).collect();
+                if let Ok(anns) = rada_db::annotations::all(&conn) {
+                    let mut lines = String::new();
+                    for a in anns.iter().filter(|a| nregs.contains(&a.nreg.as_str())).rev() {
+                        lines.push_str(&format!(
+                            "{}  [{}]  {}\n{}\n\n",
+                            a.nreg,
+                            a.kind,
+                            a.created_at,
+                            a.text.trim()
+                        ));
+                    }
+                    if !lines.is_empty() {
+                        body.push_str(if md { "\n## Примітки та виділення\n\n" } else { "\nПримітки та виділення\n\n" });
+                        body.push_str(&lines);
+                    }
+                }
+            }
             let res = std::fs::write(&path, &body)
                 .map(|_| path)
                 .map_err(|e| e.to_string());
@@ -848,6 +956,19 @@ impl App {
                 Ok(false) => self.toast("анотацію не знайдено", err()),
                 Err(e) => self.toast(format!("помилка: {e}"), err()),
             },
+            Msg::LiveExport { done, total } => {
+                self.search.live_export = Some((done, total));
+            }
+            Msg::Favorites(res) => {
+                self.fav.loading = false;
+                match res {
+                    Ok(items) => {
+                        self.fav.items = items;
+                        self.fav.error = None;
+                    }
+                    Err(e) => self.fav.error = Some(e),
+                }
+            }
             Msg::Arrivals { run, res } => {
                 if run == self.arrivals.run {
                     self.arrivals.loading = false;
@@ -905,10 +1026,13 @@ impl App {
                     self.search.resolve_result = res;
                 }
             }
-            Msg::Exported(res) => match res {
-                Ok(path) => self.toast(format!("збережено: {}", path.display()), ok()),
-                Err(e) => self.toast(format!("помилка збереження: {e}"), err()),
-            },
+            Msg::Exported(res) => {
+                self.search.live_export = None;
+                match res {
+                    Ok(path) => self.toast(format!("збережено: {}", path.display()), ok()),
+                    Err(e) => self.toast(format!("помилка збереження: {e}"), err()),
+                }
+            }
         }
     }
 }
@@ -957,6 +1081,7 @@ impl eframe::App for App {
             Page::Search => views::search::show(self, ctx),
             Page::Reader => views::reader::show(self, ctx),
             Page::Arrivals => views::arrivals::show(self, ctx),
+            Page::Favorites => views::favorites::show(self, ctx),
         }
 
         views::statusbar(self, ctx);
@@ -974,6 +1099,28 @@ pub(crate) fn err() -> egui::Color32 {
 
 pub(crate) fn gold() -> egui::Color32 {
     egui::Color32::from_rgb(0xFF, 0xB3, 0x00)
+}
+
+/// All annotations (newest first) paired with document titles; optionally
+/// deletes `delete_id` in the same worker to avoid a reload race.
+fn favorites_snapshot(
+    db: &std::path::Path,
+    delete_id: Option<i64>,
+) -> Outcome<Vec<(rada_db::Annotation, String)>> {
+    let conn = rada_db::open(db).map_err(|e| e.to_string())?;
+    if let Some(id) = delete_id {
+        rada_db::annotations::remove(&conn, id).map_err(|e| e.to_string())?;
+    }
+    let anns = rada_db::annotations::all(&conn).map_err(|e| e.to_string())?;
+    let mut items: Vec<(rada_db::Annotation, String)> = anns
+        .into_iter()
+        .map(|a| {
+            let t = rada_db::title_by_nreg(&conn, &a.nreg).unwrap_or_default();
+            (a, t)
+        })
+        .collect();
+    items.sort_by(|(a, _), (b, _)| b.id.cmp(&a.id));
+    Ok(items)
 }
 
 fn read_index_status(db: &PathBuf) -> IndexStatus {

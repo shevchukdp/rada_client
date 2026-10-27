@@ -108,6 +108,11 @@ enum Cmd {
     },
     /// Print index statistics.
     Status,
+    /// User annotations (bookmarks / highlights / comments) stored in the index.
+    Annot {
+        #[command(subcommand)]
+        what: AnnCmd,
+    },
     /// Start the local web UI (search, reader, annotations, export).
     Web {
         /// Address to bind.
@@ -140,6 +145,33 @@ enum SnapCmd {
     },
 }
 
+#[derive(Subcommand)]
+enum AnnCmd {
+    /// List annotations (all documents, or only for `nreg`).
+    List {
+        /// Filter to one document.
+        nreg: Option<String>,
+        /// Emit JSON.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Add an annotation; `kind` is bookmark | highlight | comment.
+    Add {
+        nreg: String,
+        kind: String,
+        /// Annotation text (not needed for bookmark).
+        text: Option<String>,
+        /// Highlight span: start char (optional).
+        #[arg(long)]
+        start: Option<i64>,
+        /// Highlight span: end char (optional).
+        #[arg(long)]
+        end: Option<i64>,
+    },
+    /// Delete an annotation by id.
+    Del { id: i64 },
+}
+
 fn main() {
     if let Err(e) = run() {
         eprintln!("error: {e:#}");
@@ -170,6 +202,7 @@ fn run() -> Result<()> {
         Cmd::Resolve { text } => cmd_resolve(&text.join(" "), cli.pace),
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
         Cmd::Status => cmd_status(&cli.db),
+        Cmd::Annot { what } => cmd_annot(&cli.db, what),
         Cmd::Web { host, port, open } => cmd_web(&cli.db, &host, port, open, cli.pace),
     }
 }
@@ -409,6 +442,57 @@ fn cmd_snapshot_fetch(name: Option<&str>, out: &Path) -> Result<()> {
     let restored = rada_db::snapshot::restore(&gz, out)?;
     let _ = std::fs::remove_file(&gz);
     println!("restored {}", restored.display());
+    Ok(())
+}
+
+fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
+    let conn = rada_db::open(db)?;
+    match what {
+        AnnCmd::List { nreg, json } => {
+            let items = match &nreg {
+                Some(n) => rada_db::annotations::list(&conn, n)?, // already newest first
+                None => {
+                    let mut v = rada_db::annotations::all(&conn)?;
+                    v.sort_by(|a, b| b.id.cmp(&a.id));
+                    v
+                }
+            };
+            if json {
+                println!("{}", serde_json::to_string_pretty(&items)?);
+                return Ok(());
+            }
+            if items.is_empty() {
+                println!("немає анотацій");
+                return Ok(());
+            }
+            for a in items {
+                let span = match (a.span_start, a.span_end) {
+                    (Some(s), Some(e)) => format!(" [{s}..{e}]"),
+                    _ => String::new(),
+                };
+                let t: String = a.text.chars().take(60).collect();
+                println!("#{:<4} {:<9} {:<12} {}  {}{}", a.id, a.kind, a.nreg, a.created_at, span, t);
+            }
+        }
+        AnnCmd::Add { nreg, kind, text, start, end } => {
+            let id = rada_db::annotations::insert(
+                &conn,
+                &nreg,
+                &kind,
+                &text.unwrap_or_default(),
+                start,
+                end,
+            )?;
+            println!("анотація #{id} додана до {nreg}");
+        }
+        AnnCmd::Del { id } => {
+            if rada_db::annotations::remove(&conn, id)? {
+                println!("анотація #{id} видалена");
+            } else {
+                println!("анотація #{id} не знайдена");
+            }
+        }
+    }
     Ok(())
 }
 

@@ -1,6 +1,7 @@
 //! GUI views: one file per page plus the shared bars drawn every frame.
 
 pub mod arrivals;
+pub mod favorites;
 pub mod home;
 pub mod reader;
 pub mod search;
@@ -19,6 +20,7 @@ pub struct Dicts {
 }
 
 pub use arrivals::ArrivalsState;
+pub use favorites::FavoritesState;
 pub use home::HomeState;
 pub use reader::ReaderState;
 pub use search::SearchState;
@@ -63,6 +65,7 @@ pub fn topbar(app: &mut App, ctx: &egui::Context) {
                     ui.separator();
                     page_button(ui, app_ref, "Оновлення", Page::Arrivals, &mut go);
                     page_button(ui, app_ref, "Читалка", Page::Reader, &mut go);
+                    page_button(ui, app_ref, "Обране", Page::Favorites, &mut go);
                     page_button(ui, app_ref, "Пошук", Page::Search, &mut go);
                     page_button(ui, app_ref, "Головна", Page::Home, &mut go);
                 });

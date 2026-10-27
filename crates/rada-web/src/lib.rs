@@ -307,6 +307,7 @@ fn dict_handler(method: &Method, rest: &str, st: &State) -> Resp {
 }
 
 /// `GET /api/annotations?nreg=`, `POST /api/annotations`,
+/// `PUT /api/annotations` (body `{"id":…, "text":…}`),
 /// `DELETE /api/annotations/{id}`.
 fn annotations_handler(
     method: &Method,
@@ -351,6 +352,37 @@ fn annotations_handler(
             };
             match rada_db::annotations::insert(&conn, &nreg, &kind, &text, span_start, span_end) {
                 Ok(id) => json_ok(&json!({ "id": id })),
+                Err(e) => json_err(400, &e.to_string()),
+            }
+        }
+        Method::Put => {
+            let body = match read_body(req) {
+                Ok(b) => b,
+                Err(e) => return json_err(400, &format!("bad body: {e}")),
+            };
+            let v: Value = match serde_json::from_str(&body) {
+                Ok(v) => v,
+                Err(e) => return json_err(400, &format!("bad JSON: {e}")),
+            };
+            let Some(id) = v.get("id").and_then(Value::as_i64) else {
+                return json_err(400, "id required");
+            };
+            let text = v
+                .get("text")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .trim()
+                .to_string();
+            if text.is_empty() {
+                return json_err(400, "text must not be empty");
+            }
+            let conn = match open_db(st) {
+                Ok(c) => c,
+                Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
+            };
+            match rada_db::annotations::set_text(&conn, id, &text) {
+                Ok(true) => json_ok(&json!({ "id": id })),
+                Ok(false) => json_err(404, "annotation not found"),
                 Err(e) => json_err(400, &e.to_string()),
             }
         }
@@ -752,6 +784,13 @@ mod tests {
         // shortcut that redirects browser find into the reader's find bar.
         assert!(ui::INDEX_HTML.contains("id=\"rada-recent\""));
         assert!(ui::INDEX_HTML.contains("// Ctrl+F / Cmd+F opens the document find bar instead of the browser find."));
+        // Web-parity gaps closed: live nreg resolver (search tab), retry
+        // buttons for failed card/text loads, inline annotation edit, and
+        // the «Видавник» org filter (the server accepts `org=`).
+        assert!(ui::INDEX_HTML.contains("id=\"btn-resolve\""));
+        assert!(ui::INDEX_HTML.contains("id=\"retry-card\""));
+        assert!(ui::INDEX_HTML.contains("змінити"));
+        assert!(ui::INDEX_HTML.contains("id=\"f-org\""));
     }
 
     #[test]

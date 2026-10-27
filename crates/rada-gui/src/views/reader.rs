@@ -71,15 +71,16 @@ impl ReaderState {
         None
     }
 
-    /// Export the current document as Markdown or plain text.
-    pub fn export_doc(&self, md: bool) -> String {
+    /// Export the current document as Markdown, plain text, or HTML.
+    /// HTML inlines saved highlights as gold `<mark>` spans.
+    pub fn export_doc(&self, fmt: &str) -> String {
         let title = self
             .card
             .as_ref()
             .map(|c| c.nazva.clone())
             .unwrap_or_else(|| self.hit.nazva.clone());
         let text = self.text.clone().unwrap_or_default();
-        if md {
+        if fmt == "md" {
             let mut s = String::new();
             s.push_str(&format!("# {title}\n\n"));
             s.push_str(&format!(
@@ -107,6 +108,67 @@ impl ReaderState {
             s.push_str(text.trim_end());
             s.push_str("\n```\n");
             s.push_str(&ann_appendix(&self.annotations, true));
+            s
+        } else if fmt == "html" {
+            let esc = |s: &str| {
+                s.replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+            };
+            let mut body = esc(text.trim_end());
+            for a in &self.annotations {
+                if a.kind != "highlight" || a.text.trim().is_empty() {
+                    continue;
+                }
+                let needle = esc(&a.text);
+                let (open, close) = ("<mark class=\"hl\">", "</mark>");
+                let mut pos = 0usize;
+                while pos < body.len() {
+                    match body[pos..].find(&needle) {
+                        Some(k) => {
+                            let at = pos + k;
+                            let repl = format!("{open}{needle}{close}");
+                            body.replace_range(at..at + needle.len(), &repl);
+                            pos = at + open.len() + needle.len() + close.len();
+                        }
+                        None => break,
+                    }
+                }
+            }
+            let mut s = String::new();
+            s.push_str("<!doctype html>\n<html lang=\"uk\">\n<meta charset=\"utf-8\">\n<title>");
+            s.push_str(&esc(&title));
+            s.push_str("</title>\n<style>\nbody{font-family:Georgia,'Times New Roman',serif;max-width:56em;margin:2em auto;padding:0 1.2em;line-height:1.5;color:#111}\nmain pre{white-space:pre-wrap;font-family:inherit;font-size:1.02em}\nmark.hl{background:#c9a227;color:#1a1a1a;padding:0 .15em;border-radius:2px}\nheader{border-bottom:2px solid #c9a227;margin-bottom:1.2em;padding-bottom:.5em}\nfooter{border-top:1px solid #bbb;margin-top:2em;padding-top:.8em;font-size:.9em;color:#333}\n</style>\n");
+            s.push_str(&format!(
+                "<header><h1>{}</h1>\n<p><b>Рег. №:</b> <code>{}</code> · <b>Стан:</b> {} · <b>Номер:</b> {} · <b>Дата:</b> {} <span style=\"color:#777\">(ред. {})</span></p></header>\n",
+                esc(&title),
+                esc(&self.hit.nreg),
+                StatusId(self.hit.status).label(),
+                esc(&self.hit.org_num),
+                fmt_date(&self.hit.org_date),
+                fmt_date(&self.hit.poddat),
+            ));
+            s.push_str("<main>\n<pre>");
+            s.push_str(&body);
+            s.push_str("</pre>\n</main>\n");
+            if !self.annotations.is_empty() {
+                s.push_str("<footer><b>Примітки та виділення</b><ul>\n");
+                for a in &self.annotations {
+                    let (tag, txt) = match a.kind.as_str() {
+                        "highlight" => ("виділення", esc(a.text.trim())),
+                        "bookmark" => ("закладка", String::new()),
+                        _ => ("коментар", esc(a.text.trim())),
+                    };
+                    let date = esc(&a.created_at);
+                    if txt.is_empty() {
+                        s.push_str(&format!("<li><b>{tag}</b> · {date}</li>\n"));
+                    } else {
+                        s.push_str(&format!("<li><b>{tag}</b> · {date}<br>{txt}</li>\n"));
+                    }
+                }
+                s.push_str("</ul></footer>\n");
+            }
+            s.push_str("</html>\n");
             s
         } else {
             let mut s = String::new();
@@ -359,10 +421,13 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
     // export buttons
     ui.horizontal(|ui| {
         if ui.button("⬇ Експорт .md").clicked() {
-            app.export_reader(true);
+            app.export_reader("md");
         }
         if ui.button("⬇ Експорт .txt").clicked() {
-            app.export_reader(false);
+            app.export_reader("txt");
+        }
+        if ui.button("⬇ Експорт .html").clicked() {
+            app.export_reader("html");
         }
         if loading {
             ui.spinner();
@@ -414,10 +479,13 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
             }
             let enter =
                 resp.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-            if ui.button("»").clicked() || enter {
+            // Shift+Enter keeps the field focused and steps to the previous hit.
+            let shift_prev = resp.has_focus()
+                && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.shift);
+            if ui.button("»").clicked() || (enter && !shift_prev) {
                 find_req = Some(1);
             }
-            if ui.button("«").clicked() {
+            if ui.button("«").clicked() || shift_prev {
                 find_req = Some(-1);
             }
             if !q.trim().is_empty() {
@@ -774,7 +842,7 @@ fn annotations_panel(app: &mut App, ui: &mut egui::Ui) {
                         if ui.button(egui::RichText::new("змінити").small()).clicked() {
                             open_edit = Some((a.id, a.text.clone()));
                         }
-                        if ui.button(egui::RichText::new("✕ видалити").small()).clicked() {
+                        if ui.button(egui::RichText::new("видалити").small()).clicked() {
                             del = Some(a.id);
                         }
                     });
@@ -872,6 +940,36 @@ mod tests {
     #[test]
     fn find_spans_empty_query_yields_nothing() {
         assert!(find_spans("будь-що", "   ").is_empty());
+    }
+
+    #[test]
+    fn html_export_escapes_and_marks() {
+        let mut r = ReaderState::new(rada_db::SearchHit {
+            nreg: "1-1".into(),
+            nazva: "Тест".into(),
+            status: 5,
+            org_date: "20240101".into(),
+            org_num: "1".into(),
+            poddat: String::new(),
+        });
+        r.text = Some("а < б & в; виділення тут; ще виділення".into());
+        r.annotations = vec![rada_db::Annotation {
+            id: 1,
+            nreg: "1-1".into(),
+            kind: "highlight".into(),
+            text: "виділення".into(),
+            span_start: None,
+            span_end: None,
+            created_at: "2026-01-01 00:00:00".into(),
+        }];
+        let s = r.export_doc("html");
+        assert!(s.contains("а &lt; б &amp; в"), "html escaping");
+        assert_eq!(
+            s.matches("<mark class=\"hl\">").count(),
+            2,
+            "both mentions wrapped"
+        );
+        assert!(s.ends_with("</html>\n"), "complete document");
     }
 
     #[test]

@@ -48,6 +48,23 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     );
                 });
                 ui.end_row();
+
+                ui.label("Видавник");
+                ui.horizontal(|ui| {
+                    ui.add_sized(
+                        [150.0, 24.0],
+                        egui::TextEdit::singleline(&mut app.search.f_org_q)
+                            .hint_text("фільтр назв видавця…"),
+                    );
+                    org_combo(app, ui);
+                    if app.search.f_org.is_some() {
+                        if ui.button(egui::RichText::new("скинути").small()).clicked() {
+                            app.search.f_org = None;
+                            app.search.f_org_label.clear();
+                        }
+                    }
+                });
+                ui.end_row();
             });
 
         ui.add_space(8.0);
@@ -87,6 +104,28 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
             if ui.add_enabled(has, egui::Button::new("Експорт .txt")).clicked() {
                 app.export_search_list(false);
+            }
+            if let Some((d, t)) = app.search.live_export {
+                ui.spinner();
+                ui.label(
+                    egui::RichText::new(format!("живий експорт текстів: {d} / {t}"))
+                        .small()
+                        .color(gold()),
+                );
+            } else {
+                if ui.add_enabled(has, egui::Button::new("Тексти .md")).clicked() {
+                    app.export_search_list_live(true);
+                }
+                if ui.add_enabled(has, egui::Button::new("Тексти .txt")).clicked() {
+                    app.export_search_list_live(false);
+                }
+                if has {
+                    ui.label(
+                        egui::RichText::new("(тексти наживо, ~5 с/док; додано анотації)")
+                            .weak()
+                            .small(),
+                    );
+                }
             }
         });
         ui.add_space(6.0);
@@ -242,6 +281,47 @@ fn typs_combo(app: &mut App, ui: &mut egui::Ui) {
     });
 }
 
+/// Publisher picker: free-text filter + combo of matching organs (cap 25).
+fn org_combo(app: &mut App, ui: &mut egui::Ui) {
+    let opts: Vec<(i64, String)> = app.dicts.organs.clone();
+    let q = app.search.f_org_q.to_lowercase();
+    let matches: Vec<(i64, String)> = if q.is_empty() {
+        opts.iter().take(25).cloned().collect()
+    } else {
+        opts.iter()
+            .filter(|(_, l)| l.to_lowercase().contains(&q))
+            .take(25)
+            .cloned()
+            .collect()
+    };
+    let cur = app.search.f_org;
+    let label = cur
+        .map(|id| opt_label(&app.dicts.organs, id, "орган"))
+        .unwrap_or_else(|| {
+            if app.search.f_org_label.is_empty() {
+                "усі".into()
+            } else {
+                app.search.f_org_label.clone()
+            }
+        });
+    let sel = egui::ComboBox::from_id_salt("f_org").width(220.0).selected_text(label);
+    sel.show_ui(ui, |ui| {
+        if ui.selectable_label(cur.is_none(), "усі").clicked() {
+            app.search.f_org = None;
+            app.search.f_org_label.clear();
+        }
+        if matches.is_empty() {
+            ui.label(egui::RichText::new("не знайдено збігів").small());
+        }
+        for (id, lab) in &matches {
+            if ui.selectable_label(cur == Some(*id), lab).clicked() {
+                app.search.f_org = Some(*id);
+                app.search.f_org_label = lab.clone();
+            }
+        }
+    });
+}
+
 fn opt_label(opts: &[(i64, String)], id: i64, kind: &str) -> String {
     opts.iter()
         .find(|(tid, _)| *tid == id)
@@ -289,6 +369,9 @@ impl Default for SearchState {
             f_date_from: String::new(),
             f_date_to: String::new(),
             f_number: String::new(),
+            f_org: None,
+            f_org_label: String::new(),
+            f_org_q: String::new(),
             offset_field: 0,
             limit: 50,
             hits: Vec::new(),
@@ -301,6 +384,7 @@ impl Default for SearchState {
             resolve_loading: false,
             resolve_result: None,
             invalid_date: false,
+            live_export: None,
         }
     }
 }
@@ -314,6 +398,10 @@ pub struct SearchState {
     pub f_date_from: String,
     pub f_date_to: String,
     pub f_number: String,
+    /// Publisher (organs dict id) filter; also holds the picked label.
+    pub f_org: Option<i64>,
+    pub f_org_label: String,
+    pub f_org_q: String,
     pub offset_field: usize,
     pub limit: usize,
     pub hits: Vec<rada_db::SearchHit>,
@@ -326,6 +414,8 @@ pub struct SearchState {
     pub resolve_loading: bool,
     pub resolve_result: Option<String>,
     pub invalid_date: bool,
+    /// In-flight live bulk export (done / total).
+    pub live_export: Option<(u64, u64)>,
 }
 
 impl SearchState {
@@ -401,7 +491,7 @@ impl SearchState {
                 let t = self.query.trim();
                 if t.is_empty() { None } else { Some(t.to_string()) }
             },
-            org_id: None,
+            org_id: self.f_org,
             typ: self.f_typ,
             status: self.f_status,
             date_from: parse(&self.f_date_from, &mut invalid),

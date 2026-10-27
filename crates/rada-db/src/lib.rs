@@ -59,6 +59,16 @@ pub fn last_import(conn: &Connection) -> Option<String> {
     .ok()
 }
 
+/// Title of the document registered under `nreg`, if indexed.
+pub fn title_by_nreg(conn: &Connection, nreg: &str) -> Option<String> {
+    conn.query_row(
+        "SELECT nazva FROM docs WHERE nreg = ?1",
+        [nreg],
+        |r| r.get::<_, String>(0),
+    )
+    .ok()
+}
+
 /// Store a meta value.
 pub fn set_meta(conn: &Connection, key: &str, value: &str) -> Result<()> {
     conn.execute(

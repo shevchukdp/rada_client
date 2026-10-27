@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-27
 
+### 0.6.0: Обране, видавник, живі тексти — сторінка анотацій, фільтр видавця, експорт текстів / 0.6.0: favorites, publisher filter, live texts — annotation page, org filter, bulk text export
+
+- **UKR:** 1) **«Обране»**: окрема сторінка з усіма збереженими анотаціями (коментарі, виділення, закладки) з усіх документів — фільтри за типом, відкриття документа в один клік, видалення. 2) **Фільтр «Видавник»** у пошуку — комбо з текстовим фільтром назв по словнику органів. 3) **«Тексти»**: живий експорт всієї сторінки результатів (повні тексти, з паузами, лічильник прогресу, анотації в кінці). 4) **HTML-експорт** документа — самодостатній файл із золотими виділеннями й списком анотацій. 5) **Shift+Enter** — до попереднього збігу пошуку. 6) CLI-команда **`annot`** (list/add/del — той самий сховище, що GUI/веб). 7) **Паритет веб**: інтерфейс резолвера, редагування анотацій просто у списку (`PUT /api/annotations`), кнопки «ще раз», фільтр видавця, валідація дат, Ctrl+F на сторінці пошуку, панель картки документа, автооновлення «Нових документів», перехід «→ текст»; виправлено залиплі підсвітки пошуку та «трикутні» гліфи на кнопках. 8) Тести: 38/38.
+- **ENG:** 1) **Favorites page**: every saved annotation across all documents — filter by kind, one-click open, delete. 2) **Publisher filter** in search (combo with name filter over the organs dict). 3) **«Тексти»**: live bulk export of the results page (full documents, paced, progress counter, annotations appended). 4) **HTML export** of a document — a single self-contained file with gold highlights and the annotation list. 5) **Shift+Enter** steps to the previous find match. 6) CLI **`annot`** command (list/add/del — the same store as GUI/web). 7) **Web parity**: resolver UI, inline annotation editing (`PUT /api/annotations`), «ще раз» retry buttons for failed card/text, publisher filter, date-format validation, Ctrl+F on the search page too, document card details, auto-loaded «Нові документи», «→ текст» jump; also fixed a stale-find-highlights bug and delete-button glyphs. 8) Tests: 38/38.
+
+---
+
+## 2026-10-27
+
 ### 0.5.0: клавіатура й останні документи — швидкі клавіші, список останніх, редагування анотацій / 0.5.0: keyboard & recents — shortcuts, recent-documents chips, annotation editing
 
 - **UKR:** 1) **Гарячі клавіші**: Ctrl+F фокусує «знайти в тексті» (читалка) або поле «Заголовок» (Пошук, не відкриває віконного пошуку), Esc у полі пошуку очищає запит, Alt+← і Alt+→ гортають документи у межах списку результатів прямо з читалки. 2) **«Останні документи»**: на «Головній» — чіп-список щойно відкритих документів (до 10 у settings.ini, показуємо 6; старі записи v0.4 стають першим чіпом автоматично). 3) **Редагування анотацій**: кнопка «змінити» при кожній анотації — редактор на місці, без перестворення; виділення зберігають позицію в тексті. 4) **Веб**: той самий набір клавіш (Ctrl+F, Esc, ←/→ між результатами), рядок «Останні» у пошуку (localStorage, до 8), і виправлено «залиплі» підсвітки при скиданні запиту. 5) API `annotations::set_text`; тести: 37/37.

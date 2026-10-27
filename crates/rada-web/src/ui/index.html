@@ -99,6 +99,28 @@
     margin-left: auto; background: transparent; color: var(--muted);
     border-color: var(--line); border-radius: 5px; line-height: 1;
   }
+  #annotations li .edit, #annotations li .jump {
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--line); border-radius: 5px;
+    padding: 1px 7px; font-size: 13px; line-height: 1.3;
+  }
+  #annotations li .edit:hover, #annotations li .jump:hover {
+    color: var(--fg); border-color: var(--accent);
+  }
+  #annotations li textarea {
+    flex: 1; min-width: 200px; background: var(--panel2); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; font-size: 14px;
+  }
+  .form-error { color: var(--err); font-size: 14px; margin: 4px 2px 8px; }
+  details#card-details {
+    background: var(--panel2); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 12px; margin: 8px 0; font-size: 14px;
+  }
+  details#card-details summary { cursor: pointer; color: var(--muted); }
+  #card-grid {
+    display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin-top: 8px;
+  }
+  #card-grid .k { color: var(--muted); }
   #doc-pane {
     background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
     padding: 14px; margin-top: 14px;
@@ -125,11 +147,19 @@
       <input id="q" placeholder="Пошук назви (кілька слів → повнотекстовий пошук)…" autocomplete="off">
       <select id="f-status"><option value="">Статус (усі)</option></select>
       <select id="f-typ"><option value="">Тип (усі)</option></select>
+      <select id="f-org"><option value="">Видавник (усі)</option></select>
       <input id="f-number" placeholder="№ (частина)" size="12">
       <input id="f-date-from" placeholder="Від 20200101" size="12">
       <input id="f-date-to" placeholder="До 20261231" size="12">
       <button class="primary" type="submit">Пошук</button>
     </form>
+    <div id="form-error" class="form-error" hidden></div>
+    <div class="row">
+      <input id="resolve-input" placeholder="Назва документа для пошуку реєстр. номера…" size="32" autocomplete="off">
+      <button id="btn-resolve" type="button">Знайти nreg</button>
+      <span id="resolve-out" class="hint"></span>
+      <button id="resolve-open" type="button" hidden>відкрити</button>
+    </div>
     <div class="row" id="rada-recent" hidden>
       <span class="hint">Останні:</span>
       <span id="recent-chips"></span>
@@ -169,11 +199,19 @@
 
   <div id="doc-pane" hidden>
     <div id="doc-head"></div>
+    <div class="row" id="card-retry-row" hidden>
+      <button id="retry-card" type="button" title="Запитати картку ще раз">ще раз</button>
+      <span class="hint">не вдалося отримати картку (живий API)</span>
+    </div>
     <div class="row">
       <span class="hint">рег. №</span>
       <code id="doc-nreg-val" class="hint"></code>
       <button id="btn-copy-nreg" class="copy" type="button" title="Скопіювати ідентифікатор">⧉</button>
     </div>
+    <details id="card-details" hidden>
+      <summary>Картка документа (деталі)</summary>
+      <div id="card-grid"></div>
+    </details>
     <div class="row">
       <span class="hint">Редакція:</span>
       <select id="editions" disabled></select>
@@ -187,6 +225,10 @@
       <span id="find-count" class="hint"></span>
     </div>
     <pre id="doc-text" hidden></pre>
+    <div class="row" id="text-retry-row" hidden>
+      <button id="retry-text" type="button" title="Завантажити текст ще раз">ще раз</button>
+      <span class="hint">не вдалося отримати текст (живий API)</span>
+    </div>
     <div class="row">
       <button id="btn-bookmark" type="button">🔖 Зберегти</button>
       <button id="btn-highlight" type="button">Підсвітити виділене</button>
@@ -220,9 +262,11 @@ const state = {
   curText: "",
   annots: [],         // annotations of the current document (highlight rendering)
   statusLabels: new Map(),
+  orgLabels: new Map(),
 };
 let findHits = [];   // mark.find elements of the current find query
 let findIdx = -1;    // index of the current hit
+let arrivalsLoaded = false; // «нові документи» already fetched once
 
 function api(path, opts) {
   return fetch(path, opts).then(async (r) => {
@@ -288,6 +332,7 @@ async function init() {
   }
   fillDict("f-status", "status");
   fillDict("f-typ", "typs");
+  fillDict("f-org", "organs");
   renderRecent();
   doSearch(0);
 }
@@ -302,6 +347,7 @@ async function fillDict(selectId, kind) {
       o.textContent = it.id + " — " + it.label;
       sel.appendChild(o);
       if (kind === "status") state.statusLabels.set(String(it.id), it.label);
+      if (kind === "organs") state.orgLabels.set(String(it.id), it.label);
     }
   } catch (_) {}
 }
@@ -312,12 +358,14 @@ function statusLabel(id) {
 
 async function doSearch(offset) {
   state.offset = offset;
+  $("form-error").hidden = true;
   const p = new URLSearchParams();
   p.set("limit", String(state.limit));
   p.set("offset", String(offset));
   if ($("q").value.trim()) p.set("q", $("q").value.trim());
   if ($("f-status").value) p.set("status", $("f-status").value);
   if ($("f-typ").value) p.set("typ", $("f-typ").value);
+  if ($("f-org").value) p.set("org", $("f-org").value);
   if ($("f-number").value.trim()) p.set("number", $("f-number").value.trim());
   if ($("f-date-from").value.trim()) p.set("date_from", $("f-date-from").value.trim());
   if ($("f-date-to").value.trim()) p.set("date_to", $("f-date-to").value.trim());
@@ -357,6 +405,24 @@ async function doSearch(offset) {
   }
 }
 
+/// Optional «Від»/«До» dates must be exactly 8 ASCII digits (YYYYMMDD);
+/// an invalid field shows an inline error and blocks the submit.
+function validDates() {
+  const err = $("form-error");
+  err.hidden = true;
+  const fields = [["f-date-from", "«від»"], ["f-date-to", "«до»"]];
+  for (const [id, label] of fields) {
+    const v = $(id).value.trim();
+    if (v && !/^[0-9]{8}$/.test(v)) {
+      err.textContent = "Помилка: дата " + label +
+        " має бути 8 цифр, як 20200101: «" + v + "»";
+      err.hidden = false;
+      return false;
+    }
+  }
+  return true;
+}
+
 async function openDoc(nreg) {
   state.curNreg = nreg;
   state.curText = "";
@@ -371,14 +437,30 @@ async function openDoc(nreg) {
   $("editions").disabled = true;
   $("editions").innerHTML = "";
   $("doc-text").hidden = true;
+  $("card-details").hidden = true;
+  $("card-retry-row").hidden = true;
+  $("text-retry-row").hidden = true;
   setLive("картка · pacing ≈5 с/запит…");
   const enc = encNreg(nreg);
   $("site-link").href = "https://zakon.rada.gov.ua/go/" + enc;
+  await loadCard();
+}
+
+/// Fetch the live card for `state.curNreg` only (also re-run by the «ще раз»
+/// button when the card request fails).
+async function loadCard() {
+  if (!state.curNreg) return;
+  const nreg = state.curNreg;
+  $("card-retry-row").hidden = true;
+  $("doc-head").textContent = "Завантаження картки (живий API, ≈5 с)…";
+  setLive("картка · pacing ≈5 с/запит…");
   try {
-    const d = await api("/api/doc/" + enc + "/card");
+    const d = await api("/api/doc/" + encNreg(nreg) + "/card");
+    if (nreg !== state.curNreg) return;
     state.curCard = d.card;
     $("doc-head").textContent = d.card.nazva + "  [" + d.status_label + "]";
     rememberRecent(nreg, d.card.nazva);
+    fillCardDetails(d.card, d.status_label);
     const sel = $("editions");
     sel.innerHTML = "";
     const cur = document.createElement("option");
@@ -396,15 +478,47 @@ async function openDoc(nreg) {
     loadAnnotations(nreg);
     loadText("");
   } catch (e) {
+    if (nreg !== state.curNreg) return;
     $("doc-head").textContent = "Помилка картки: " + e.message;
+    $("card-retry-row").hidden = false;
     setLive("");
     rememberRecent(nreg, "");
   }
 }
 
+/// Fill the collapsible «Картка документа (деталі)» grid from the live card
+/// (the GUI's card_meta grid equivalent); hidden until filled.
+function fillCardDetails(card, status_label) {
+  const grid = $("card-grid");
+  grid.innerHTML = "";
+  const org = card.org ? (state.orgLabels.get(String(card.org)) || card.org) : "—";
+  const today = status_label + " · ред. від " +
+    (card.poddat ? fmtEd(card.poddat) : "—") +
+    (card.pridat ? " · чинності з " + fmtEd(card.pridat) : "");
+  const rows = [
+    ["назва", card.nazva || "—"],
+    ["статус", status_label],
+    ["відомство", org],
+    ["номер і дата", (card.orgnum && card.orgnum.trim() ? card.orgnum : "—") +
+      " від " + (card.orgdat ? fmtEd(card.orgdat) : "—")],
+    ["стан на сьогодні", today],
+  ];
+  for (const [k, v] of rows) {
+    const kl = document.createElement("span");
+    kl.className = "k";
+    kl.textContent = k;
+    const vs = document.createElement("span");
+    vs.textContent = v;
+    grid.appendChild(kl);
+    grid.appendChild(vs);
+  }
+  $("card-details").hidden = false;
+}
+
 async function loadText(edition) {
   if (!state.curNreg) return;
-  const enc = encNreg(state.curNreg);
+  const nreg = state.curNreg;
+  const enc = encNreg(nreg);
   setLive((edition ? "текст ред. " + fmtEd(edition) + " · " : "текст (поточна редакція) · ") + "pacing ≈5 с…");
   const pre = $("doc-text");
   pre.hidden = false;
@@ -413,11 +527,15 @@ async function loadText(edition) {
   if (edition) url += "?edition=" + encodeURIComponent(edition);
   try {
     const d = await api(url);
+    if (state.curNreg !== nreg) return;
     state.curText = d.text;
     renderDocText();
+    $("text-retry-row").hidden = true;
     setLive("");
   } catch (e) {
     pre.textContent = "Помилка: " + e.message;
+    $("text-retry-row").hidden = false;
+    setLive("");
   }
 }
 
@@ -547,7 +665,63 @@ async function loadAnnotations(nreg) {
         try { await api("/api/annotations/" + a.id, { method: "DELETE" }); loadAnnotations(nreg); }
         catch (e) { alert("Помилка: " + e.message); }
       };
-      li.appendChild(tag); li.appendChild(tx); li.appendChild(del);
+      // «змінити» → inline textarea + Зберегти/скасувати (PUT).
+      const ta = document.createElement("textarea");
+      ta.value = a.text || "";
+      ta.rows = 1;
+      ta.hidden = true;
+      const save = document.createElement("button");
+      save.className = "edit";
+      save.type = "button";
+      save.textContent = "Зберегти";
+      save.hidden = true;
+      const cancel = document.createElement("button");
+      cancel.className = "edit";
+      cancel.type = "button";
+      cancel.textContent = "скасувати";
+      cancel.hidden = true;
+      const editBtn = document.createElement("button");
+      editBtn.className = "edit";
+      editBtn.type = "button";
+      editBtn.textContent = "змінити";
+      const setMode = (editing) => {
+        tx.hidden = editing;
+        ta.hidden = !editing;
+        save.hidden = !editing;
+        cancel.hidden = !editing;
+        editBtn.hidden = editing;
+      };
+      editBtn.onclick = () => { setMode(true); ta.focus(); };
+      cancel.onclick = () => setMode(false);
+      save.onclick = async () => {
+        const t = ta.value.trim();
+        if (!t) { alert("Текст анотації не може бути порожнім."); return; }
+        save.disabled = true;
+        try {
+          await api("/api/annotations", {
+            method: "PUT",
+            body: JSON.stringify({ id: a.id, text: t }),
+          });
+        } catch (e) {
+          save.disabled = false;
+          alert("Помилка: " + e.message);
+          return;
+        }
+        loadAnnotations(nreg); // re-render + repaint the gold marks
+      };
+      li.appendChild(tag); li.appendChild(tx); li.appendChild(ta);
+      li.appendChild(save); li.appendChild(cancel); li.appendChild(editBtn);
+      // «→ текст» — scroll the document to the first occurrence.
+      if (a.text && (a.kind === "highlight" || a.kind === "comment")) {
+        const jump = document.createElement("button");
+        jump.className = "jump";
+        jump.type = "button";
+        jump.textContent = "→ текст";
+        jump.title = "Горнути до першого збігу в тексті";
+        jump.onclick = () => jumpToText(a.text);
+        li.appendChild(jump);
+      }
+      li.appendChild(del);
       ul.appendChild(li);
     }
     if (state.curText) renderDocText();
@@ -569,11 +743,25 @@ async function addAnn(kind, text, spanStart, spanEnd) {
 }
 
 // ---- arrivals -------------------------------------------------------------
+/// Scroll the reader to the first case-insensitive occurrence of `t`; reuses
+/// the find bar, so the match is highlighted like any other find hit.
+function jumpToText(t) {
+  if (!state.curText) { alert("Спочатку завантажте текст документа."); return; }
+  $("find-input").value = t;
+  runFind();
+  if (!findHits.length) {
+    $("find-input").value = "";
+    runFind();
+    alert("фрагмент не знайдено в поточній редакції");
+  }
+}
+
 async function loadArrivals() {
   const el = $("arrivals");
   el.textContent = "Завантаження живого фіду (pacing ≈5 с)…";
   try {
     const d = await api("/api/arrivals?limit=100");
+    arrivalsLoaded = true;
     el.innerHTML = "";
     if (!d.items.length) { el.textContent = "Фід порожній."; return; }
     for (const it of d.items) {
@@ -613,6 +801,8 @@ function switchTab(name) {
     $("tab-" + t).hidden = (t !== name);
   }
   if (name === "status") loadStatusTab();
+  // «нові документи» auto-loads the live feed on the first tab opening.
+  if (name === "arrivals" && !arrivalsLoaded) loadArrivals();
 }
 
 // ---- recent documents -----------------------------------------------------
@@ -663,10 +853,39 @@ function renderRecent() {
 document.querySelectorAll("header .tabs button").forEach(b =>
   b.addEventListener("click", () => switchTab(b.dataset.tab)));
 
-$("search-form").addEventListener("submit", (ev) => { ev.preventDefault(); doSearch(0); });
+$("search-form").addEventListener("submit", (ev) => {
+  ev.preventDefault();
+  if (!validDates()) return;
+  doSearch(0);
+});
 $("prev").onclick = () => doSearch(Math.max(0, state.offset - state.limit));
 $("next").onclick = () => doSearch(state.offset + state.limit);
 
+// ---- live nreg resolver (search tab) ---------------------------------------
+$("btn-resolve").onclick = async () => {
+  const text = $("resolve-input").value.trim();
+  if (!text) { alert("Введіть назву документа."); return; }
+  const btn = $("btn-resolve");
+  btn.disabled = true;
+  $("resolve-out").textContent = "шукаю за назвою (≈5 с)…";
+  $("resolve-open").hidden = true;
+  try {
+    const d = await api("/api/resolve?text=" + encodeURIComponent(text));
+    $("resolve-out").textContent = "знайдено: " + d.nreg;
+    $("resolve-open").onclick = () => openDoc(d.nreg);
+    $("resolve-open").hidden = false;
+  } catch (e) {
+    $("resolve-out").textContent = "Помилка: " + e.message;
+  }
+  btn.disabled = false;
+};
+$("resolve-input").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") { ev.preventDefault(); $("btn-resolve").click(); }
+});
+
+// ---- failed-part retries («ще раз») -----------------------------------------
+$("retry-card").onclick = () => loadCard();
+$("retry-text").onclick = () => loadText($("editions").value || "");
 $("editions").onchange = () => loadText($("editions").value || "");
 $("load-text").onclick = () => loadText($("editions").value || "");
 $("btn-bookmark").onclick = () => addAnn("bookmark", "", null, null);
@@ -772,6 +991,11 @@ document.addEventListener("keydown", (ev) => {
       ev.preventDefault();
       $("find-input").focus();
       $("find-input").select();
+    } else if (!$("tab-search").hidden) {
+      // No reader open: focus the search query instead of the browser find.
+      ev.preventDefault();
+      $("q").focus();
+      $("q").select();
     }
     return;
   }

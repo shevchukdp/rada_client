@@ -21,7 +21,7 @@ official open-data API:
 ## Features (implemented)
 
 - **Native GUI (egui 0.29)** — dark theme, Ukrainian labels:
-  - **Пошук** — local FTS5 search with filters (status/type/date/number),
+  - **Пошук** — local FTS5 search with filters (status/type/date/number/publisher),
     paging, live name resolver; **export of the results list** (.md/.txt);
     one-click **copy nreg** from any result row.
   - **Continue / recents** — the app persists the last opened documents and
@@ -30,9 +30,13 @@ official open-data API:
     last query.
   - **Keyboard shortcuts** — **Ctrl+F** focuses the find-in-text field (reader)
     or the query field (search); **Esc** clears the find query; **Alt+←/→**
-    pages through the results list from inside the reader.
+    pages through the results list from inside the reader; **Shift+Enter** steps
+    to the previous find match.
+  - **Favorites (Обране)** — every saved annotation across all documents on one
+    page: kind filters, one-click open, delete.
   - **Читалка** — live JSON card + clean text with an **edition switcher**,
-    `.md`/`.txt` export (annotations appended), **"find in text"**
+    `.md`/`.txt`/`.html` export (annotations appended; HTML inlines saved
+    highlights as gold marks), **"find in text"**
     (case-insensitive, match counter, » / « jump-to-match, matches highlighted),
     "open on the site" link, and **results paging** (‹ / › — move through the
     search results list you opened a document from).
@@ -57,8 +61,10 @@ official open-data API:
   create/restore`) and **`snapshot fetch`** (pull the published monthly
   snapshot straight from the GitHub release — no rebuild).
 - **Local web UI** (`web`) — one embedded HTML page (vanilla JS, zero
-  external assets) with the same search/reader/annotations/export, keyboard
-  shortcuts and a localStorage "recent documents" row.
+  external assets): search (with publisher filter + live name resolver),
+  reader, find-in-text, annotations with **inline editing**
+  (`PUT /api/annotations`), export (txt/md/html), keyboard shortcuts,
+  recent documents and auto-loaded «Нові документи».
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
 
@@ -95,6 +101,7 @@ Launch arguments:
 .\rada-client-gui.exe --query "закон про вищу освіту"   # start on Search, pre-filled
 .\rada-client-gui.exe --nreg 2041-15                     # open a document in the reader
 .\rada-client-gui.exe --start arrivals                    # start on the feed page
+.\rada-client-gui.exe --start favorites                   # start on the saved annotations page
 ```
 
 ### CLI (automation / advanced)
@@ -121,6 +128,13 @@ Launch arguments:
 
 # 4) Keep the index current.
 .\rada-client.exe sync                   # dictionaries + updated-documents feed
+
+#    Annotations live in the index (same store the GUI/web use).
+.\rada-client.exe annot list                         # every saved annotation
+.\rada-client.exe annot list 2041-15 --json
+.\rada-client.exe annot add 2041-15 highlight "текст виділення"
+.\rada-client.exe annot add 2341-14 comment "увага на розділ 3"
+.\rada-client.exe annot del 4
 
 # 5) Index statistics.
 .\rada-client.exe status
