@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-27
 
+### 0.9.0: резервне копіювання індексу прямо з Home / 0.9.0: index backup & restore from Home
+
+- **UKR:** 1) **Резервна копія** на головній сторінці: «Зберегти резервну копію» стискає поточний індекс у файл `.sqlite.gz` (той самий формат, що й місячні снапшоти), «Відновити з файлу ...» розгортає обрану копію замість поточної бази з перевіркою цілісності. 2) **Анотації зберігаються** в обох напрямках — перед відновленням копіюються й повертаються після нього; відновлення — з вікном підтвердження. 3) Файл копії отримує мітку дати в імені (UTC). 4) Тести: 43/43 (+тест датовання імен копій).
+- **ENG:** 1) **Backup section on the Home page**: «Зберегти резервну копію» gzip-compresses the current index into a `.sqlite.gz` file (same format as the monthly snapshots); «Відновити з файлу ...» restores a chosen copy over the current database with an integrity check. 2) **Annotations survive** both directions — backed up before a restore and re-attached after; restoring asks for confirmation. 3) Backup file names carry a UTC date stamp. 4) Tests: 43/43 (+backup name stamping test).
+
+---
+
+## 2026-10-27
+
 ### 0.8.0: форматування текстів — читалка розрізняє структуру акта / 0.8.0: structured texts — the reader now understands act anatomy
 
 - **UKR:** 1) **Структурне читання** в GUI: заголовок акта (ВЕЛИКИМИ), назва «Про …», блоки «(Відомості …)» та `{Із змінами …}` (приглушені), «РОЗДІЛ/ГЛАВА» (золоті), «Стаття N» (напівжирний більший шрифт), пункти «1.»/«2)» (відступ) — все класифікується на льоту. 2) **HTML-експорт** тепер структурований (`<p class=dt/ds/mt/sec/art/num>` зі стилями) замість суцільного `<pre>`; gold-виділення зберігаються. 3) **Веб**: той самий поділ рядків через класи `p-doctitle/p-subtitle/p-meta/p-section/p-article/p-num`, кольори з CSS-змінних теми; пошук і золоті мітки рахуються в межах рядків. 4) Тести: 42/42 (новий тест класифікації).

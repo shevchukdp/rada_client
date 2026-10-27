@@ -135,6 +135,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 fetch_controls(app, ui);
             }
 
+            ui.add_space(10.0);
+            backup_controls(app, ui);
+
             sync_log(app, ui);
 
             ui.add_space(18.0);
@@ -237,6 +240,80 @@ fn fetch_controls(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+/// Local backup / restore: gzip snapshot of the current index to a chosen
+/// file, and restore of the index from such a file (annotations preserved).
+fn backup_controls(app: &mut App, ui: &mut egui::Ui) {
+    let has_index = app.index_status.as_ref().map(|s| s.docs).unwrap_or(0) > 0;
+    egui::CollapsingHeader::new("Резервна копія")
+        .default_open(true)
+        .show(ui, |ui| {
+        ui.label(
+            "Збережіть поточний індекс у стиснений файл (.sqlite.gz) або відновіть його \
+             з раніше збереженої копії. Анотації зберігаються в обох випадках.",
+        );
+        ui.horizontal(|ui| {
+            if app.home.backup_busy {
+                ui.spinner();
+                ui.label("резервне копіювання / відновлення ...");
+            } else {
+                let bk = ui.add_enabled(
+                    has_index,
+                    egui::Button::new(egui::RichText::new("Зберегти резервну копію").strong()),
+                );
+                if bk.clicked() {
+                    app.run_backup();
+                }
+                let rs = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new("Відновити з файлу ...").color(gold()),
+                    ),
+                );
+                if rs.clicked() {
+                    app.home.confirm_restore = true;
+                }
+                if !has_index {
+                    ui.label(
+                        egui::RichText::new("(немає індексу — копіювати нічого)").small().weak(),
+                    );
+                }
+            }
+        });
+        },
+    );
+
+    if app.home.confirm_restore && !app.home.backup_busy {
+        egui::Window::new("Відновити індекс з файлу?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    "Оберіть файл копії (.sqlite.gz). Поточний індекс буде замінено:\n",
+                );
+                ui.label(app.db_path.display().to_string());
+                if has_index {
+                    ui.label("Ваші анотації збережуться і повернуться після відновлення.");
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Скасувати").clicked() {
+                        app.home.confirm_restore = false;
+                    }
+                    if ui
+                        .button(
+                            egui::RichText::new("Обрати файл ...")
+                                .strong()
+                                .color(gold()),
+                        )
+                        .clicked()
+                    {
+                        app.run_restore_local();
+                    }
+                });
+            });
+    }
+}
+
 fn sync_log(app: &mut App, ui: &mut egui::Ui) {
     if app.home.sync_log.is_empty() {
         return;
@@ -256,4 +333,8 @@ pub struct HomeState {
     pub fetch_running: bool,
     pub fetch_prog: Option<crate::app::FetchProg>,
     pub confirm_fetch: bool,
+    /// Local backup/restore worker is busy.
+    pub backup_busy: bool,
+    /// Restore-from-file confirmation window is open.
+    pub confirm_restore: bool,
 }

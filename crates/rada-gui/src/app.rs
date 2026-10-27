@@ -57,6 +57,10 @@ pub enum Msg {
     SyncDone(Outcome<(usize, usize)>),
     FetchProgress(FetchProg),
     FetchDone(Outcome<PathBuf>),
+    /// Local gzip backup of the index finished (file, bytes written).
+    Backup(Outcome<(PathBuf, u64)>),
+    /// Restore from a user-picked local snapshot file finished.
+    LocalRestore(Outcome<PathBuf>),
     Resolved {
         run: u64,
         res: Option<String>,
@@ -738,6 +742,72 @@ impl App {
         });
     }
 
+    /// Save a gzip snapshot of the current index through a save dialog
+    /// (same format as the published monthly snapshots).
+    pub fn run_backup(&mut self) {
+        if self.home.backup_busy {
+            return;
+        }
+        let stamp = backup_stamp();
+        let name = format!("rada-index-backup-{stamp}.sqlite.gz");
+        let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() else {
+            return;
+        };
+        self.home.backup_busy = true;
+        let db = self.db_path.clone();
+        self.spawn(move |tx| {
+            let res = rada_db::snapshot::create(&db, &path)
+                .map(|size| (path, size))
+                .map_err(|e| format!("{e:#}"));
+            let _ = tx.send(Msg::Backup(res));
+        });
+    }
+
+    /// Replace the local index with a user-picked snapshot file
+    /// (`.sqlite.gz`, e.g. one made by «Резервна копія»). Existing user
+    /// annotations are backed up first and re-attached afterwards.
+    pub fn run_restore_local(&mut self) {
+        if self.home.backup_busy {
+            return;
+        }
+        let Some(src) = rfd::FileDialog::new()
+            .add_filter("rada snapshot", &["gz", "sqlite"])
+            .pick_file()
+        else {
+            return;
+        };
+        self.home.backup_busy = true;
+        self.home.confirm_restore = false;
+        let db = self.db_path.clone();
+        self.spawn(move |tx| {
+            let keep = std::fs::metadata(&db)
+                .ok()
+                .and_then(|_| rada_db::open(&db).ok())
+                .map(|conn| rada_db::annotations::all(&conn).unwrap_or_default())
+                .unwrap_or_default();
+            let n = keep.len();
+            let outcome = (|| -> anyhow::Result<PathBuf> {
+                let restored = rada_db::snapshot::restore(&src, &db)?;
+                if !keep.is_empty() {
+                    let _ = tx.send(Msg::SyncLine(format!("повертаю {n} анотацій ...")));
+                    let mut conn = rada_db::open(&restored)?;
+                    for a in &keep {
+                        let _ = rada_db::annotations::insert(
+                            &mut conn,
+                            &a.nreg,
+                            &a.kind,
+                            &a.text,
+                            a.span_start,
+                            a.span_end,
+                        );
+                    }
+                }
+                Ok(restored)
+            })();
+            let _ = tx.send(Msg::LocalRestore(outcome.map_err(|e| format!("{e:#}"))));
+        });
+    }
+
     /// Export the currently open document (md/txt/html) through a save dialog.
     pub fn export_reader(&mut self, fmt: &str) {
         let Some(r) = self.reader.as_ref() else { return };
@@ -1050,6 +1120,33 @@ impl App {
                     Err(e) => self.toast(format!("fetch: {e}"), err()),
                 }
             }
+            Msg::Backup(res) => {
+                self.home.backup_busy = false;
+                match res {
+                    Ok((path, size)) => {
+                        let mb = size as f64 / 1_048_576.0;
+                        self.toast(
+                            format!("резервна копія: {} ({mb:.1} MB)", path.display()),
+                            ok(),
+                        );
+                    }
+                    Err(e) => self.toast(format!("резервна копія: {e}"), err()),
+                }
+            }
+            Msg::LocalRestore(res) => {
+                self.home.backup_busy = false;
+                match res {
+                    Ok(path) => {
+                        self.toast(
+                            format!("індекс відновлено з файлу: {}", path.display()),
+                            ok(),
+                        );
+                        self.refresh_index_state();
+                        self.refresh_dicts();
+                    }
+                    Err(e) => self.toast(format!("відновлення: {e}"), err()),
+                }
+            }
             Msg::Resolved { run, res } => {
                 if run == self.search.resolve_run {
                     self.search.resolve_loading = false;
@@ -1203,4 +1300,47 @@ fn sanitize(s: &str) -> String {
             c => c,
         })
         .collect()
+}
+
+/// «20261027-1530» stamp for backup file names (UTC, no external crates).
+fn backup_stamp() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    stamp_from_secs(secs)
+}
+
+/// Unix seconds -> «YYYYMMDD-HHMM» (UTC).
+fn stamp_from_secs(secs: u64) -> String {
+    // Civil-days algorithm (Howard Hinnant) -> Y-M-D from days since epoch.
+    let days = (secs / 86_400) as i64;
+    let rem = secs % 86_400;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}{m:02}{d:02}-{:02}{:02}", rem / 3600, (rem % 3600) / 60)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::stamp_from_secs;
+
+    #[test]
+    fn stamp_formats_utc_civil_date() {
+        // 1970-01-01 00:00:00
+        assert_eq!(stamp_from_secs(0), "19700101-0000");
+        // 2000-02-29 12:34:56 (leap day)
+        let secs = 951_827_696u64;
+        assert_eq!(stamp_from_secs(secs), "20000229-1234");
+        // 2026-10-27 00:00:00
+        assert_eq!(stamp_from_secs(20753 * 86_400), "20261027-0000");
+    }
 }
