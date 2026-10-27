@@ -14,7 +14,7 @@
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use rada_core::RadaClient;
 
@@ -170,6 +170,10 @@ enum AnnCmd {
     },
     /// Delete an annotation by id.
     Del { id: i64 },
+    /// Export all annotations as a portable JSON file.
+    Export { out: PathBuf },
+    /// Import annotations from a JSON file (array or {"annotations":[...]}).
+    Import { file: PathBuf },
 }
 
 fn main() {
@@ -491,6 +495,23 @@ fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
             } else {
                 println!("анотація #{id} не знайдена");
             }
+        }
+        AnnCmd::Export { out } => {
+            let json = rada_db::annotations::export_json(&conn)?;
+            if let Some(p) = out.parent() {
+                if !p.as_os_str().is_empty() {
+                    std::fs::create_dir_all(p).ok();
+                }
+            }
+            std::fs::write(&out, json)?;
+            let n = rada_db::annotations::all(&conn)?.len();
+            println!("експортовано {n} анотацій у {}", out.display());
+        }
+        AnnCmd::Import { file } => {
+            let raw = std::fs::read_to_string(&file)
+                .with_context(|| format!("read {}", file.display()))?;
+            let n = rada_db::annotations::import_json(&conn, &raw)?;
+            println!("імпортовано {n} анотацій з {}", file.display());
         }
     }
     Ok(())

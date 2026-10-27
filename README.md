@@ -48,9 +48,10 @@ official open-data API:
     search results list you opened a document from).
   - **Анотації** — bookmarks / comments / highlights, stored inside the
     index itself (survive snapshot restores — auto-backed-up), with **inline
-    text editing** («змінити»). Saved "highlight" annotations are **painted
-    gold in the document text**, with a "» текст" button that scrolls to the
-    passage.
+    text editing** («змінити»), **portable JSON export/import** (Favorites
+    page or CLI `annot export/import`), saved "highlight" annotations
+    **painted gold in the document text**, and a "» текст" button that
+    scrolls to the passage.
   - **Оновлення** — the live recently-updated feed (`r.tsv`), rows open the
     reader.
   - **Головна** — index status (documents, size, dictionaries),

@@ -55,6 +55,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 if app.fav.loading {
                     ui.spinner();
                 }
+                if ui
+                    .button(egui::RichText::new("⬇ Експорт .json").small())
+                    .on_hover_text("зберегти всі анотації в портативний JSON")
+                    .clicked()
+                {
+                    app.export_annotations();
+                }
+                if ui
+                    .button(egui::RichText::new("⬆ Імпорт .json").small())
+                    .on_hover_text("додати анотації з JSON-файлу")
+                    .clicked()
+                {
+                    app.import_annotations();
+                }
             });
         });
         if let Some(e) = &app.fav.error {

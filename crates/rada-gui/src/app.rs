@@ -51,6 +51,8 @@ pub enum Msg {
     },
     /// Every annotation + document title (favorites page).
     Favorites(Outcome<Vec<(rada_db::Annotation, String)>>),
+    /// Annotations imported from a JSON file (count imported).
+    AnnImported(Outcome<usize>),
     /// Live bulk-export progress (done / total documents).
     LiveExport { done: u64, total: u64 },
     SyncLine(String),
@@ -874,6 +876,45 @@ impl App {
         });
     }
 
+    /// Save all annotations as a portable JSON file through a save dialog.
+    pub fn export_annotations(&mut self) {
+        let default_name = format!("rada-annotations-{}.json", backup_stamp());
+        let Some(path) = rfd::FileDialog::new().set_file_name(default_name).save_file()
+        else {
+            return;
+        };
+        let db = self.db_path.clone();
+        self.spawn(move |tx| {
+            let res = (|| -> anyhow::Result<PathBuf> {
+                let conn = rada_db::open(&db)?;
+                let json = rada_db::annotations::export_json(&conn)?;
+                std::fs::write(&path, json)?;
+                Ok(path)
+            })();
+            let _ = tx.send(Msg::Exported(res.map_err(|e| format!("{e:#}"))));
+        });
+    }
+
+    /// Import annotations from a JSON file (array or `{"annotations":[...]}`)
+    /// picked through a file dialog. Existing rows are kept; valid entries are appended.
+    pub fn import_annotations(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("JSON", &["json"])
+            .pick_file()
+        else {
+            return;
+        };
+        let db = self.db_path.clone();
+        self.spawn(move |tx| {
+            let res = (|| -> anyhow::Result<usize> {
+                let raw = std::fs::read_to_string(&path)?;
+                let conn = rada_db::open(&db)?;
+                rada_db::annotations::import_json(&conn, &raw)
+            })();
+            let _ = tx.send(Msg::AnnImported(res.map_err(|e| format!("{e:#}"))));
+        });
+    }
+
     /// Export the currently open document (md/txt/html) through a save dialog.
     pub fn export_reader(&mut self, fmt: &str) {
         let Some(r) = self.reader.as_ref() else { return };
@@ -1133,6 +1174,16 @@ impl App {
                         self.fav.error = None;
                     }
                     Err(e) => self.fav.error = Some(e),
+                }
+            }
+            Msg::AnnImported(res) => {
+                self.fav.loaded = false; // force reload on next visit
+                match res {
+                    Ok(n) => {
+                        self.toast(format!("імпортовано {n} анотацій"), ok());
+                        self.load_favorites();
+                    }
+                    Err(e) => self.toast(format!("імпорт: {e}"), err()),
                 }
             }
             Msg::Arrivals { run, res } => {

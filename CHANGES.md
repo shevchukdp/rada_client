@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.9.2: переносні анотації — JSON експорт/імпорт / 0.9.2: portable annotations — JSON export/import
+
+- **UKR:** 1) **Експорт/імпорт анотацій** у портативний JSON — кнопка «⬇ Експорт .json» на сторінці «Обране» та команди CLI `annot export <файл>` / `annot import <файл>`. 2) Формат сумісний між GUI й CLI; імпорт приймає масив або `{"annotations":[...]}`, пропускає биті рядки, не чіпає наявні (дописує нові). 3) нові функції `annotations::export_json` / `import_json`. 4) Тести: 51/51 (+2 на round-trip та стійкість імпорту).
+- **ENG:** 1) **Export/import annotations** to portable JSON — a «⬇ Експорт .json» button on the Favorites page and CLI commands `annot export <file>` / `annot import <file>`. 2) The format is compatible between GUI and CLI; import accepts an array or `{"annotations":[...]}`, skips malformed rows and appends without touching existing ones. 3) New `annotations::export_json` / `import_json`. 4) Tests: 51/51 (+2 for round-trip and import robustness).
+
+---
+
+## 2026-10-28
+
 ### 0.9.1: керування даними з браузера + повна побудова індексу в GUI / 0.9.1: browser-driven data management + full index build in the GUI
 
 - **UKR:** 1) **Веб**: панель «Дані» — кнопки «Оновити наживо» та «Отримати снапшот» запускають фонові задачі прямо в браузері (нові ендпоінти `POST /api/jobs/sync|snapshot`, `GET /api/jobs`), зі статусом, журналом ходу й захистом від повторного запуску; після завершення лічильники оновлюються. 2) **GUI**: розділ «Повна побудова індексу (init)» на Home — завантаження офіційного `doc.txt` (~51 MB) через виміряний клієнт або імпорт з локального файлу дампу; upsert не чіпає анотацій. 3) Підтвердження перед побудовою, події у журналі дій. 4) Тести: 49/49 (реєстр задач, форми відповідей, сторінка).

@@ -127,6 +127,61 @@ pub fn all(conn: &Connection) -> Result<Vec<Annotation>> {
     Ok(out)
 }
 
+/// Portable annotation entry — the on-disk JSON exchange format.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AnnEntry {
+    pub nreg: String,
+    /// `bookmark` | `highlight` | `comment`.
+    pub kind: String,
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_start: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub span_end: Option<i64>,
+}
+
+/// Every annotation serialized as a pretty JSON array (portable backup).
+pub fn export_json(conn: &Connection) -> Result<String> {
+    let entries: Vec<AnnEntry> = all(conn)?
+        .into_iter()
+        .map(|a| AnnEntry {
+            nreg: a.nreg,
+            kind: a.kind,
+            text: a.text,
+            span_start: a.span_start,
+            span_end: a.span_end,
+        })
+        .collect();
+    serde_json::to_string_pretty(&entries).context("serialize annotations")
+}
+
+/// Insert entries from a JSON array (or `{"annotations": [...]}`); malformed
+/// or blank-nreg items are skipped. Returns the number imported.
+pub fn import_json(conn: &Connection, raw: &str) -> Result<usize> {
+    let v: serde_json::Value = serde_json::from_str(raw).context("parse annotations JSON")?;
+    let arr = if let Some(a) = v.as_array() {
+        a.clone()
+    } else if let Some(a) = v.get("annotations").and_then(|x| x.as_array()) {
+        a.clone()
+    } else {
+        return Err(anyhow!("expected a JSON array of annotations"));
+    };
+    let mut n = 0usize;
+    for item in arr {
+        let Ok(e) = serde_json::from_value::<AnnEntry>(item) else {
+            continue;
+        };
+        if e.nreg.trim().is_empty() || e.kind.trim().is_empty() {
+            continue;
+        }
+        // insert() validates kind/text; skip invalid rows instead of failing all.
+        if insert(conn, &e.nreg, &e.kind, &e.text, e.span_start, e.span_end).is_ok() {
+            n += 1;
+        }
+    }
+    Ok(n)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +243,47 @@ mod tests {
         insert(&conn, "2341-14", "comment", "krym", None, None).unwrap();
         assert_eq!(list(&conn, "2041-15").unwrap().len(), 1);
         assert_eq!(list(&conn, "2341-14").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn json_export_import_round_trip() {
+        let src = seeded();
+        insert(&src, "1556-18", "highlight", "ст. 1 вища освіта", Some(3), Some(20)).unwrap();
+        insert(&src, "1556-18", "bookmark", "", None, None).unwrap();
+        insert(&src, "2341-14", "comment", "корисний закон", None, None).unwrap();
+        let json = export_json(&src).unwrap();
+
+        let dst = seeded();
+        let n = import_json(&dst, &json).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(all(&dst).unwrap().len(), 3);
+        let h = list(&dst, "1556-18")
+            .unwrap()
+            .into_iter()
+            .find(|a| a.kind == "highlight")
+            .unwrap();
+        assert_eq!(h.text, "ст. 1 вища освіта");
+        assert_eq!(h.span_start, Some(3));
+        assert_eq!(h.span_end, Some(20));
+    }
+
+    #[test]
+    fn json_import_is_lenient_and_strict_where_it_matters() {
+        let conn = seeded();
+        // wrapped object form + junk items are skipped, valid ones land.
+        let n = import_json(
+            &conn,
+            r#"{"annotations":[
+                 {"nreg":"1-1","kind":"bookmark","text":""},
+                 {"nreg":"  ","kind":"bookmark","text":""},
+                 {"nreg":"1-1","kind":"note","text":"bad kind"},
+                 {"kind":"bookmark","text":"no nreg"}
+               ]}"#,
+        )
+        .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(all(&conn).unwrap().len(), 1);
+        // non-JSON is a hard error.
+        assert!(import_json(&conn, "не json").is_err());
     }
 }
