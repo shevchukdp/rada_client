@@ -9,20 +9,26 @@ const KB: f64 = 1_048_576.0;
 pub fn show(app: &mut App, ctx: &egui::Context) {
     egui::CentralPanel::default().show(ctx, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
-            if !app.settings.last_nreg.is_empty() {
-                ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("Продовжити:").strong());
-                    let title: String =
-                        app.settings.last_title.chars().take(80).collect();
-                    let label = if title.trim().is_empty() {
-                        app.settings.last_nreg.clone()
-                    } else {
-                        format!("{} — {}", app.settings.last_nreg, title)
-                    };
-                    if ui.button(egui::RichText::new(label).small()).clicked() {
-                        let nreg = app.settings.last_nreg.clone();
-                        let title = app.settings.last_title.clone();
-                        app.open_reader_by_nreg(&nreg, &title, 0, "", "", "");
+            let recents = app.settings.recents.clone();
+            if !recents.is_empty() {
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Останні документи:").strong());
+                    for (n, t) in recents.iter().take(6) {
+                        let full: Vec<char> = t.chars().collect();
+                        let short: String = full.iter().take(38).collect();
+                        let title = if full.len() > 38 {
+                            format!("{short}…")
+                        } else {
+                            short
+                        };
+                        let label = if title.trim().is_empty() {
+                            n.clone()
+                        } else {
+                            format!("{n} — {title}")
+                        };
+                        if ui.button(egui::RichText::new(label).small()).clicked() {
+                            app.open_reader_by_nreg(n, t, 0, "", "", "");
+                        }
                     }
                 });
                 ui.add_space(6.0);

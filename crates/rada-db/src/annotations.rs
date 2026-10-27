@@ -79,6 +79,19 @@ pub fn insert(
     Ok(conn.last_insert_rowid())
 }
 
+/// Replace the text of an annotation in place (keeps id/kind/span/created_at).
+/// Returns whether a row was updated.
+pub fn set_text(conn: &Connection, id: i64, text: &str) -> Result<bool> {
+    if text.trim().is_empty() {
+        return Err(anyhow!("annotation text must not be empty"));
+    }
+    let n = conn.execute(
+        "UPDATE annotations SET text = ?2 WHERE id = ?1",
+        params![id, text],
+    )?;
+    Ok(n > 0)
+}
+
 /// Delete by id; returns whether a row was removed.
 pub fn remove(conn: &Connection, id: i64) -> Result<bool> {
     let n = conn.execute("DELETE FROM annotations WHERE id = ?1", [id])?;
@@ -136,6 +149,19 @@ mod tests {
         assert!(items[0].text.is_empty());
         assert!(remove(&conn, id).unwrap());
         assert!(list(&conn, "2341-14").unwrap().is_empty());
+    }
+
+    #[test]
+    fn set_text_edits_in_place() {
+        let conn = seeded();
+        let id = insert(&conn, "2341-14", "highlight", "ст. 3", Some(12), Some(17)).unwrap();
+        assert!(set_text(&conn, id, "ст. 3 — уточнення").unwrap());
+        let items = list(&conn, "2341-14").unwrap();
+        assert_eq!(items[0].text, "ст. 3 — уточнення");
+        assert_eq!(items[0].span_start, Some(12)); // position kept, same id
+        assert_eq!(items[0].id, id);
+        assert!(set_text(&conn, id, "   ").is_err());
+        assert!(!set_text(&conn, 999_999, "не існує").unwrap());
     }
 
     #[test]

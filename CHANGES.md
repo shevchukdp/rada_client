@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-27
 
+### 0.5.0: клавіатура й останні документи — швидкі клавіші, список останніх, редагування анотацій / 0.5.0: keyboard & recents — shortcuts, recent-documents chips, annotation editing
+
+- **UKR:** 1) **Гарячі клавіші**: Ctrl+F фокусує «знайти в тексті» (читалка) або поле «Заголовок» (Пошук, не відкриває віконного пошуку), Esc у полі пошуку очищає запит, Alt+← і Alt+→ гортають документи у межах списку результатів прямо з читалки. 2) **«Останні документи»**: на «Головній» — чіп-список щойно відкритих документів (до 10 у settings.ini, показуємо 6; старі записи v0.4 стають першим чіпом автоматично). 3) **Редагування анотацій**: кнопка «змінити» при кожній анотації — редактор на місці, без перестворення; виділення зберігають позицію в тексті. 4) **Веб**: той самий набір клавіш (Ctrl+F, Esc, ←/→ між результатами), рядок «Останні» у пошуку (localStorage, до 8), і виправлено «залиплі» підсвітки при скиданні запиту. 5) API `annotations::set_text`; тести: 37/37.
+- **ENG:** 1) **Keyboard shortcuts**: Ctrl+F focuses the find-in-text field (reader) or the title field (search — the OS find window is suppressed), Esc in the find field clears the query, Alt+← / Alt+→ page through the search-results list without leaving the reader. 2) **"Recent documents"**: Home shows chips of the last opened documents (up to 10 in settings.ini, 6 rendered; pre-v0.5 "last document" entries migrate into the first chip). 3) **Annotation editing**: a «змінити» button per annotation — inline editor, no delete-and-retype; highlights keep their text position. 4) **Web**: the same keyboard set (Ctrl+F, Esc, ←/→ across the results list), a "Recent" row under the search form (localStorage, up to 8), plus stale find-highlight clearing is fixed. 5) New `annotations::set_text` API; tests: 37/37.
+
+---
+
+## 2026-10-27
+
 ### 0.4.0: зручність і паритет — копіювання ідентифікаторів, «Продовжити», веб-паритет, фікс snapshot fetch / 0.4.0: convenience & parity — copy ids, "Continue", web parity, snapshot-fetch fix
 
 - **UKR:** 1) **Копіювання ідентифікаторів**: кнопка «копія» при кожному результаті пошуку та «копіювати» біля «рег. №» у читалці — nreg летить у буфер обміну. 2) **«Продовжити»**: додаток зберігає останній відкритий документ і останній запит (%LOCALAPPDATA%\rada-client\settings.ini) і на «Головній» показує картку «Продовжити: №… — назва»; поле пошуку підвантажує останній запит. 3) **Паритет веб-інтерфейсу**: у браузерному перегляді документа — золоті виділення анотацій просто в тексті, панель «знайти в тексті» (підрахунок збігів, ⌃/⌄, автогортіння), кнопки копіювання nreg; усе без нових залежностей. 4) **Виправлено snapshot fetch**: пошук свіжого снапшота тепер шукає *.sqlite.gz по всіх релізах, а не лише в «останньому» — релізи програми більше не перекривають доступ до індексного снапшота. 5) Testi: 34/34.

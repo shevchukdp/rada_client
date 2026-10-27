@@ -10,6 +10,21 @@ pub struct Settings {
     pub last_nreg: String,
     pub last_title: String,
     pub last_query: String,
+    /// Recently opened documents, newest first: `(nreg, title)`, max 10.
+    pub recents: Vec<(String, String)>,
+}
+
+/// Push a document to the front of the recent list (dedup by nreg, cap 10)
+/// and refresh the "last opened" fields.
+pub fn remember(s: &mut Settings, nreg: &str, title: &str) {
+    if nreg.trim().is_empty() {
+        return;
+    }
+    s.last_nreg = nreg.to_string();
+    s.last_title = title.to_string();
+    s.recents.retain(|(n, _)| n != nreg);
+    s.recents.insert(0, (nreg.to_string(), title.to_string()));
+    s.recents.truncate(10);
 }
 
 pub fn path() -> Option<PathBuf> {
@@ -44,21 +59,34 @@ fn parse(text: &str) -> Settings {
                 "last_nreg" => s.last_nreg = v.trim().to_string(),
                 "last_title" => s.last_title = v.trim().to_string(),
                 "last_query" => s.last_query = v.trim().to_string(),
+                "recent" => {
+                    if let Some((n, t)) = v.split_once('\t') {
+                        s.recents.push((n.to_string(), t.to_string()));
+                    }
+                }
                 _ => {}
             }
         }
+    }
+    // settings from v0.4 (only a "last" pair): seed the list from it
+    if s.recents.is_empty() && !s.last_nreg.is_empty() {
+        s.recents.push((s.last_nreg.clone(), s.last_title.clone()));
     }
     s
 }
 
 fn render(s: &Settings) -> String {
-    let clean = |v: &str| v.replace(['\r', '\n'], " ");
-    format!(
+    let clean = |v: &str| v.replace(['\r', '\n', '\t'], " ");
+    let mut out = format!(
         "last_nreg={}\nlast_title={}\nlast_query={}\n",
         clean(&s.last_nreg),
         clean(&s.last_title),
         clean(&s.last_query),
-    )
+    );
+    for (n, t) in &s.recents {
+        out.push_str(&format!("recent={}\t{}\n", clean(n), clean(t)));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -71,6 +99,10 @@ mod tests {
             last_nreg: "2041-15".into(),
             last_title: "Про проведення слухань".into(),
             last_query: "податковий кодекс".into(),
+            recents: vec![
+                ("2041-15".into(), "Про проведення слухань".into()),
+                ("16-15".into(), "Про доступ до публічної інформації".into()),
+            ],
         };
         let p = std::env::temp_dir().join("rada-settings-test.ini");
         save_to(&p, &s).unwrap();
@@ -87,5 +119,27 @@ mod tests {
     fn missing_file_is_default() {
         assert_eq!(parse(""), Settings::default());
         assert_eq!(parse("junk line\nlast_nreg=1-2\n").last_nreg, "1-2");
+    }
+
+    #[test]
+    fn v04_settings_seed_one_recent() {
+        let s = parse("last_nreg=2041-15\nlast_title=Title\nlast_query=q\n");
+        assert_eq!(s.recents, vec![("2041-15".into(), "Title".into())]);
+    }
+
+    #[test]
+    fn remember_dedupes_and_caps() {
+        let mut s = Settings::default();
+        for i in 0..12 {
+            remember(&mut s, &format!("{i}-26"), "t");
+        }
+        assert_eq!(s.recents.len(), 10);
+        assert_eq!(s.recents[0], ("11-26".into(), "t".into()));
+        remember(&mut s, "5-26", "t2");
+        assert_eq!(s.recents.len(), 10);
+        assert_eq!(s.recents[0], ("5-26".into(), "t2".into()));
+        assert_eq!(s.recents.iter().filter(|(n, _)| n == "5-26").count(), 1);
+        assert_eq!(s.last_nreg, "5-26");
+        assert_eq!(s.last_title, "t2");
     }
 }

@@ -120,6 +120,15 @@ pub struct App {
     pub toasts: Vec<Toast>,
     /// Last opened doc / last query, persisted for "Continue".
     pub settings: crate::settings::Settings,
+    /// Widget a global shortcut (Ctrl+F) asked to focus this frame.
+    focus_req: Option<FocusReq>,
+}
+
+/// Widget that a global shortcut asked to focus.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum FocusReq {
+    ReaderFind,
+    SearchQuery,
 }
 
 pub struct Toast {
@@ -155,6 +164,7 @@ impl App {
             index_status: None,
             toasts: Vec::new(),
             settings: crate::settings::load(),
+            focus_req: None,
         };
         if startup.query.is_none() && startup.nreg.is_none() {
             app.search.query = app.settings.last_query.clone();
@@ -215,6 +225,16 @@ impl App {
     {
         let tx = self.tx.clone();
         std::thread::spawn(move || f(tx));
+    }
+
+    /// True (exactly once) if this frame's shortcut asked for `want` focus.
+    pub fn take_focus(&mut self, want: FocusReq) -> bool {
+        if self.focus_req == Some(want) {
+            self.focus_req = None;
+            true
+        } else {
+            false
+        }
     }
 
     pub fn refresh_index_state(&mut self) {
@@ -298,8 +318,7 @@ impl App {
     pub fn open_reader(&mut self, hit: rada_db::SearchHit) {
         self.page = Page::Reader;
         self.nav = None;
-        self.settings.last_nreg = hit.nreg.clone();
-        self.settings.last_title = hit.nazva.clone();
+        crate::settings::remember(&mut self.settings, &hit.nreg, &hit.nazva);
         crate::settings::save(&self.settings);
         let mut r = views::ReaderState::new(hit);
         let card_run = self.next_run();
@@ -464,6 +483,28 @@ impl App {
                 rada_db::annotations::remove(&conn, id).map_err(|e| e.to_string())
             })();
             let _ = tx.send(Msg::AnnotationDeleted(res));
+        });
+    }
+
+    /// Replace the text of an existing annotation in place, then re-list it.
+    pub fn edit_annotation(&mut self, id: i64, text: String) {
+        let Some(r) = self.reader.as_ref() else { return };
+        let nreg = r.hit.nreg.clone();
+        let text = text.trim().to_string();
+        if text.is_empty() {
+            self.toast("текст анотації порожній", err());
+            return;
+        }
+        let db = self.db_path.clone();
+        self.spawn(move |tx| {
+            let out = (|| -> Outcome<Vec<rada_db::Annotation>> {
+                let conn = rada_db::open(&db).map_err(|e| e.to_string())?;
+                if !rada_db::annotations::set_text(&conn, id, &text).map_err(|e| e.to_string())? {
+                    return Err("анотацію не знайдено".to_string());
+                }
+                rada_db::annotations::list(&conn, &nreg).map_err(|e| e.to_string())
+            })();
+            let _ = tx.send(Msg::Annotations { nreg, res: out });
         });
     }
 
@@ -875,6 +916,27 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_messages();
+
+        // ---- global keyboard shortcuts ---------------------------------
+        // Ctrl+F: focus the find field (reader) or the query field (search).
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
+            self.focus_req = match self.page {
+                Page::Reader => Some(FocusReq::ReaderFind),
+                Page::Search => Some(FocusReq::SearchQuery),
+                _ => None,
+            };
+        }
+        // Alt+Left/Right: prev/next document inside the reader.
+        let alt_prev = ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowLeft));
+        let alt_next = ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowRight));
+        if self.page == Page::Reader && self.nav.is_some() {
+            if alt_prev {
+                self.nav_step(-1);
+            }
+            if alt_next {
+                self.nav_step(1);
+            }
+        }
 
         // toast lifetime
         self.toasts

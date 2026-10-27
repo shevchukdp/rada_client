@@ -748,6 +748,10 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("id=\"find-next\""));
         assert!(ui::INDEX_HTML.contains("id=\"btn-copy-nreg\""));
         assert!(ui::INDEX_HTML.contains("execCommand"));
+        // Recent-documents row (localStorage `rada-recent`) and the Ctrl+F
+        // shortcut that redirects browser find into the reader's find bar.
+        assert!(ui::INDEX_HTML.contains("id=\"rada-recent\""));
+        assert!(ui::INDEX_HTML.contains("// Ctrl+F / Cmd+F opens the document find bar instead of the browser find."));
     }
 
     #[test]

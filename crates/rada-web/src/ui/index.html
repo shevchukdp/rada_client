@@ -64,6 +64,16 @@
   .hit a { color: var(--fg); text-decoration: none; font-weight: 500; }
   .hit .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
   .pager { display: flex; gap: 10px; align-items: center; margin: 12px 0; }
+  #rada-recent .chip {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--line);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #rada-recent .chip:hover { color: var(--fg); border-color: var(--accent); }
+  #rada-recent .clear {
+    background: transparent; border: none; color: var(--muted);
+    cursor: pointer; padding: 0 4px;
+  }
+  #rada-recent .clear:hover { color: var(--err); }
   pre#doc-text {
     background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
     padding: 14px; white-space: pre-wrap; font-family: "Consolas", monospace;
@@ -120,6 +130,11 @@
       <input id="f-date-to" placeholder="До 20261231" size="12">
       <button class="primary" type="submit">Пошук</button>
     </form>
+    <div class="row" id="rada-recent" hidden>
+      <span class="hint">Останні:</span>
+      <span id="recent-chips"></span>
+      <button id="recent-clear" class="clear" type="button" title="Очистити історію">✕</button>
+    </div>
     <div id="results-meta"></div>
     <div id="results"></div>
     <div class="pager">
@@ -273,6 +288,7 @@ async function init() {
   }
   fillDict("f-status", "status");
   fillDict("f-typ", "typs");
+  renderRecent();
   doSearch(0);
 }
 
@@ -362,6 +378,7 @@ async function openDoc(nreg) {
     const d = await api("/api/doc/" + enc + "/card");
     state.curCard = d.card;
     $("doc-head").textContent = d.card.nazva + "  [" + d.status_label + "]";
+    rememberRecent(nreg, d.card.nazva);
     const sel = $("editions");
     sel.innerHTML = "";
     const cur = document.createElement("option");
@@ -381,6 +398,7 @@ async function openDoc(nreg) {
   } catch (e) {
     $("doc-head").textContent = "Помилка картки: " + e.message;
     setLive("");
+    rememberRecent(nreg, "");
   }
 }
 
@@ -441,7 +459,6 @@ function goldHtml(text) {
 
 function renderDocText() {
   if (!state.curText) return;
-  $("doc-text").innerHTML = goldHtml(state.curText);
   runFind();
 }
 
@@ -463,12 +480,13 @@ function runFind() {
   findHits = [];
   findIdx = -1;
   const q = $("find-input").value;
+  const pre = $("doc-text");
+  if (state.curText) pre.innerHTML = goldHtml(state.curText);
   if (!q || !state.curText) {
     $("find-count").textContent = "";
     return;
   }
   const lowQ = q.toLowerCase();
-  const pre = $("doc-text");
   const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
   const nodes = [];
   while (walker.nextNode()) nodes.push(walker.currentNode);
@@ -597,6 +615,50 @@ function switchTab(name) {
   if (name === "status") loadStatusTab();
 }
 
+// ---- recent documents -----------------------------------------------------
+// localStorage key holding the last RECENT_MAX opened documents
+// ({nreg, title, at}, newest first, deduped by nreg).
+const RECENT_KEY = "rada-recent";
+const RECENT_MAX = 8;
+
+function getRecent() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(RECENT_KEY) || "[]");
+    return Array.isArray(arr) ? arr.filter(r => r && typeof r.nreg === "string") : [];
+  } catch (_) { return []; }
+}
+
+function rememberRecent(nreg, title) {
+  const list = getRecent().filter(r => r.nreg !== nreg);
+  list.unshift({ nreg, title: title || "", at: new Date().toISOString() });
+  try { localStorage.setItem(RECENT_KEY, JSON.stringify(list.slice(0, RECENT_MAX))); }
+  catch (_) {}
+  renderRecent();
+}
+
+function clearRecent() {
+  try { localStorage.removeItem(RECENT_KEY); } catch (_) {}
+  renderRecent();
+}
+
+function renderRecent() {
+  const row = $("rada-recent");
+  const box = $("recent-chips");
+  box.innerHTML = "";
+  const items = getRecent().slice(0, RECENT_MAX);
+  row.hidden = items.length === 0;
+  for (const r of items) {
+    const chip = document.createElement("button");
+    chip.className = "chip";
+    chip.type = "button";
+    chip.title = r.nreg;
+    const t = r.title || r.nreg;
+    chip.textContent = t.length > 40 ? t.slice(0, 40) + "…" : t;
+    chip.onclick = () => openDoc(r.nreg);
+    box.appendChild(chip);
+  }
+}
+
 // ---- wiring ---------------------------------------------------------------
 document.querySelectorAll("header .tabs button").forEach(b =>
   b.addEventListener("click", () => switchTab(b.dataset.tab)));
@@ -631,6 +693,14 @@ $("btn-copy-nreg").onclick = () => {
 $("find-input").addEventListener("input", () => runFind());
 $("find-input").addEventListener("keydown", (ev) => {
   if (ev.key === "Enter") { ev.preventDefault(); showFind(ev.shiftKey ? -1 : 1, true); }
+  else if (ev.key === "Escape") {
+    // Esc clears the find highlights and leaves the field.
+    ev.preventDefault();
+    $("find-input").value = "";
+    if (state.curText) renderDocText();
+    else { findHits = []; findIdx = -1; $("find-count").textContent = ""; }
+    $("find-input").blur();
+  }
 });
 $("find-prev").onclick = () => showFind(-1, true);
 $("find-next").onclick = () => showFind(1, true);
@@ -675,6 +745,40 @@ $("bulk-export").onclick = async () => {
 
 $("arrivals-load").onclick = loadArrivals;
 $("status-refresh").onclick = loadStatusTab;
+$("recent-clear").onclick = clearRecent;
+
+// ---- keyboard shortcuts ---------------------------------------------------
+function isTypingTarget(ev) {
+  const t = ev.target;
+  if (!t) return false;
+  const tag = (t.tagName || "").toLowerCase();
+  return tag === "input" || tag === "textarea" || tag === "select" ||
+    t.isContentEditable === true;
+}
+
+function navDoc(delta) {
+  if ($("doc-pane").hidden || !state.curNreg) return;
+  const i = state.nregs.indexOf(state.curNreg);
+  if (i < 0) return; // no results context for this doc — stay put
+  const j = i + delta;
+  if (j >= 0 && j < state.nregs.length) openDoc(state.nregs[j]);
+}
+
+// Ctrl+F / Cmd+F opens the document find bar instead of the browser find.
+document.addEventListener("keydown", (ev) => {
+  const mod = ev.ctrlKey || ev.metaKey;
+  if (mod && !ev.altKey && (ev.key === "f" || ev.key === "F")) {
+    if (!$("doc-pane").hidden) {
+      ev.preventDefault();
+      $("find-input").focus();
+      $("find-input").select();
+    }
+    return;
+  }
+  if (mod || ev.altKey || ev.shiftKey || isTypingTarget(ev)) return;
+  if (ev.key === "ArrowLeft") navDoc(-1);
+  else if (ev.key === "ArrowRight") navDoc(1);
+});
 
 init();
 </script>

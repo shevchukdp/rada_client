@@ -12,11 +12,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             .spacing([12.0, 6.0])
             .show(ui, |ui| {
                 ui.label("Заголовок");
+                let want_q = app.take_focus(crate::app::FocusReq::SearchQuery);
                 let q = ui.add_sized(
                     [340.0, 26.0],
                     egui::TextEdit::singleline(&mut app.search.query)
                         .hint_text("2+ слів → FTS5, 1 слово → підстрока"),
                 );
+                if want_q {
+                    q.request_focus();
+                }
                 if q.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
                     app.run_search();
                 }

@@ -31,6 +31,9 @@ pub struct ReaderState {
     pub find_cur: usize,
     /// Next/prev match was requested — scroll on the next render.
     pub find_scroll: bool,
+    /// Annotation being edited inline (`edit_annotation`): (id, draft).
+    pub edit_id: Option<i64>,
+    pub edit_text: String,
 }
 
 pub const ANN_KINDS: [&str; 3] = ["Коментар", "Закладка", "Виділення"];
@@ -57,6 +60,8 @@ impl ReaderState {
             find: String::new(),
             find_cur: 0,
             find_scroll: false,
+            edit_id: None,
+            edit_text: String::new(),
         }
     }
 
@@ -390,10 +395,18 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let mut q = app.reader.as_ref().unwrap().find.clone();
             let before = q.clone();
+            let want_f = app.take_focus(crate::app::FocusReq::ReaderFind);
             let resp = ui.add_sized(
                 [240.0, 24.0],
                 egui::TextEdit::singleline(&mut q).hint_text("знайти в тексті ..."),
             );
+            if want_f {
+                resp.request_focus();
+            } else if resp.has_focus()
+                && ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Escape))
+            {
+                q.clear();
+            }
             if q != before {
                 let r = app.reader.as_mut().unwrap();
                 r.find = q.clone();
@@ -735,6 +748,7 @@ fn annotations_panel(app: &mut App, ui: &mut egui::Ui) {
         }
         let mut del: Option<i64> = None;
         let mut jump_to: Option<String> = None;
+        let mut open_edit: Option<(i64, String)> = None;
         for a in &list {
             let (kind, color) = match a.kind.as_str() {
                 "highlight" => ("виділення", gold()),
@@ -756,9 +770,14 @@ fn annotations_panel(app: &mut App, ui: &mut egui::Ui) {
                         }
                     });
                     ui.label(egui::RichText::new(&a.text));
-                    if ui.button(egui::RichText::new("✕ видалити").small()).clicked() {
-                        del = Some(a.id);
-                    }
+                    ui.horizontal(|ui| {
+                        if ui.button(egui::RichText::new("змінити").small()).clicked() {
+                            open_edit = Some((a.id, a.text.clone()));
+                        }
+                        if ui.button(egui::RichText::new("✕ видалити").small()).clicked() {
+                            del = Some(a.id);
+                        }
+                    });
                 });
         }
         if let Some(j) = jump_to {
@@ -767,7 +786,37 @@ fn annotations_panel(app: &mut App, ui: &mut egui::Ui) {
         if let Some(id) = del {
             app.delete_annotation(id);
         }
+        if let Some((id, t)) = open_edit {
+            let r = app.reader.as_mut().unwrap();
+            r.edit_id = Some(id);
+            r.edit_text = t;
+        }
     });
+
+    // ---- inline edit of one annotation --------------------------------
+    if let Some(id) = app.reader.as_ref().unwrap().edit_id {
+        ui.separator();
+        ui.strong(format!("Зміна тексту анотації #{id}"));
+        ui.add_sized(
+            [ui.available_width(), 54.0],
+            egui::TextEdit::multiline(&mut app.reader.as_mut().unwrap().edit_text)
+                .hint_text("новий текст анотації"),
+        );
+        ui.horizontal(|ui| {
+            if ui.button(egui::RichText::new("💾 Зберегти").strong()).clicked() {
+                let t = app.reader.as_ref().unwrap().edit_text.clone();
+                app.edit_annotation(id, t);
+                let r = app.reader.as_mut().unwrap();
+                r.edit_id = None;
+                r.edit_text.clear();
+            }
+            if ui.button("скасувати").clicked() {
+                let r = app.reader.as_mut().unwrap();
+                r.edit_id = None;
+                r.edit_text.clear();
+            }
+        });
+    }
 
     ui.add_space(10.0);
     ui.separator();
