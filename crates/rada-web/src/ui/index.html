@@ -268,10 +268,32 @@
     cursor: pointer; padding: 0 4px;
   }
   #rada-recent .clear:hover { color: var(--err); }
-  pre#doc-text {
+  #doc-text {
     background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
-    padding: 14px; white-space: pre-wrap; font-family: "Consolas", monospace;
-    font-size: 14px; max-height: 60vh; overflow: auto;
+    padding: 14px; font-size: 15px; max-height: 60vh; overflow: auto;
+  }
+  /* Structured document text: each line of the act is one classified block. */
+  #doc-text .p-doctitle {
+    text-align: center; color: var(--accent); font-weight: 700;
+    font-size: 1.25em; letter-spacing: .03em; margin: 10px 0 4px;
+  }
+  #doc-text .p-subtitle {
+    text-align: center; font-weight: 700; margin: 0 0 10px;
+  }
+  #doc-text .p-meta {
+    color: var(--muted); font-size: .9em; margin: 2px 0;
+  }
+  #doc-text .p-section {
+    font-weight: 700; color: var(--link); margin: 18px 0 6px;
+  }
+  #doc-text .p-article {
+    font-weight: 700; font-size: 1.08em; margin: 14px 0 4px;
+  }
+  #doc-text .p-num {
+    padding-left: 18px; text-indent: 0; margin: 3px 0;
+  }
+  #doc-text .p-plain {
+    text-indent: 24px; margin: 3px 0;
   }
   mark.hl { background: var(--hl-bg); color: var(--hl-fg); border-radius: 2px; }
   mark.find { background: var(--find-bg); color: var(--find-fg); border-radius: 2px; }
@@ -445,7 +467,7 @@
       <button id="find-next" type="button" title="Наступний збіг">↓</button>
       <span id="find-count" class="hint"></span>
     </div>
-    <pre id="doc-text" hidden></pre>
+    <div id="doc-text" hidden></div>
     <div class="row" id="text-retry-row" hidden>
       <button id="retry-text" type="button" title="Завантажити текст ще раз">ще раз</button>
       <span class="hint">не вдалося отримати текст (живий API)</span>
@@ -741,9 +763,9 @@ async function loadText(edition) {
   const nreg = state.curNreg;
   const enc = encNreg(nreg);
   setLive((edition ? "текст ред. " + fmtEd(edition) + " · " : "текст (поточна редакція) · ") + "pacing ≈5 с…");
-  const pre = $("doc-text");
-  pre.hidden = false;
-  pre.textContent = "Завантаження тексту…";
+  const el = $("doc-text");
+  el.hidden = false;
+  el.textContent = "Завантаження тексту…";
   let url = "/api/doc/" + enc + "/text";
   if (edition) url += "?edition=" + encodeURIComponent(edition);
   try {
@@ -754,7 +776,7 @@ async function loadText(edition) {
     $("text-retry-row").hidden = true;
     setLive("");
   } catch (e) {
-    pre.textContent = "Помилка: " + e.message;
+    el.textContent = "Помилка: " + e.message;
     $("text-retry-row").hidden = false;
     setLive("");
   }
@@ -785,15 +807,87 @@ function goldRanges(text) {
   return merged;
 }
 
-/// Escape the document text once, then wrap the highlight ranges in <mark>.
-function goldHtml(text) {
-  let html = "", pos = 0;
-  for (const [s, e] of goldRanges(text)) {
-    if (s > pos) html += escHtml(text.slice(pos, s));
-    html += '<mark class="hl">' + escHtml(text.slice(s, e)) + "</mark>";
-    pos = e;
+/// Document titles recognized anywhere in the act text; the first non-empty
+/// ALL-CAPS line is treated as a title as well (e.g. «ЗАКОН УКРАЇНИ»).
+const DOC_TITLES = [
+  "ЗАКОН УКРАЇНИ",
+  "УКАЗ ПРЕЗИДЕНТА УКРАЇНИ",
+  "ПОСТАНОВА ВЕРХОВНОЇ РАДИ УКРАЇНИ",
+];
+
+function isAllCaps(t) {
+  return /\p{L}/u.test(t) && t === t.toUpperCase();
+}
+
+/// Classify one trimmed line of a Rada act text into a `p-*` block class.
+/// `ctx` carries the multi-line state: whether we are inside a `{…}`
+/// amendments block, whether any text was seen yet (→ first ALL-CAPS line),
+/// and whether the previous non-empty line was a document title (→ the next
+/// non-empty line is the subtitle). Blank lines return "" and are dropped —
+/// the blocks carry their own margins.
+function classifyLine(t, ctx) {
+  if (ctx.inBrace) {
+    if (t.endsWith("}")) ctx.inBrace = false;
+    return "p-meta";
   }
-  return html + escHtml(text.slice(pos));
+  if (!t) return "";
+  if (t[0] === "{") {
+    if (!t.endsWith("}")) ctx.inBrace = true;
+    return "p-meta";
+  }
+  if (t[0] === "(" && t.endsWith(")")) return "p-meta";
+  let cls;
+  if (DOC_TITLES.indexOf(t) >= 0 || (!ctx.seenNonEmpty && isAllCaps(t))) {
+    cls = "p-doctitle";
+  } else if (ctx.afterTitle) {
+    cls = "p-subtitle";
+  } else if (/^(розділ|глава)(?![\p{L}])/iu.test(t)) {
+    cls = "p-section";
+  } else if (/^стаття(?![\p{L}])/iu.test(t)) {
+    cls = "p-article";
+  } else if (/^\d+[.)]/.test(t)) {
+    cls = "p-num";
+  } else {
+    cls = "p-plain";
+  }
+  ctx.seenNonEmpty = true;
+  ctx.afterTitle = cls === "p-doctitle";
+  return cls;
+}
+
+/// Render the document text as classified per-line blocks
+/// (`<div class="p-…">escaped line</div>`). Every text piece is HTML-escaped
+/// before it enters the markup; the merged gold highlight ranges are offsets
+/// into the raw text and are clipped to each line, so a range spanning
+/// newlines marks the tail of one line and the head of the next, never
+/// crossing block boundaries. The find pipeline then wraps matches inside
+/// the per-line text nodes (cross-line queries simply do not match).
+function goldHtml(text) {
+  const ranges = goldRanges(text);
+  const ctx = { inBrace: false, seenNonEmpty: false, afterTitle: false };
+  const lines = text.split("\n");
+  const out = [];
+  let ri = 0;   // first range that can still reach the current line
+  let off = 0;  // raw-text offset of the current line
+  for (const line of lines) {
+    const start = off, end = off + line.length;
+    off = end + 1;
+    const cls = classifyLine(line.trim(), ctx);
+    if (!cls) continue;
+    while (ri < ranges.length && ranges[ri][1] <= start) ri++;
+    let html = "", pos = start;
+    for (let j = ri; j < ranges.length && ranges[j][0] < end; j++) {
+      const s = Math.max(ranges[j][0], start);
+      const e = Math.min(ranges[j][1], end);
+      if (e <= pos) continue;
+      html += escHtml(text.slice(pos, s));
+      html += '<mark class="hl">' + escHtml(text.slice(s, e)) + "</mark>";
+      pos = e;
+    }
+    html += escHtml(text.slice(pos, end));
+    out.push('<div class="' + cls + '">' + html + "</div>");
+  }
+  return out.join("");
 }
 
 function renderDocText() {

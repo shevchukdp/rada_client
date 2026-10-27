@@ -796,6 +796,15 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("id=\"theme-select\""));
         assert!(ui::INDEX_HTML.contains("solarized-light"));
         assert!(ui::INDEX_HTML.contains("rada-theme"));
+        // Structured document-text rendering: the act text is split into
+        // classified per-line blocks (document title, article headings,
+        // sections, numbered paragraphs, amendment metadata).
+        assert!(ui::INDEX_HTML.contains("p-doctitle"));
+        assert!(ui::INDEX_HTML.contains("p-subtitle"));
+        assert!(ui::INDEX_HTML.contains("p-section"));
+        assert!(ui::INDEX_HTML.contains("p-article"));
+        assert!(ui::INDEX_HTML.contains("p-num"));
+        assert!(ui::INDEX_HTML.contains("classifyLine"));
     }
 
     #[test]

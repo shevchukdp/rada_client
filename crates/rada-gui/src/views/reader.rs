@@ -115,30 +115,48 @@ impl ReaderState {
                     .replace('<', "&lt;")
                     .replace('>', "&gt;")
             };
-            let mut body = esc(text.trim_end());
-            for a in &self.annotations {
-                if a.kind != "highlight" || a.text.trim().is_empty() {
-                    continue;
-                }
-                let needle = esc(&a.text);
-                let (open, close) = ("<mark class=\"hl\">", "</mark>");
-                let mut pos = 0usize;
-                while pos < body.len() {
-                    match body[pos..].find(&needle) {
-                        Some(k) => {
-                            let at = pos + k;
-                            let repl = format!("{open}{needle}{close}");
-                            body.replace_range(at..at + needle.len(), &repl);
-                            pos = at + open.len() + needle.len() + close.len();
-                        }
-                        None => break,
+            // Structured body: one <p> per classified line, gold marks inlined.
+            let mut body = String::new();
+            for para in paragraphs(&text) {
+                let cls = match para.kind {
+                    PKind::DocTitle => "dt",
+                    PKind::Subtitle => "ds",
+                    PKind::Meta => "mt",
+                    PKind::Section => "sec",
+                    PKind::Article => "art",
+                    PKind::Num => "num",
+                    PKind::Plain => "",
+                };
+                let mut escp = esc(&para.text);
+                for a in &self.annotations {
+                    if a.kind != "highlight" || a.text.trim().is_empty() {
+                        continue;
                     }
+                    let needle = esc(&a.text);
+                    let (open, close) = ("<mark class=\"hl\">", "</mark>");
+                    let mut pos = 0usize;
+                    while pos < escp.len() {
+                        match escp[pos..].find(&needle) {
+                            Some(k) => {
+                                let at = pos + k;
+                                let repl = format!("{open}{needle}{close}");
+                                escp.replace_range(at..at + needle.len(), &repl);
+                                pos = at + open.len() + needle.len() + close.len();
+                            }
+                            None => break,
+                        }
+                    }
+                }
+                if cls.is_empty() {
+                    body.push_str(&format!("<p>{escp}</p>\n"));
+                } else {
+                    body.push_str(&format!("<p class=\"{cls}\">{escp}</p>\n"));
                 }
             }
             let mut s = String::new();
             s.push_str("<!doctype html>\n<html lang=\"uk\">\n<meta charset=\"utf-8\">\n<title>");
             s.push_str(&esc(&title));
-            s.push_str("</title>\n<style>\nbody{font-family:Georgia,'Times New Roman',serif;max-width:56em;margin:2em auto;padding:0 1.2em;line-height:1.5;color:#111}\nmain pre{white-space:pre-wrap;font-family:inherit;font-size:1.02em}\nmark.hl{background:#c9a227;color:#1a1a1a;padding:0 .15em;border-radius:2px}\nheader{border-bottom:2px solid #c9a227;margin-bottom:1.2em;padding-bottom:.5em}\nfooter{border-top:1px solid #bbb;margin-top:2em;padding-top:.8em;font-size:.9em;color:#333}\n</style>\n");
+            s.push_str("</title>\n<style>\nbody{font-family:Georgia,'Times New Roman',serif;max-width:56em;margin:2em auto;padding:0 1.2em;line-height:1.5;color:#111}\nmain p{margin:.4em 0;font-size:1.02em}\nmain p.dt{text-align:center;color:#8a6d00;font-weight:700;font-size:1.3em;letter-spacing:.05em}\nmain p.ds{text-align:center;font-weight:700;font-size:1.15em;margin-bottom:1em}\nmain p.mt{color:#666;font-size:.85em;margin:.15em 0}\nmain p.sec{font-weight:700;color:#8a6d00;font-size:1.1em;margin-top:1.5em;text-transform:uppercase}\nmain p.art{font-weight:700;font-size:1.08em;margin-top:1.2em}\nmain p.num{padding-left:1.7em;margin:.3em 0}\nmark.hl{background:#c9a227;color:#1a1a1a;padding:0 .15em;border-radius:2px}\nheader{border-bottom:2px solid #c9a227;margin-bottom:1.2em;padding-bottom:.5em}\nfooter{border-top:1px solid #bbb;margin-top:2em;padding-top:.8em;font-size:.9em;color:#333}\n</style>\n");
             s.push_str(&format!(
                 "<header><h1>{}</h1>\n<p><b>Рег. №:</b> <code>{}</code> · <b>Стан:</b> {} · <b>Номер:</b> {} · <b>Дата:</b> {} <span style=\"color:#777\">(ред. {})</span></p></header>\n",
                 esc(&title),
@@ -148,9 +166,9 @@ impl ReaderState {
                 fmt_date(&self.hit.org_date),
                 fmt_date(&self.hit.poddat),
             ));
-            s.push_str("<main>\n<pre>");
+            s.push_str("<main>\n");
             s.push_str(&body);
-            s.push_str("</pre>\n</main>\n");
+            s.push_str("</main>\n");
             if !self.annotations.is_empty() {
                 s.push_str("<footer><b>Примітки та виділення</b><ul>\n");
                 for a in &self.annotations {
@@ -450,7 +468,7 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
         let mut g_hits: Vec<(usize, (usize, usize))> = Vec::new();
         if !qlab.is_empty() {
             for (pi, p) in paras.iter().enumerate() {
-                for (a, b) in find_spans(p, &qlab) {
+                for (a, b) in find_spans(&p.text, &qlab) {
                     g_hits.push((pi, (a, b)));
                 }
             }
@@ -523,6 +541,13 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
 
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (pi, para) in paras.iter().enumerate() {
+                // breathing room: extra before structural headings.
+                let gap = match para.kind {
+                    PKind::DocTitle | PKind::Section | PKind::Article => 14.0,
+                    PKind::Subtitle | PKind::Meta => 4.0,
+                    _ => 2.0,
+                };
+                ui.add_space(gap);
                 let y_before = ui.cursor().min.y;
                 let x_left = ui.min_rect().min.x;
                 let x_right = ui.max_rect().max.x;
@@ -542,46 +567,57 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
                         }
                     }
                 }
-                let ann = ann_spans(para, &snippets);
-                ui.horizontal_wrapped(|ui| {
-                    for (seg, part) in styled(para, &ann, &p_hits) {
-                        match seg {
-                            Seg::Plain => {
-                                ui.label(part);
-                            }
-                            Seg::Ann => {
-                                ui.label(
-                                    egui::RichText::new(part)
-                                        .background_color(gold())
-                                        .color(egui::Color32::BLACK)
-                                        .strong(),
-                                );
-                            }
-                            Seg::Hit => {
-                                ui.label(
-                                    egui::RichText::new(part)
-                                        .background_color(egui::Color32::from_rgb(
-                                            0x1E, 0x4D, 0x59,
-                                        ))
-                                        .color(egui::Color32::from_rgb(0xD8, 0xF2, 0xFF)),
-                                );
-                            }
-                            Seg::Cur => {
-                                ui.label(
-                                    egui::RichText::new(part)
-                                        .background_color(egui::Color32::from_rgb(
-                                            0x4D, 0xC1, 0xF0,
-                                        ))
-                                        .color(egui::Color32::BLACK)
-                                        .strong(),
-                                );
+                let ann = ann_spans(&para.text, &snippets);
+                let kind = para.kind;
+                let centered = matches!(kind, PKind::DocTitle | PKind::Subtitle);
+                let body = |ui: &mut egui::Ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for (seg, part) in styled(&para.text, &ann, &p_hits) {
+                            match seg {
+                                Seg::Plain => {
+                                    ui.label(base_rt(kind, part));
+                                }
+                                Seg::Ann => {
+                                    ui.label(
+                                        base_rt(kind, part)
+                                            .background_color(gold())
+                                            .color(egui::Color32::BLACK)
+                                            .strong(),
+                                    );
+                                }
+                                Seg::Hit => {
+                                    ui.label(
+                                        egui::RichText::new(part)
+                                            .background_color(egui::Color32::from_rgb(
+                                                0x1E, 0x4D, 0x59,
+                                            ))
+                                            .color(egui::Color32::from_rgb(0xD8, 0xF2, 0xFF)),
+                                    );
+                                }
+                                Seg::Cur => {
+                                    ui.label(
+                                        egui::RichText::new(part)
+                                            .background_color(egui::Color32::from_rgb(
+                                                0x4D, 0xC1, 0xF0,
+                                            ))
+                                            .color(egui::Color32::BLACK)
+                                            .strong(),
+                                    );
+                                }
                             }
                         }
-                    }
-                });
+                    });
+                };
+                if centered {
+                    ui.vertical_centered(body);
+                } else if kind == PKind::Num {
+                    ui.indent(egui::Id::new(("num", pi)), |ui| body(ui));
+                } else {
+                    body(ui);
+                }
                 // "→ текст": scroll the first paragraph holding the annotation.
                 if let Some(j) = &jump {
-                    if !j.is_empty() && para.contains(j.as_str()) {
+                    if !j.is_empty() && para.text.contains(j.as_str()) {
                         let rect = egui::Rect::from_min_max(
                             egui::pos2(x_left, y_before),
                             egui::pos2(x_right, ui.cursor().min.y),
@@ -774,12 +810,117 @@ fn ann_kind_uk(k: &str) -> &'static str {
     }
 }
 
-fn paragraphs(t: &str) -> Vec<String> {
-    t.split("\n\n")
-        .map(|s| s.trim())
-        .filter(|s| !s.is_empty())
-        .map(|s| s.replace('\n', " "))
-        .collect()
+/// Structural role of a paragraph inside a legal act.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum PKind {
+    /// «ЗАКОН УКРАЇНИ», «УКАЗ ПРЕЗИДЕНТА УКРАЇНИ», … (leading ALL-CAPS line).
+    DocTitle,
+    /// The name line right below the document title («Про …»).
+    Subtitle,
+    /// Publication data / amendments block: «(Відомості …)», `{Із змінами …}`.
+    Meta,
+    /// «Розділ …» / «Глава …».
+    Section,
+    /// «Стаття N …».
+    Article,
+    /// Numbered item: «1. …», «2) …».
+    Num,
+    /// Ordinary body text.
+    Plain,
+}
+
+/// One rendered paragraph (line-granular, classified).
+pub struct Para {
+    pub text: String,
+    pub kind: PKind,
+}
+
+/// All letters uppercase (and at least three of them): header lines.
+fn is_all_caps(s: &str) -> bool {
+    let mut alpha = 0usize;
+    for c in s.chars() {
+        if c.is_alphabetic() {
+            alpha += 1;
+            if !c.is_uppercase() {
+                return false;
+            }
+        }
+    }
+    alpha >= 3
+}
+
+/// Case-insensitive keyword prefix («Стаття» in any case).
+fn kw(line: &str, word: &str) -> bool {
+    let l = line.trim_start().to_uppercase();
+    l.starts_with(&word.to_uppercase())
+}
+
+/// «1. …» / «2) …» — a numbered item.
+fn numbered(line: &str) -> bool {
+    let t = line.trim_start();
+    let mut it = t.chars();
+    match it.next() {
+        Some(c) if c.is_ascii_digit() => matches!(it.next(), Some('.') | Some(')')),
+        _ => false,
+    }
+}
+
+/// Split the raw act text into classified paragraphs (Rada texts use one
+/// line per logical paragraph; `{…}` wraps the amendments history).
+pub fn paragraphs(t: &str) -> Vec<Para> {
+    let mut out: Vec<Para> = Vec::new();
+    let mut in_brace = false;
+    for raw in t.lines() {
+        let line = raw.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let kind = if in_brace {
+            if line.contains('}') {
+                in_brace = false;
+            }
+            PKind::Meta
+        } else if line.starts_with('{') {
+            in_brace = !line.contains('}');
+            PKind::Meta
+        } else if out.is_empty() && is_all_caps(line) {
+            PKind::DocTitle
+        } else if line.starts_with('(') && line.ends_with(')') {
+            PKind::Meta
+        } else if line.starts_with('№') && line.contains("від") {
+            PKind::Meta
+        } else if kw(line, "стаття") {
+            PKind::Article
+        } else if kw(line, "розділ") || kw(line, "глава") {
+            PKind::Section
+        } else if numbered(line) {
+            PKind::Num
+        } else {
+            PKind::Plain
+        };
+        out.push(Para {
+            text: line.to_string(),
+            kind,
+        });
+    }
+    // «Про …» right under the ALL-CAPS header is the act's name.
+    if out.len() >= 2 && out[0].kind == PKind::DocTitle && out[1].kind == PKind::Plain {
+        out[1].kind = PKind::Subtitle;
+    }
+    out
+}
+
+/// Base styling of one paragraph kind (find/annotation spans may override).
+fn base_rt(kind: PKind, part: &str) -> egui::RichText {
+    let rt = egui::RichText::new(part);
+    match kind {
+        PKind::DocTitle => rt.strong().size(20.0).color(gold()),
+        PKind::Subtitle => rt.strong().size(17.0).color(crate::themes::info()),
+        PKind::Meta => rt.small().weak(),
+        PKind::Section => rt.strong().size(16.0).color(gold()),
+        PKind::Article => rt.strong().size(15.0),
+        PKind::Num | PKind::Plain => rt,
+    }
 }
 
 fn fmt_i64_date(d: i64) -> String {
@@ -970,6 +1111,43 @@ mod tests {
             "both mentions wrapped"
         );
         assert!(s.ends_with("</html>\n"), "complete document");
+    }
+
+    #[test]
+    fn paragraphs_classify_structure() {
+        let t = "ЗАКОН УКРАЇНИ\n\
+                 Про вищу освіту\n\
+                 (Відомості Верховної Ради (ВВР), 2014, № 37-38, ст.2004)\n\
+                 {Із змінами, внесеними згідно із Законами\n\
+                 № 76-VIII від 28.12.2014, ВВР, 2015, № 6, ст.40\n\
+                 }\n\
+                 РОЗДІЛ 1\n\
+                 Загальні засади\n\
+                 Стаття 1. Визначення понять\n\
+                 1. У цьому Законі діють такі терміни:\n\
+                 2) другий пункт\n\
+                 звичайний текст";
+        let p = paragraphs(t);
+        let kinds: Vec<PKind> = p.iter().map(|x| x.kind).collect();
+        assert_eq!(
+            kinds,
+            vec![
+                PKind::DocTitle,
+                PKind::Subtitle,
+                PKind::Meta,
+                PKind::Meta,
+                PKind::Meta,
+                PKind::Meta,
+                PKind::Section,
+                PKind::Plain,
+                PKind::Article,
+                PKind::Num,
+                PKind::Num,
+                PKind::Plain,
+            ]
+        );
+        assert_eq!(p[0].text, "ЗАКОН УКРАЇНИ");
+        assert_eq!(p[9].text, "1. У цьому Законі діють такі терміни:");
     }
 
     #[test]

@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-27
 
+### 0.8.0: форматування текстів — читалка розрізняє структуру акта / 0.8.0: structured texts — the reader now understands act anatomy
+
+- **UKR:** 1) **Структурне читання** в GUI: заголовок акта (ВЕЛИКИМИ), назва «Про …», блоки «(Відомості …)» та `{Із змінами …}` (приглушені), «РОЗДІЛ/ГЛАВА» (золоті), «Стаття N» (напівжирний більший шрифт), пункти «1.»/«2)» (відступ) — все класифікується на льоту. 2) **HTML-експорт** тепер структурований (`<p class=dt/ds/mt/sec/art/num>` зі стилями) замість суцільного `<pre>`; gold-виділення зберігаються. 3) **Веб**: той самий поділ рядків через класи `p-doctitle/p-subtitle/p-meta/p-section/p-article/p-num`, кольори з CSS-змінних теми; пошук і золоті мітки рахуються в межах рядків. 4) Тести: 42/42 (новий тест класифікації).
+- **ENG:** 1) **Structured reading** in the GUI: ALL-CAPS act header, «Про …» name line, «(Відомості …)»/`{Із змінами …}` blocks (muted), «РОЗДІЛ/ГЛАВА» (gold), «Стаття N» (bold, larger), «1.»/«2)» items (indented) — classified on the fly. 2) **HTML export** is now structured (`<p class=dt/ds/mt/sec/art/num>` with styles) instead of one flat `<pre>`; gold highlights preserved. 3) **Web**: the same line classification via `p-doctitle/p-subtitle/p-meta/p-section/p-article/p-num` classes colored from theme variables; find and gold marks work per line. 4) Tests: 42/42 (new classification test).
+
+---
+
+## 2026-10-27
+
 ### 0.7.0: 17 кольорових тем — теми одночасно в GUI й веб / 0.7.0: Colors — 17 color themes in GUI and web
 
 - **UKR:** 1) **17 кольорових тем**: Класична, Біла, Чорна, Інкверт, Авто (системна), «Матриця», opencode, Nord, Dracula, Solarized Dark/Light, Gruvbox Dark, Monokai, One Dark, Tokyo Night, Catppuccin, GitHub Dark — ідентичні набори в Desktop і веб. 2) **GUI**: вибір теми — у шапці («Тема: …»), збереження в settings.ini, «Авто» стежиться за системною theme без перезапуску; усі статусні кольори, виділення та рамки тепер тематичні. 3) **Веб**: сторінка переписана на CSS-змінні, Тема у шапці, збереження в localStorage; gold-виділення читабельні в кожній темі. 4) Новий модуль `themes` із тестами. 5) Тести: 41/41.

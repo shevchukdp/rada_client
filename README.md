@@ -36,9 +36,13 @@ official open-data API:
     to the previous find match.
   - **Favorites (Обране)** — every saved annotation across all documents on one
     page: kind filters, one-click open, delete.
-  - **Читалка** — live JSON card + clean text with an **edition switcher**,
-    `.md`/`.txt`/`.html` export (annotations appended; HTML inlines saved
-    highlights as gold marks), **"find in text"**
+  - **Читалка** — live JSON card + clean text with an **edition switcher** and
+    **structured rendering**: the act header/name line, publication & amendments
+    blocks («(Відомості …)», `{Із змінами …}`), «РОЗДІЛ/ГЛАВА» and «Стаття N»
+    headings and numbered items are all styled (same classification in the web
+    reader); `.md`/`.txt`/`.html` export (annotations appended; HTML keeps the
+    structure as styled `<p>` blocks and inlines saved highlights as gold
+    marks), **"find in text"**
     (case-insensitive, match counter, » / « jump-to-match, matches highlighted),
     "open on the site" link, and **results paging** (‹ / › — move through the
     search results list you opened a document from).
