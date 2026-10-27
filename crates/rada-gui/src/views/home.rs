@@ -9,6 +9,26 @@ const KB: f64 = 1_048_576.0;
 pub fn show(app: &mut App, ctx: &egui::Context) {
     egui::CentralPanel::default().show(ctx, |ui| {
         egui::ScrollArea::vertical().show(ui, |ui| {
+            if !app.settings.last_nreg.is_empty() {
+                ui.horizontal(|ui| {
+                    ui.label(egui::RichText::new("Продовжити:").strong());
+                    let title: String =
+                        app.settings.last_title.chars().take(80).collect();
+                    let label = if title.trim().is_empty() {
+                        app.settings.last_nreg.clone()
+                    } else {
+                        format!("{} — {}", app.settings.last_nreg, title)
+                    };
+                    if ui.button(egui::RichText::new(label).small()).clicked() {
+                        let nreg = app.settings.last_nreg.clone();
+                        let title = app.settings.last_title.clone();
+                        app.open_reader_by_nreg(&nreg, &title, 0, "", "", "");
+                    }
+                });
+                ui.add_space(6.0);
+                ui.separator();
+                ui.add_space(4.0);
+            }
             ui.heading("Стан індексу");
 
             match &app.index_status {

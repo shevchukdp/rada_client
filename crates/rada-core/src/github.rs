@@ -76,13 +76,28 @@ impl GitHub {
             }
         };
 
-        // `releases/latest` is a redirect to the most recent release.
-        if let Ok(rel) = self.get_json::<Release>(&format!("{base}/releases/latest")) {
-            return pick(&rel.assets);
+        // The `latest` release is often an *app* release (no *.sqlite.gz
+        // asset) because app releases postdate snapshot releases. Walk the
+        // release list (newest first) and pick the newest one that carries
+        // the requested asset.
+        let rels: Vec<Release> = self
+            .get_json(&format!("{base}/releases?per_page=100"))
+            .unwrap_or_default();
+        for rel in &rels {
+            if let Ok(url) = pick(&rel.assets) {
+                return Ok(url);
+            }
         }
-        // No releases at all (fresh repo) — report it clearly.
+        if rels.is_empty() {
+            // Fresh repo / unreachable API — the `latest` endpoint tells the
+            // user more clearly what is missing.
+            if let Ok(rel) = self.get_json::<Release>(&format!("{base}/releases/latest")) {
+                return pick(&rel.assets);
+            }
+        }
         Err(anyhow!(
-            "no releases at {owner}/{repo} yet (run the snapshot publish script first)"
+            "no *.sqlite.gz snapshot asset found in {owner}/{repo} releases \
+             (run the snapshot publish script first)"
         ))
     }
 

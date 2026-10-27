@@ -108,15 +108,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         stan_label(&app.dicts.stan, h.status),
                         fmt_date(&h.poddat),
                     );
-                    let avail = ui.available_width();
+                    let avail = (ui.available_width() - 56.0).max(100.0);
                     let text =
                         egui::RichText::new(format!("{}\n{}", h.nazva, meta)).small();
-                    if ui
-                        .add_sized([avail, 46.0], egui::Button::new(text).wrap())
-                        .clicked()
-                    {
-                        app.open_reader_from(hits.clone(), i);
-                    }
+                    ui.horizontal(|ui| {
+                        if ui
+                            .add_sized([avail, 46.0], egui::Button::new(text).wrap())
+                            .clicked()
+                        {
+                            app.open_reader_from(hits.clone(), i);
+                        }
+                        if ui.button(egui::RichText::new("копія").small()).clicked() {
+                            ui.ctx().copy_text(h.nreg.clone());
+                        }
+                    });
                 }
 
                 // paging

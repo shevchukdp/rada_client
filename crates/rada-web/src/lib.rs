@@ -739,6 +739,18 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_parity_features() {
+        // Gold highlight rendering, find-in-text bar and copy-identifier
+        // buttons must be present in the embedded page (GUI parity).
+        assert!(ui::INDEX_HTML.contains("<mark class=\"hl\">"));
+        assert!(ui::INDEX_HTML.contains("id=\"find-input\""));
+        assert!(ui::INDEX_HTML.contains("id=\"find-count\""));
+        assert!(ui::INDEX_HTML.contains("id=\"find-next\""));
+        assert!(ui::INDEX_HTML.contains("id=\"btn-copy-nreg\""));
+        assert!(ui::INDEX_HTML.contains("execCommand"));
+    }
+
+    #[test]
     fn fmt_yyyymmdd_passthrough() {
         assert_eq!(fmt_yyyymmdd(20261015), "15.10.2026");
         assert_eq!(fmt_yyyymmdd(42), "42");

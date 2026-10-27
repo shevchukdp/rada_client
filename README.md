@@ -22,7 +22,11 @@ official open-data API:
 
 - **Native GUI (egui 0.29)** — dark theme, Ukrainian labels:
   - **Пошук** — local FTS5 search with filters (status/type/date/number),
-    paging, live name resolver; **export of the results list** (.md/.txt).
+    paging, live name resolver; **export of the results list** (.md/.txt);
+    one-click **copy nreg** from any result row.
+  - **Continue** — the app remembers the last opened document and query
+    (`%LOCALAPPDATA%\rada-client\settings.ini`); Home offers a "Продовжити"
+    card that jumps back into the reader.
   - **Читалка** — live JSON card + clean text with an **edition switcher**,
     `.md`/`.txt` export (annotations appended), **"find in text"**
     (case-insensitive, match counter, » / « jump-to-match, matches highlighted),

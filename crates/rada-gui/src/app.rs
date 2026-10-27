@@ -118,6 +118,8 @@ pub struct App {
     pub dicts: views::Dicts,
     pub index_status: Option<IndexStatus>,
     pub toasts: Vec<Toast>,
+    /// Last opened doc / last query, persisted for "Continue".
+    pub settings: crate::settings::Settings,
 }
 
 pub struct Toast {
@@ -152,7 +154,11 @@ impl App {
             dicts: views::Dicts::default(),
             index_status: None,
             toasts: Vec::new(),
+            settings: crate::settings::load(),
         };
+        if startup.query.is_none() && startup.nreg.is_none() {
+            app.search.query = app.settings.last_query.clone();
+        }
         app.refresh_index_state();
         app.refresh_dicts();
         app.apply_startup(startup);
@@ -269,6 +275,8 @@ impl App {
         self.search.run = run;
         self.search.loading = true;
         self.search.searched = true;
+        self.settings.last_query = self.search.query.trim().to_string();
+        crate::settings::save(&self.settings);
         self.spawn(move |tx| {
             let res = (|| -> Outcome<_> {
                 let conn = rada_db::open(&db).map_err(|e| e.to_string())?;
@@ -290,6 +298,9 @@ impl App {
     pub fn open_reader(&mut self, hit: rada_db::SearchHit) {
         self.page = Page::Reader;
         self.nav = None;
+        self.settings.last_nreg = hit.nreg.clone();
+        self.settings.last_title = hit.nazva.clone();
+        crate::settings::save(&self.settings);
         let mut r = views::ReaderState::new(hit);
         let card_run = self.next_run();
         let text_run = self.next_run();

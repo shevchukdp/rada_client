@@ -8,7 +8,7 @@
   :root {
     --bg: #111622; --panel: #1a2233; --panel2: #212b40; --fg: #e8edf7;
     --muted: #93a0b8; --accent: #ffb300; --ok: #4caf7d; --err: #ff6b6b;
-    --line: #2c3850;
+    --line: #2c3850; --gold: #c9a227; --find: #59e6ff;
   }
   * { box-sizing: border-box; }
   body {
@@ -47,6 +47,11 @@
   button { cursor: pointer; }
   button.primary { background: var(--accent); color: #222; font-weight: 600; border-color: var(--accent); }
   button:disabled { opacity: .5; cursor: default; }
+  button.copy {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--line);
+    border-radius: 5px; padding: 1px 7px; font-size: 13px; line-height: 1.3;
+  }
+  button.copy.ok { color: var(--ok); border-color: var(--ok); }
   .hint { color: var(--muted); font-size: 13px; }
   .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
   #results-meta, #doc-head { margin: 10px 0; font-size: 14px; color: var(--muted); }
@@ -64,6 +69,10 @@
     padding: 14px; white-space: pre-wrap; font-family: "Consolas", monospace;
     font-size: 14px; max-height: 60vh; overflow: auto;
   }
+  mark.hl { background: var(--gold); color: #211a05; border-radius: 2px; }
+  mark.find { background: var(--find); color: #04272e; border-radius: 2px; }
+  mark.find.cur { background: #eafcff; color: #04272e; outline: 1px solid var(--find); }
+  #find-input { min-width: 180px; }
   #annotations { list-style: none; padding: 0; margin: 10px 0; }
   #annotations li {
     display: flex; gap: 8px; align-items: center; padding: 6px 10px;
@@ -146,10 +155,21 @@
   <div id="doc-pane" hidden>
     <div id="doc-head"></div>
     <div class="row">
+      <span class="hint">рег. №</span>
+      <code id="doc-nreg-val" class="hint"></code>
+      <button id="btn-copy-nreg" class="copy" type="button" title="Скопіювати ідентифікатор">⧉</button>
+    </div>
+    <div class="row">
       <span class="hint">Редакція:</span>
       <select id="editions" disabled></select>
       <button id="load-text" type="button">Текст</button>
       <span id="live-note" class="hint"></span>
+    </div>
+    <div class="row" id="find-bar">
+      <input id="find-input" placeholder="Знайти в тексті…" autocomplete="off">
+      <button id="find-prev" type="button" title="Попередній збіг">↑</button>
+      <button id="find-next" type="button" title="Наступний збіг">↓</button>
+      <span id="find-count" class="hint"></span>
     </div>
     <pre id="doc-text" hidden></pre>
     <div class="row">
@@ -183,8 +203,11 @@ const state = {
   curNreg: null,
   curCard: null,
   curText: "",
+  annots: [],         // annotations of the current document (highlight rendering)
   statusLabels: new Map(),
 };
+let findHits = [];   // mark.find elements of the current find query
+let findIdx = -1;    // index of the current hit
 
 function api(path, opts) {
   return fetch(path, opts).then(async (r) => {
@@ -197,6 +220,40 @@ function api(path, opts) {
 }
 
 function encNreg(nreg) { return nreg.split("/").map(encodeURIComponent).join("/"); }
+
+function escHtml(s) {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+/// Copy `text` to clipboard (clipboard API, with textarea/execCommand fallback
+/// for plain http), flashing ✓/✕ on `btn`.
+function copyText(text, btn) {
+  const flash = (ok) => {
+    const old = btn.textContent;
+    btn.textContent = ok ? "✓" : "✕";
+    btn.classList.toggle("ok", ok);
+    setTimeout(() => { btn.textContent = old; btn.classList.toggle("ok", false); }, 1200);
+  };
+  const fallback = () => {
+    let ok = false;
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      ta.style.position = "fixed";
+      ta.style.left = "-1000px";
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand("copy");
+      ta.remove();
+    } catch (_) { ok = false; }
+    flash(ok);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(() => flash(true), fallback);
+  } else {
+    fallback();
+  }
+}
 
 function fmtEd(d) {
   const s = String(d);
@@ -264,10 +321,17 @@ async function doSearch(offset) {
       a.onclick = (ev) => { ev.preventDefault(); openDoc(h.nreg); };
       const sub = document.createElement("div");
       sub.className = "sub";
-      sub.textContent =
+      sub.append(
         h.nreg + " · [" + statusLabel(h.status) + "] · №" + (h.org_num || "—") +
         " від " + (h.org_date ? fmtEd(h.org_date) : "—") + " · ред. " +
-        (h.poddat ? fmtEd(h.poddat) : "—");
+        (h.poddat ? fmtEd(h.poddat) : "—"));
+      const cp = document.createElement("button");
+      cp.className = "copy";
+      cp.type = "button";
+      cp.title = "Скопіювати реєстраційний номер";
+      cp.textContent = "⧉";
+      cp.onclick = (ev) => { ev.stopPropagation(); copyText(h.nreg, cp); };
+      sub.appendChild(cp);
       div.appendChild(a); div.appendChild(sub);
       list.appendChild(div);
     }
@@ -280,9 +344,14 @@ async function doSearch(offset) {
 async function openDoc(nreg) {
   state.curNreg = nreg;
   state.curText = "";
+  state.annots = [];
+  findHits = []; findIdx = -1;
+  $("find-input").value = "";
+  $("find-count").textContent = "";
   const pane = $("doc-pane");
   pane.hidden = false;
   $("doc-head").textContent = "Завантаження картки (живий API, ≈5 с)…";
+  $("doc-nreg-val").textContent = nreg;
   $("editions").disabled = true;
   $("editions").innerHTML = "";
   $("doc-text").hidden = true;
@@ -292,8 +361,7 @@ async function openDoc(nreg) {
   try {
     const d = await api("/api/doc/" + enc + "/card");
     state.curCard = d.card;
-    $("doc-head").textContent =
-      d.card.nazva + "  (" + nreg + ")  [" + d.status_label + "]";
+    $("doc-head").textContent = d.card.nazva + "  [" + d.status_label + "]";
     const sel = $("editions");
     sel.innerHTML = "";
     const cur = document.createElement("option");
@@ -328,11 +396,115 @@ async function loadText(edition) {
   try {
     const d = await api(url);
     state.curText = d.text;
-    pre.textContent = d.text;
+    renderDocText();
     setLive("");
   } catch (e) {
     pre.textContent = "Помилка: " + e.message;
   }
+}
+
+/// Gold ranges of the highlight-annotations of the current document, merged.
+function goldRanges(text) {
+  const ranges = [];
+  for (const a of state.annots) {
+    if (a.kind !== "highlight") continue;
+    if (a.span_start != null && a.span_end != null && a.span_end > a.span_start) {
+      ranges.push([Math.max(0, a.span_start), Math.min(text.length, a.span_end)]);
+    } else if (a.text) {
+      let i = text.indexOf(a.text);
+      while (i >= 0) {
+        ranges.push([i, i + a.text.length]);
+        i = text.indexOf(a.text, i + 1);
+      }
+    }
+  }
+  ranges.sort((x, y) => x[0] - y[0]);
+  const merged = [];
+  for (const r of ranges) {
+    const m = merged[merged.length - 1];
+    if (m && r[0] <= m[1]) m[1] = Math.max(m[1], r[1]);
+    else merged.push(r.slice());
+  }
+  return merged;
+}
+
+/// Escape the document text once, then wrap the highlight ranges in <mark>.
+function goldHtml(text) {
+  let html = "", pos = 0;
+  for (const [s, e] of goldRanges(text)) {
+    if (s > pos) html += escHtml(text.slice(pos, s));
+    html += '<mark class="hl">' + escHtml(text.slice(s, e)) + "</mark>";
+    pos = e;
+  }
+  return html + escHtml(text.slice(pos));
+}
+
+function renderDocText() {
+  if (!state.curText) return;
+  $("doc-text").innerHTML = goldHtml(state.curText);
+  runFind();
+}
+
+function plural(n, one, few, many) {
+  const d10 = n % 10, d100 = n % 100;
+  if (d10 === 1 && d100 !== 11) return one;
+  if (d10 >= 2 && d10 <= 4 && (d100 < 12 || d100 > 14)) return few;
+  return many;
+}
+
+function pluralFind(n) {
+  return plural(n, "збіг", "збіги", "збігів");
+}
+
+/// Re-render the text (base gold HTML, no stale find marks), then wrap every
+/// case-insensitive occurrence of the query in <mark class="find">. Cyrillic
+/// safe: toLowerCase over the raw text nodes, no regexes.
+function runFind() {
+  findHits = [];
+  findIdx = -1;
+  const q = $("find-input").value;
+  if (!q || !state.curText) {
+    $("find-count").textContent = "";
+    return;
+  }
+  const lowQ = q.toLowerCase();
+  const pre = $("doc-text");
+  const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
+  const nodes = [];
+  while (walker.nextNode()) nodes.push(walker.currentNode);
+  for (const node of nodes) {
+    const data = node.data, low = data.toLowerCase();
+    let last = 0;
+    let i = low.indexOf(lowQ, last);
+    if (i < 0) continue;
+    const frag = document.createDocumentFragment();
+    do {
+      if (i > last) frag.appendChild(document.createTextNode(data.slice(last, i)));
+      const m = document.createElement("mark");
+      m.className = "find";
+      m.textContent = data.slice(i, i + q.length);
+      frag.appendChild(m);
+      findHits.push(m);
+      last = i + q.length;
+    } while ((i = low.indexOf(lowQ, last)) >= 0);
+    if (last < data.length) frag.appendChild(document.createTextNode(data.slice(last)));
+    node.parentNode.replaceChild(frag, node);
+  }
+  $("find-count").textContent = findHits.length
+    ? findHits.length + " " + pluralFind(findHits.length)
+    : "не знайдено";
+  if (findHits.length) showFind(1, true);
+}
+
+function showFind(delta, scroll) {
+  if (!findHits.length) return;
+  if (findIdx >= 0) findHits[findIdx].classList.remove("cur");
+  findIdx = (findIdx + delta + findHits.length) % findHits.length;
+  const cur = findHits[findIdx];
+  cur.classList.add("cur");
+  if (scroll) cur.scrollIntoView({ block: "center" });
+  $("find-count").textContent =
+    (findIdx + 1) + " / " + findHits.length + " " + pluralFind(findHits.length);
 }
 
 async function loadAnnotations(nreg) {
@@ -340,7 +512,8 @@ async function loadAnnotations(nreg) {
   ul.innerHTML = "";
   try {
     const d = await api("/api/annotations?nreg=" + encodeURIComponent(nreg));
-    for (const a of d.items) {
+    state.annots = d.items || [];
+    for (const a of state.annots) {
       const li = document.createElement("li");
       li.className = a.kind;
       const tag = document.createElement("span");
@@ -359,7 +532,8 @@ async function loadAnnotations(nreg) {
       li.appendChild(tag); li.appendChild(tx); li.appendChild(del);
       ul.appendChild(li);
     }
-  } catch (_) {}
+    if (state.curText) renderDocText();
+  } catch (_) { state.annots = []; }
 }
 
 async function addAnn(kind, text, spanStart, spanEnd) {
@@ -450,6 +624,16 @@ $("btn-comment").onclick = () => {
   addAnn("comment", inp.value.trim(), null, null);
   inp.value = "";
 };
+
+$("btn-copy-nreg").onclick = () => {
+  if (state.curNreg) copyText(state.curNreg, $("btn-copy-nreg"));
+};
+$("find-input").addEventListener("input", () => runFind());
+$("find-input").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") { ev.preventDefault(); showFind(ev.shiftKey ? -1 : 1, true); }
+});
+$("find-prev").onclick = () => showFind(-1, true);
+$("find-next").onclick = () => showFind(1, true);
 
 $("btn-export").onclick = () => {
   location.href = "/api/export/" + encNreg(state.curNreg) +

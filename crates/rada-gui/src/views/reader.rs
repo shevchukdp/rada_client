@@ -179,6 +179,9 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
                 .background_color(color),
         );
         ui.label(egui::RichText::new(format!("рег. № {nreg}")).small());
+        if ui.button(egui::RichText::new("копіювати").small()).clicked() {
+            ui.ctx().copy_text(nreg.clone());
+        }
         if !org_num.is_empty() {
             ui.label(egui::RichText::new(format!("№{org_num}")).small());
         }
