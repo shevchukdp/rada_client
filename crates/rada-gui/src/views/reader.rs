@@ -286,14 +286,14 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
 
 fn chip(status: i64) -> (&'static str, egui::Color32) {
     match status {
-        5 => ("ЧИННИЙ", egui::Color32::from_rgb(0x9A, 0xCC, 0x80)),
-        1 => ("ВТРАТИВ ЧИННІСТЬ", egui::Color32::from_rgb(0xE6, 0x6A, 0x6A)),
-        2 => ("НАБИРАЄ ЧИННОСТІ", egui::Color32::from_rgb(0xFF, 0xB3, 0x00)),
-        3 => ("ДІЮ ЗУПИНЕНО", egui::Color32::from_rgb(0xFF, 0xB3, 0x00)),
-        4 => ("ДІЮ ВІДНОВЛЕНО", egui::Color32::from_rgb(0x7A, 0xC7, 0xE4)),
-        8 => ("ЧАСТКОВО НАБРАВ", egui::Color32::from_rgb(0x7A, 0xC7, 0xE4)),
-        6 => ("НЕ НАБРАВ ЧИННОСТІ", egui::Color32::from_rgb(0xAA, 0xAA, 0xAA)),
-        _ => ("НЕВИЗНАЧЕНО", egui::Color32::from_rgb(0xAA, 0xAA, 0xAA)),
+        5 => ("ЧИННИЙ", crate::themes::ok()),
+        1 => ("ВТРАТИВ ЧИННІСТЬ", crate::themes::err()),
+        2 => ("НАБИРАЄ ЧИННОСТІ", crate::themes::accent()),
+        3 => ("ДІЮ ЗУПИНЕНО", crate::themes::accent()),
+        4 => ("ДІЮ ВІДНОВЛЕНО", crate::themes::info()),
+        8 => ("ЧАСТКОВО НАБРАВ", crate::themes::info()),
+        6 => ("НЕ НАБРАВ ЧИННОСТІ", crate::themes::weak()),
+        _ => ("НЕВИЗНАЧЕНО", crate::themes::weak()),
     }
 }
 
@@ -820,11 +820,11 @@ fn annotations_panel(app: &mut App, ui: &mut egui::Ui) {
         for a in &list {
             let (kind, color) = match a.kind.as_str() {
                 "highlight" => ("виділення", gold()),
-                "bookmark" => ("закладка", egui::Color32::from_rgb(0x7A, 0xC7, 0xE4)),
-                _ => ("коментар", egui::Color32::GRAY),
+                "bookmark" => ("закладка", crate::themes::info()),
+                _ => ("коментар", crate::themes::weak()),
             };
             egui::Frame::none()
-                .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x33, 0x3F, 0x5A)))
+                .stroke(egui::Stroke::new(1.0_f32, crate::themes::border()))
                 .inner_margin(egui::Margin::same(6.0))
                 .show(ui, |ui| {
                     ui.set_min_width(ui.available_width() - 6.0);

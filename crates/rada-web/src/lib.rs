@@ -791,6 +791,11 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("id=\"retry-card\""));
         assert!(ui::INDEX_HTML.contains("змінити"));
         assert!(ui::INDEX_HTML.contains("id=\"f-org\""));
+        // Theme system (the GUI's 17-theme color parity): CSS-variable
+        // palettes, the «Тема» picker, and localStorage persistence.
+        assert!(ui::INDEX_HTML.contains("id=\"theme-select\""));
+        assert!(ui::INDEX_HTML.contains("solarized-light"));
+        assert!(ui::INDEX_HTML.contains("rada-theme"));
     }
 
     #[test]

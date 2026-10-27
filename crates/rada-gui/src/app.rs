@@ -126,6 +126,9 @@ pub struct App {
     pub toasts: Vec<Toast>,
     /// Last opened doc / last query, persisted for "Continue".
     pub settings: crate::settings::Settings,
+    /// Signature of the visuals currently applied (theme id + OS theme),
+    /// so `refresh_theme` is a no-op while nothing changes.
+    theme_sig: String,
     /// Widget a global shortcut (Ctrl+F) asked to focus this frame.
     focus_req: Option<FocusReq>,
 }
@@ -150,7 +153,7 @@ impl App {
         pace: Option<u64>,
         startup: Startup,
     ) -> Self {
-        apply_theme(&cc.egui_ctx);
+        apply_spacing(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
         let pace_secs = pace.unwrap_or(5);
         let mut app = Self {
@@ -171,11 +174,14 @@ impl App {
             index_status: None,
             toasts: Vec::new(),
             settings: crate::settings::load(),
+            theme_sig: String::new(),
             focus_req: None,
         };
         if startup.query.is_none() && startup.nreg.is_none() {
             app.search.query = app.settings.last_query.clone();
         }
+        app.theme_sig = String::new();
+        app.refresh_theme(&cc.egui_ctx);
         app.refresh_index_state();
         app.refresh_dicts();
         app.apply_startup(startup);
@@ -243,6 +249,30 @@ impl App {
         } else {
             false
         }
+    }
+
+    /// (Re)apply the color theme when the id changed or, for `auto`, when the
+    /// OS flipped between light and dark. Cheap to call every frame.
+    pub fn refresh_theme(&mut self, ctx: &egui::Context) {
+        let sys = ctx.system_theme();
+        let sys_s = match sys {
+            Some(egui::Theme::Light) => "l",
+            Some(egui::Theme::Dark) => "d",
+            None => "-",
+        };
+        let sig = format!("{}{sys_s}", self.settings.theme_id());
+        if sig != self.theme_sig {
+            self.theme_sig = sig;
+            let id = self.settings.theme_id().to_string();
+            crate::themes::apply(ctx, &id, sys);
+            ctx.request_repaint();
+        }
+    }
+
+    /// Switch the theme, persisting the choice.
+    pub fn set_theme(&mut self, id: &str) {
+        self.settings.theme = id.to_string();
+        crate::settings::save(&self.settings);
     }
 
     pub fn refresh_index_state(&mut self) {
@@ -1040,6 +1070,7 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.handle_messages();
+        self.refresh_theme(ctx);
 
         // ---- global keyboard shortcuts ---------------------------------
         // Ctrl+F: focus the find field (reader) or the query field (search).
@@ -1090,15 +1121,15 @@ impl eframe::App for App {
 }
 
 pub(crate) fn ok() -> egui::Color32 {
-    egui::Color32::from_rgb(0x9A, 0xCC, 0x80)
+    crate::themes::ok()
 }
 
 pub(crate) fn err() -> egui::Color32 {
-    egui::Color32::from_rgb(0xE6, 0x6A, 0x6A)
+    crate::themes::err()
 }
 
 pub(crate) fn gold() -> egui::Color32 {
-    egui::Color32::from_rgb(0xFF, 0xB3, 0x00)
+    crate::themes::accent()
 }
 
 /// All annotations (newest first) paired with document titles; optionally
@@ -1158,17 +1189,8 @@ fn read_index_status(db: &PathBuf) -> IndexStatus {
     st
 }
 
-fn apply_theme(ctx: &egui::Context) {
-    // Force the dark theme (egui follows the OS theme by default).
-    ctx.set_theme(egui::Theme::Dark);
+fn apply_spacing(ctx: &egui::Context) {
     ctx.style_mut(|s| {
-        let bg = egui::Color32::from_rgb(0x1A, 0x22, 0x33);
-        let bg2 = egui::Color32::from_rgb(0x14, 0x1B, 0x2A);
-        s.visuals.panel_fill = bg;
-        s.visuals.window_fill = bg;
-        s.visuals.extreme_bg_color = bg2;
-        s.visuals.faint_bg_color = egui::Color32::from_rgb(0x22, 0x2C, 0x42);
-        s.visuals.hyperlink_color = gold();
         s.spacing.item_spacing = egui::vec2(8.0, 6.0);
         s.spacing.button_padding = egui::vec2(10.0, 5.0);
     });

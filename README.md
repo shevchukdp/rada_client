@@ -20,7 +20,9 @@ official open-data API:
 
 ## Features (implemented)
 
-- **Native GUI (egui 0.29)** — dark theme, Ukrainian labels:
+- **Native GUI (egui 0.29)** — 17 color themes (classical/white/black/invert/auto/
+  matrix/opencode/nord/dracula/solarized/gruvbox/monokai/one-dark/tokyo-night/
+  catppuccin/github-dark, header picker, persisted), Ukrainian labels:
   - **Пошук** — local FTS5 search with filters (status/type/date/number/publisher),
     paging, live name resolver; **export of the results list** (.md/.txt);
     one-click **copy nreg** from any result row.
@@ -64,7 +66,8 @@ official open-data API:
   external assets): search (with publisher filter + live name resolver),
   reader, find-in-text, annotations with **inline editing**
   (`PUT /api/annotations`), export (txt/md/html), keyboard shortcuts,
-  recent documents and auto-loaded «Нові документи».
+  recent documents, auto-loaded «Нові документи» and the same 17 themes
+  (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
 

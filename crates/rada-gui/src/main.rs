@@ -7,6 +7,7 @@
 
 mod app;
 mod settings;
+mod themes;
 mod views;
 
 use eframe::egui::IconData;

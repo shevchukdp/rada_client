@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-27
 
+### 0.7.0: 17 кольорових тем — теми одночасно в GUI й веб / 0.7.0: Colors — 17 color themes in GUI and web
+
+- **UKR:** 1) **17 кольорових тем**: Класична, Біла, Чорна, Інкверт, Авто (системна), «Матриця», opencode, Nord, Dracula, Solarized Dark/Light, Gruvbox Dark, Monokai, One Dark, Tokyo Night, Catppuccin, GitHub Dark — ідентичні набори в Desktop і веб. 2) **GUI**: вибір теми — у шапці («Тема: …»), збереження в settings.ini, «Авто» стежиться за системною theme без перезапуску; усі статусні кольори, виділення та рамки тепер тематичні. 3) **Веб**: сторінка переписана на CSS-змінні, Тема у шапці, збереження в localStorage; gold-виділення читабельні в кожній темі. 4) Новий модуль `themes` із тестами. 5) Тести: 41/41.
+- **ENG:** 1) **17 color themes**: Classical, White, Black, Invert, Auto (system), Matrix, opencode, Nord, Dracula, Solarized Dark/Light, Gruvbox Dark, Monokai, One Dark, Tokyo Night, Catppuccin, GitHub Dark — identical sets in Desktop and web. 2) **GUI**: theme picker in the header («Тема: …»), persisted in settings.ini; «Auto» follows the OS without restart; status chips, highlights and frames are now theme-driven. 3) **Web**: page rebuilt on CSS custom properties, header theme selector, localStorage persistence before first paint; gold annotation marks stay readable in every theme. 4) New `themes` module with tests. 5) Tests: 41/41.
+
+---
+
+## 2026-10-27
+
 ### 0.6.0: Обране, видавник, живі тексти — сторінка анотацій, фільтр видавця, експорт текстів / 0.6.0: favorites, publisher filter, live texts — annotation page, org filter, bulk text export
 
 - **UKR:** 1) **«Обране»**: окрема сторінка з усіма збереженими анотаціями (коментарі, виділення, закладки) з усіх документів — фільтри за типом, відкриття документа в один клік, видалення. 2) **Фільтр «Видавник»** у пошуку — комбо з текстовим фільтром назв по словнику органів. 3) **«Тексти»**: живий експорт всієї сторінки результатів (повні тексти, з паузами, лічильник прогресу, анотації в кінці). 4) **HTML-експорт** документа — самодостатній файл із золотими виділеннями й списком анотацій. 5) **Shift+Enter** — до попереднього збігу пошуку. 6) CLI-команда **`annot`** (list/add/del — той самий сховище, що GUI/веб). 7) **Паритет веб**: інтерфейс резолвера, редагування анотацій просто у списку (`PUT /api/annotations`), кнопки «ще раз», фільтр видавця, валідація дат, Ctrl+F на сторінці пошуку, панель картки документа, автооновлення «Нових документів», перехід «→ текст»; виправлено залиплі підсвітки пошуку та «трикутні» гліфи на кнопках. 8) Тести: 38/38.

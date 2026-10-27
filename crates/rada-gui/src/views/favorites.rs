@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-use crate::app::{err, gold, App};
+use crate::app::{err, App};
 
 const KIND_FILTERS: [&str; 4] = ["усі", "коментарі", "виділення", "закладки"];
 
@@ -19,9 +19,9 @@ pub struct FavoritesState {
 
 fn kind_tag(kind: &str) -> (&'static str, egui::Color32) {
     match kind {
-        "highlight" => ("виділення", gold()),
-        "bookmark" => ("закладка", egui::Color32::from_rgb(0x7A, 0xC7, 0xE4)),
-        _ => ("коментар", egui::Color32::GRAY),
+        "highlight" => ("виділення", crate::themes::accent()),
+        "bookmark" => ("закладка", crate::themes::info()),
+        _ => ("коментар", crate::themes::weak()),
     }
 }
 
@@ -83,7 +83,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         format!("{short}  ·  {}", a.nreg)
                     };
                     egui::Frame::none()
-                        .stroke(egui::Stroke::new(1.0_f32, egui::Color32::from_rgb(0x33, 0x3F, 0x5A)))
+                        .stroke(egui::Stroke::new(
+                            1.0_f32,
+                            crate::themes::border(),
+                        ))
                         .inner_margin(egui::Margin::same(6.0))
                         .show(ui, |ui| {
                             ui.set_min_width(ui.available_width() - 6.0);
@@ -103,7 +106,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 ui.label(
                                     egui::RichText::new(&a.text)
                                         .small()
-                                        .color(egui::Color32::from_rgb(0xE8, 0xE8, 0xE8)),
+                                        .color(crate::themes::weak()),
                                 );
                             }
                             ui.horizontal(|ui| {

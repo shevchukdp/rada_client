@@ -28,6 +28,7 @@ pub use search::SearchState;
 /// Left-aligned page switcher + title; right-aligned live-client counters.
 pub fn topbar(app: &mut App, ctx: &egui::Context) {
     let mut go: Option<Page> = None;
+    let mut theme_pick: Option<String> = None;
     egui::TopBottomPanel::top("topbar")
         .exact_height(46.0)
         .show(ctx, |ui| {
@@ -63,6 +64,7 @@ pub fn topbar(app: &mut App, ctx: &egui::Context) {
                             .small(),
                     );
                     ui.separator();
+                    theme_picker(ui, app_ref.settings.theme_id(), &mut theme_pick);
                     page_button(ui, app_ref, "Оновлення", Page::Arrivals, &mut go);
                     page_button(ui, app_ref, "Читалка", Page::Reader, &mut go);
                     page_button(ui, app_ref, "Обране", Page::Favorites, &mut go);
@@ -77,6 +79,9 @@ pub fn topbar(app: &mut App, ctx: &egui::Context) {
         if p != Page::Reader || app.reader.is_some() {
             app.page = p;
         }
+    }
+    if let Some(id) = theme_pick {
+        app.set_theme(&id);
     }
 }
 
@@ -133,6 +138,26 @@ pub fn statusbar(app: &mut App, ctx: &egui::Context) {
                     ui.label(egui::RichText::new(format!("live-запитів: {sent}")).small());
                 });
             });
+        });
+}
+
+/// Theme dropdown («Тема»): returns the id picked this frame.
+fn theme_picker(ui: &mut egui::Ui, cur: &str, pick: &mut Option<String>) {
+    let label = crate::themes::by_id(cur)
+        .map(|t| t.label)
+        .unwrap_or("Класична");
+    egui::ComboBox::from_id_salt("theme_picker")
+        .width(170.0)
+        .selected_text(format!("Тема: {label}"))
+        .show_ui(ui, |ui| {
+            for t in crate::themes::THEMES {
+                if ui
+                    .selectable_label(cur == t.id, egui::RichText::new(t.label).small())
+                    .clicked()
+                {
+                    *pick = Some(t.id.to_string());
+                }
+            }
         });
 }
 

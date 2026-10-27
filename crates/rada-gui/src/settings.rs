@@ -12,6 +12,19 @@ pub struct Settings {
     pub last_query: String,
     /// Recently opened documents, newest first: `(nreg, title)`, max 10.
     pub recents: Vec<(String, String)>,
+    /// Color theme id (see `themes::THEMES`); empty = "classical".
+    pub theme: String,
+}
+
+impl Settings {
+    /// Theme id with the legacy-empty fallback.
+    pub fn theme_id(&self) -> &str {
+        if self.theme.is_empty() {
+            "classical"
+        } else {
+            &self.theme
+        }
+    }
 }
 
 /// Push a document to the front of the recent list (dedup by nreg, cap 10)
@@ -59,6 +72,7 @@ fn parse(text: &str) -> Settings {
                 "last_nreg" => s.last_nreg = v.trim().to_string(),
                 "last_title" => s.last_title = v.trim().to_string(),
                 "last_query" => s.last_query = v.trim().to_string(),
+                "theme" => s.theme = v.trim().to_string(),
                 "recent" => {
                     if let Some((n, t)) = v.split_once('\t') {
                         s.recents.push((n.to_string(), t.to_string()));
@@ -78,10 +92,11 @@ fn parse(text: &str) -> Settings {
 fn render(s: &Settings) -> String {
     let clean = |v: &str| v.replace(['\r', '\n', '\t'], " ");
     let mut out = format!(
-        "last_nreg={}\nlast_title={}\nlast_query={}\n",
+        "last_nreg={}\nlast_title={}\nlast_query={}\ntheme={}\n",
         clean(&s.last_nreg),
         clean(&s.last_title),
         clean(&s.last_query),
+        clean(&s.theme),
     );
     for (n, t) in &s.recents {
         out.push_str(&format!("recent={}\t{}\n", clean(n), clean(t)));
@@ -103,6 +118,7 @@ mod tests {
                 ("2041-15".into(), "Про проведення слухань".into()),
                 ("16-15".into(), "Про доступ до публічної інформації".into()),
             ],
+            theme: "matrix".into(),
         };
         let p = std::env::temp_dir().join("rada-settings-test.ini");
         save_to(&p, &s).unwrap();
@@ -125,6 +141,14 @@ mod tests {
     fn v04_settings_seed_one_recent() {
         let s = parse("last_nreg=2041-15\nlast_title=Title\nlast_query=q\n");
         assert_eq!(s.recents, vec![("2041-15".into(), "Title".into())]);
+    }
+
+    #[test]
+    fn theme_key_roundtrip_and_fallback() {
+        assert_eq!(parse("").theme_id(), "classical");
+        assert_eq!(parse("theme=nord\n").theme_id(), "nord");
+        let s = parse("theme=dracula\n");
+        assert_eq!(parse(&render(&s)).theme, "dracula");
     }
 
     #[test]
