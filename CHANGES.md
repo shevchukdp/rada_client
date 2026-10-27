@@ -5,6 +5,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ---
 
+## 2026-10-28
+
+### 0.9.1: керування даними з браузера + повна побудова індексу в GUI / 0.9.1: browser-driven data management + full index build in the GUI
+
+- **UKR:** 1) **Веб**: панель «Дані» — кнопки «Оновити наживо» та «Отримати снапшот» запускають фонові задачі прямо в браузері (нові ендпоінти `POST /api/jobs/sync|snapshot`, `GET /api/jobs`), зі статусом, журналом ходу й захистом від повторного запуску; після завершення лічильники оновлюються. 2) **GUI**: розділ «Повна побудова індексу (init)» на Home — завантаження офіційного `doc.txt` (~51 MB) через виміряний клієнт або імпорт з локального файлу дампу; upsert не чіпає анотацій. 3) Підтвердження перед побудовою, події у журналі дій. 4) Тести: 49/49 (реєстр задач, форми відповідей, сторінка).
+- **ENG:** 1) **Web**: the «Дані» panel — «Оновити наживо» and «Отримати снапшот» start background jobs right from the browser (new endpoints `POST /api/jobs/sync|snapshot`, `GET /api/jobs`) with status, progress lines and double-run guard; footer counters refresh on completion. 2) **GUI**: a «Повна побудова індексу (init)» section on Home — downloads the official `doc.txt` (~51 MB) through the paced client or imports a local dump file; the upsert leaves annotations untouched. 3) Confirmation before the build, events in the action log. 4) Tests: 49/49 (job registry, response shapes, page markers).
+
+---
+
 ## 2026-10-27
 
 ### 0.9.0: резервне копіювання індексу прямо з Home / 0.9.0: index backup & restore from Home

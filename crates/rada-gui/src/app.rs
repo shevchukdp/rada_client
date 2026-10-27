@@ -61,6 +61,8 @@ pub enum Msg {
     Backup(Outcome<(PathBuf, u64)>),
     /// Restore from a user-picked local snapshot file finished.
     LocalRestore(Outcome<PathBuf>),
+    /// Full-dump init finished (documents imported).
+    InitDone(Outcome<usize>),
     Resolved {
         run: u64,
         res: Option<String>,
@@ -808,6 +810,70 @@ impl App {
         });
     }
 
+    /// Build the full index from the official `doc.txt` dump: download it
+    /// through the shared paced client (or pick a local dump file) and upsert
+    /// every card. Annotations are untouched (separate table, keyed by nreg).
+    pub fn run_init(&mut self, from_file: bool) {
+        if self.home.init_running {
+            return;
+        }
+        let dump_file = if from_file {
+            let Some(p) = rfd::FileDialog::new()
+                .add_filter("dump doc.txt", &["txt", "tsv", "dump"])
+                .pick_file()
+            else {
+                return;
+            };
+            Some(p)
+        } else {
+            None
+        };
+        self.home.init_running = true;
+        self.home.confirm_init = false;
+        let db = self.db_path.clone();
+        let client = self.client.clone();
+        self.spawn(move |tx| {
+            let raw = match &dump_file {
+                Some(p) => {
+                    let _ = tx.send(Msg::SyncLine(format!(
+                        "init: читаю дамп {} ...",
+                        p.display()
+                    )));
+                    match std::fs::read(p) {
+                        Ok(b) => b,
+                        Err(e) => {
+                            let _ = tx.send(Msg::InitDone(Err(format!("читання дампу: {e}"))));
+                            return;
+                        }
+                    }
+                }
+                None => {
+                    let _ = tx.send(Msg::SyncLine(
+                        "init: завантажую офіційний doc.txt (~51 MB) ...".into(),
+                    ));
+                    match client.full_dump() {
+                        Ok(b) => b,
+                        Err(e) => {
+                            let _ = tx.send(Msg::InitDone(Err(format!("завантаження: {e}"))));
+                            return;
+                        }
+                    }
+                }
+            };
+            let _ = tx.send(Msg::SyncLine(format!(
+                "init: імпортую {:.1} MB ...",
+                raw.len() as f64 / 1_048_576.0
+            )));
+            let outcome = (|| -> anyhow::Result<usize> {
+                let mut conn = rada_db::open(&db)?;
+                let n = rada_db::build::import_dump(&mut conn, &raw)?;
+                let _ = conn.execute_batch("ANALYZE;");
+                Ok(n)
+            })();
+            let _ = tx.send(Msg::InitDone(outcome.map_err(|e| format!("{e:#}"))));
+        });
+    }
+
     /// Export the currently open document (md/txt/html) through a save dialog.
     pub fn export_reader(&mut self, fmt: &str) {
         let Some(r) = self.reader.as_ref() else { return };
@@ -1145,6 +1211,23 @@ impl App {
                         self.refresh_dicts();
                     }
                     Err(e) => self.toast(format!("відновлення: {e}"), err()),
+                }
+            }
+            Msg::InitDone(res) => {
+                self.home.init_running = false;
+                match res {
+                    Ok(n) => {
+                        self.home
+                            .sync_log
+                            .push(format!("init: імпортовано {n} документів"));
+                        self.toast(format!("індекс побудовано: {n} док."), ok());
+                        self.refresh_index_state();
+                        self.refresh_dicts();
+                    }
+                    Err(e) => {
+                        self.home.sync_log.push(format!("init: помилка {e}"));
+                        self.toast(format!("init: {e}"), err());
+                    }
                 }
             }
             Msg::Resolved { run, res } => {

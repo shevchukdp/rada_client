@@ -349,6 +349,10 @@
     border-radius: 10px; padding: 14px; font-family: "Consolas", monospace; font-size: 13px;
     white-space: pre-wrap; color: var(--text);
   }
+  /* Background-job status line («Дані» area). */
+  #jobs-status { white-space: pre-wrap; }
+  #jobs-status.ok { color: var(--ok); }
+  #jobs-status.err { color: var(--err); }
   [hidden] { display: none; }
 </style>
 </head>
@@ -436,7 +440,19 @@
   </section>
 
   <section id="tab-status" hidden>
-    <button id="status-refresh" type="button">Оновити</button>
+    <div class="row">
+      <button id="status-refresh" type="button">Оновити</button>
+      <span class="hint">стан локального індексу</span>
+    </div>
+    <div id="data-jobs" style="background:var(--panel2);border:1px solid var(--border);border-radius:10px;padding:10px 14px;margin:10px 0">
+      <strong style="font-size:14px">Дані</strong>
+      <div class="row">
+        <button id="btn-jobs-sync" type="button" title="оновлення словників та карток через живий API (≈5 с на документ)">Оновити наживо</button>
+        <button id="btn-jobs-snapshot" type="button" title="завантажити щомісячний снапшот з GitHub і відновити індекс (анотації зберігаються)">Отримати снапшот</button>
+        <span id="jobs-status" class="hint"></span>
+      </div>
+      <div id="jobs-list" class="hint" style="font-size:13px"></div>
+    </div>
     <div id="status-box" style="margin-top:10px"></div>
   </section>
 
@@ -564,7 +580,7 @@ function fmtEd(d) {
 
 function setLive(msg) { $("live-note").textContent = msg; }
 
-async function init() {
+async function refreshFoot() {
   try {
     const s = await api("/api/status");
     $("foot").textContent =
@@ -573,11 +589,18 @@ async function init() {
   } catch (e) {
     $("foot").textContent = "не вдалося з’єднатися з індексом: " + e.message;
   }
+}
+
+async function init() {
+  await refreshFoot();
   fillDict("f-status", "status");
   fillDict("f-typ", "typs");
   fillDict("f-org", "organs");
   renderRecent();
   doSearch(0);
+  // Re-attach to jobs that are still running after a page reload.
+  await refreshJobs();
+  if (jobsAnyRunning) pollJobs();
 }
 
 async function fillDict(selectId, kind) {
@@ -1109,6 +1132,101 @@ async function loadStatusTab() {
   }
 }
 
+// ---- background data jobs («Дані»: live sync + snapshot fetch) -------------
+// The server keeps one registry of index-update jobs; the page POSTs to
+// start one, then polls /api/jobs every 2 s while anything runs, mirroring
+// the latest progress `line` per kind into the status area.
+const JOB_KINDS = ["sync", "snapshot"];
+const jobBtn = { sync: $("btn-jobs-sync"), snapshot: $("btn-jobs-snapshot") };
+const jobSeen = {};   // job id → last state we reacted to (notify once)
+let jobsTimer = null; // setInterval id while any job is running
+let jobsAnyRunning = false;
+
+function setJobsStatus(msg, cls) {
+  const el = $("jobs-status");
+  el.textContent = msg;
+  el.classList.toggle("ok", cls === "ok");
+  el.classList.toggle("err", cls === "err");
+}
+
+function latestJobOf(jobs, kind) {
+  let rec = null;
+  for (const j of jobs) {
+    if (j.kind === kind && (!rec || (j.updated || 0) > (rec.updated || 0))) rec = j;
+  }
+  return rec;
+}
+
+async function startDataJob(kind) {
+  jobBtn[kind].disabled = true;
+  setJobsStatus(kind === "sync" ? "запускаю синхронізацію…" : "запускаю завантаження снапшота…", "");
+  try {
+    await api("/api/jobs/" + kind, { method: "POST" });
+  } catch (e) {
+    // 409 (already running) and connection errors land here; the poll below
+    // re-reads the registry, so button states stay authoritative.
+    setJobsStatus("Помилка: " + e.message, "err");
+  }
+  await refreshJobs();
+  if (jobsAnyRunning) pollJobs();
+}
+
+/// Pull /api/jobs: disable buttons while the kind runs, mirror the latest
+/// `line`, and report the transition running → done/error once (status line
+/// + refreshed counters).
+async function refreshJobs() {
+  let jobs = [];
+  try { jobs = (await api("/api/jobs")).jobs || []; } catch (_) { return; }
+  jobsAnyRunning = false;
+  // Report running → done/error transitions exactly once per job id.
+  for (const j of jobs) {
+    if (jobSeen[j.id] === "running" && j.state !== "running") onJobFinished(j);
+    jobSeen[j.id] = j.state;
+  }
+  const lines = [];
+  for (const kind of JOB_KINDS) {
+    const rec = latestJobOf(jobs, kind);
+    const running = !!rec && rec.state === "running";
+    jobBtn[kind].disabled = running;
+    if (running) {
+      jobsAnyRunning = true;
+      lines.push((kind === "sync" ? "наживо" : "снапшот") + ": " + rec.line);
+    } else if (rec && rec.state === "error") {
+      lines.push((kind === "sync" ? "наживо" : "снапшот") + ": " + (rec.result || rec.line));
+    }
+  }
+  if (lines.length) setJobsStatus(lines.join(" · "), "");
+  $("jobs-list").textContent = "";
+  for (const j of jobs.slice().sort((a, b) => (a.updated || 0) - (b.updated || 0))) {
+    const row = document.createElement("div");
+    row.textContent =
+      "[" + j.kind + "] " + j.state + " — " + (j.line || "") +
+      (j.result ? " · " + j.result : "");
+    $("jobs-list").appendChild(row);
+  }
+}
+
+/// One-shot report when a job leaves `running` (the page's status line plays
+/// the toast role here); then refresh whatever the page shows about the index.
+function onJobFinished(job) {
+  const ok = job.state === "done";
+  const what = job.kind === "sync" ? "Синхронізацію" : "Снапшот";
+  setJobsStatus(
+    (ok ? "✓ " : "✗ ") + what + (ok ? " завершено" : " не вдалося") +
+    ": " + (job.result || job.line || ""),
+    ok ? "ok" : "err");
+  refreshFoot(); // docs / import / annotations counts changed
+  if (!$("tab-status").hidden) loadStatusTab();
+}
+
+function pollJobs() {
+  if (jobsTimer) return;
+  jobsTimer = setInterval(async () => {
+    await refreshJobs();
+    if (!jobsAnyRunning) { clearInterval(jobsTimer); jobsTimer = null; }
+  }, 2000);
+}
+
 function switchTab(name) {
   document.querySelectorAll("header .tabs button").forEach(b =>
     b.classList.toggle("active", b.dataset.tab === name));
@@ -1279,6 +1397,8 @@ $("bulk-export").onclick = async () => {
 
 $("arrivals-load").onclick = loadArrivals;
 $("status-refresh").onclick = loadStatusTab;
+$("btn-jobs-sync").onclick = () => startDataJob("sync");
+$("btn-jobs-snapshot").onclick = () => startDataJob("snapshot");
 $("recent-clear").onclick = clearRecent;
 
 // ---- theme picker (the head script applied the saved theme before paint) ---

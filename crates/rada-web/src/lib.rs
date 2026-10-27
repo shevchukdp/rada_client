@@ -9,9 +9,11 @@
 //! endpoints (card / text / arrivals / resolve / export) go to
 //! `data.rada.gov.ua` and obey the 5–7 s pacing via the shared [`RadaClient`].
 
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
@@ -40,9 +42,52 @@ pub struct WebConfig {
     pub open_browser: bool,
 }
 
+/// One background index-update job («Дані» area of the UI). At most one
+/// `running` job per kind at a time; the UI polls [`jobs_list`] and shows
+/// `line` while the job runs, then `result` once it is `done` / `error`.
+#[derive(Debug, Clone, serde::Serialize)]
+struct JobRecord {
+    id: String,
+    /// `sync` | `snapshot`.
+    kind: String,
+    /// `running` | `done` | `error`.
+    state: String,
+    /// Latest progress line (Ukrainian, shown while running).
+    line: String,
+    /// Outcome message once the job left `running`.
+    result: Option<String>,
+    /// Monotonic registry counter of the last update (list ordering).
+    updated: u64,
+}
+
 struct State {
     db_path: PathBuf,
     client: RadaClient,
+    /// Minimum pause between outgoing API requests (server asks for 5–7 s);
+    /// jobs build their own client with the same pace.
+    pace_secs: u64,
+    /// Background index-update jobs, keyed by job id.
+    jobs: Mutex<HashMap<String, JobRecord>>,
+    /// Monotonic id/counter for the job registry.
+    job_seq: AtomicU64,
+}
+
+impl State {
+    /// Registry lock (a panicking job must never poison the whole UI).
+    fn jobs_lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, JobRecord>> {
+        self.jobs.lock().unwrap_or_else(|p| p.into_inner())
+    }
+
+    /// Record a progress / result update for job `id`.
+    fn job_set(&self, id: &str, state: &str, line: &str, result: Option<&str>) {
+        let updated = self.job_seq.fetch_add(1, Ordering::SeqCst);
+        if let Some(rec) = self.jobs_lock().get_mut(id) {
+            rec.state = state.to_string();
+            rec.line = line.to_string();
+            rec.result = result.map(str::to_string);
+            rec.updated = updated;
+        }
+    }
 }
 
 /// Run the server until the process is killed.
@@ -54,6 +99,9 @@ pub fn serve(cfg: &WebConfig) -> Result<()> {
     let state = Arc::new(State {
         db_path: cfg.db_path.clone(),
         client: RadaClient::with_pacing(Duration::from_secs(cfg.pace_secs)),
+        pace_secs: cfg.pace_secs,
+        jobs: Mutex::new(HashMap::new()),
+        job_seq: AtomicU64::new(0),
     });
     let url = format!("http://{}:{}", cfg.host, cfg.port);
     println!("[web] serving UI at {url}");
@@ -96,7 +144,7 @@ fn open_browser(url: &str) {
 // Request plumbing
 // ---------------------------------------------------------------------------
 
-fn handle_request(req: Request, st: &State) -> Result<()> {
+fn handle_request(req: Request, st: &Arc<State>) -> Result<()> {
     let method = req.method().clone();
     let raw = req.url();
     let (path, query) = match raw.split_once('?') {
@@ -110,7 +158,13 @@ fn handle_request(req: Request, st: &State) -> Result<()> {
     Ok(())
 }
 
-fn route(method: &Method, path: &str, q: &[(String, String)], req: &mut Request, st: &State) -> Result<Resp> {
+fn route(
+    method: &Method,
+    path: &str,
+    q: &[(String, String)],
+    req: &mut Request,
+    st: &Arc<State>,
+) -> Result<Resp> {
     if method == &Method::Get && path == "/" {
         return Ok(html_response());
     }
@@ -125,6 +179,8 @@ fn route(method: &Method, path: &str, q: &[(String, String)], req: &mut Request,
         annotations_handler(method, rest, q, st, req)
     } else if rest.starts_with("dict/") {
         dict_handler(method, rest, st)
+    } else if rest.starts_with("jobs") {
+        jobs_handler(method, rest, st)
     } else {
         match rest {
             "status" => {
@@ -404,6 +460,228 @@ fn annotations_handler(
             }
         }
         _ => json_err(405, "method not allowed"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Background index-update jobs («Дані»: live sync + snapshot fetch)
+// ---------------------------------------------------------------------------
+
+/// `GET /api/jobs`, `POST /api/jobs/sync`, `POST /api/jobs/snapshot`.
+fn jobs_handler(method: &Method, rest: &str, st: &Arc<State>) -> Resp {
+    match rest {
+        "jobs" => {
+            if method == &Method::Get {
+                jobs_list(st)
+            } else {
+                json_err(405, "method not allowed")
+            }
+        }
+        "jobs/sync" => {
+            if method == &Method::Post {
+                start_job(st, "sync")
+            } else {
+                json_err(405, "method not allowed")
+            }
+        }
+        "jobs/snapshot" => {
+            if method == &Method::Post {
+                start_job(st, "snapshot")
+            } else {
+                json_err(405, "method not allowed")
+            }
+        }
+        _ => json_err(404, &format!("unknown api path /api/{rest}")),
+    }
+}
+
+/// Registry view for the UI: every known job, oldest update first.
+fn jobs_list(st: &State) -> Resp {
+    let mut jobs: Vec<JobRecord> = st.jobs_lock().values().cloned().collect();
+    jobs.sort_by_key(|r| r.updated);
+    let items: Vec<Value> = jobs
+        .iter()
+        .map(|r| {
+            json!({
+                "id": r.id,
+                "kind": r.kind,
+                "state": r.state,
+                "line": r.line,
+                "result": r.result,
+                "updated": r.updated,
+            })
+        })
+        .collect();
+    json_ok(&json!({ "jobs": items }))
+}
+
+/// Register a new `kind` job unless one is still running; returns its id.
+fn claim_job(st: &State, kind: &str) -> Option<String> {
+    let mut jobs = st.jobs_lock();
+    if jobs.values().any(|r| r.kind == kind && r.state == "running") {
+        return None;
+    }
+    let n = st.job_seq.fetch_add(1, Ordering::SeqCst);
+    let id = format!("{kind}-{n}");
+    jobs.insert(
+        id.clone(),
+        JobRecord {
+            id: id.clone(),
+            kind: kind.to_string(),
+            state: "running".to_string(),
+            line: "підготовка…".to_string(),
+            result: None,
+            updated: n,
+        },
+    );
+    Some(id)
+}
+
+/// Background job body: `fn(state, job id)`. Real jobs block on paced live
+/// requests and SQLite; tests inject a fake runner.
+type JobRunner = fn(Arc<State>, String);
+
+/// Start a background job. Blocking work (paced live requests, SQLite)
+/// runs on a plain OS thread — this server has no async runtime.
+fn start_job(st: &Arc<State>, kind: &'static str) -> Resp {
+    let runner: JobRunner = if kind == "sync" { run_sync_job } else { run_snapshot_job };
+    start_job_with(st, kind, runner)
+}
+
+fn start_job_with(st: &Arc<State>, kind: &str, runner: JobRunner) -> Resp {
+    let Some(id) = claim_job(st, kind) else {
+        return json_err(409, &format!("a {kind} job is already running"));
+    };
+    let st2 = st.clone();
+    let thread_id = id.clone();
+    std::thread::spawn(move || runner(st2, thread_id));
+    json_ok(&json!({ "id": id, "kind": kind, "state": "running" }))
+}
+
+/// Live sync, mirroring the CLI `sync`: dictionaries + updated-docs feed,
+/// paced with the server's configured pause (same pattern as `cmd_sync`).
+fn run_sync_job(st: Arc<State>, id: String) {
+    st.job_set(&id, "running", "відкриваю індекс …", None);
+    let c = RadaClient::with_pacing(Duration::from_secs(st.pace_secs));
+    let mut conn = match db_open(&st.db_path) {
+        Ok(conn) => conn,
+        Err(e) => {
+            st.job_set(&id, "error", "індекс недоступний", Some(&format!("{e:#}")));
+            return;
+        }
+    };
+
+    st.job_set(&id, "running", "оновлюю словники …", None);
+    let failed_dicts = match rada_db::sync::refresh_dicts(&mut conn, |kind| Ok(c.dictionary(kind)?)) {
+        Ok(failed) => failed,
+        Err(e) => {
+            st.job_set(&id, "error", "словники не вдалося оновити", Some(&format!("{e:#}")));
+            return;
+        }
+    };
+
+    st.job_set(&id, "running", "отримую стрічку оновлених документів …", None);
+    let updates = match c.updated_docs() {
+        Ok(u) => u,
+        Err(e) => {
+            st.job_set(&id, "error", "стрічка оновлень недоступна", Some(&e.to_string()));
+            return;
+        }
+    };
+    let total = updates.len();
+    st.job_set(&id, "running", &format!("{total} оновлених документів …"), None);
+
+    // Feed rows carry nreg + title only; refresh metadata via the JSON card
+    // (exactly the CLI card→DocCard mapping). One progress line per card.
+    let mut done = 0usize;
+    let (applied, failed) = match rada_db::sync::apply_updates(&mut conn, &updates, |nreg| {
+        done += 1;
+        st.job_set(&id, "running", &format!("картка {done}/{total}: {nreg}"), None);
+        match c.card(nreg) {
+            Ok(j) => Ok(rada_core::models::DocCard {
+                dokid: 0, // unknown from card; keep existing via conflict path
+                nreg: j.nreg.clone(),
+                nazva: j.nazva.clone(),
+                status: j.status,
+                types: j.types.clone(),
+                organs: format!(
+                    "{}:{}:",
+                    j.org,
+                    j.orgdat.map(|d| d.to_string()).unwrap_or_default()
+                ),
+                minjust: j.minjust.clone().unwrap_or_default(),
+                npix: 0,
+                poddat: j.poddat.map(|d| d.to_string()).unwrap_or_default(),
+            }),
+            Err(e) => Err(anyhow::Error::from(e)),
+        }
+    }) {
+        Ok(pair) => pair,
+        Err(e) => {
+            st.job_set(&id, "error", "не вдалося застосувати оновлення", Some(&format!("{e:#}")));
+            return;
+        }
+    };
+    let mut result = format!("застосовано {applied}, помилок {failed} (з {total} оновлених)");
+    if !failed_dicts.is_empty() {
+        result.push_str(&format!("; словники не завантажено: {}", failed_dicts.join(", ")));
+    }
+    st.job_set(&id, "done", "готово", Some(&result));
+}
+
+/// Snapshot fetch, mirroring the CLI `snapshot fetch` / the GUI worker:
+/// annotations are backed up first, the published `.sqlite.gz` is streamed
+/// to `<db>.sqlite.gz.tmp`, restored onto the db path, annotations re-added.
+fn run_snapshot_job(st: Arc<State>, id: String) {
+    let db = st.db_path.clone();
+    st.job_set(&id, "running", "зберігаю анотації …", None);
+    let keep: Vec<rada_db::annotations::Annotation> = std::fs::metadata(&db)
+        .ok()
+        .and_then(|_| db_open(&db).ok())
+        .map(|conn| rada_db::annotations::all(&conn).unwrap_or_default())
+        .unwrap_or_default();
+    let n = keep.len();
+
+    let gh = rada_core::GitHub::default();
+    let outcome = (|| -> Result<String> {
+        st.job_set(&id, "running", "шукаю останній снапшот на GitHub …", None);
+        let url = gh.latest_snapshot_url("shevchukdp", "rada_client", None)?;
+        let gz = db.with_extension("sqlite.gz.tmp");
+        std::fs::remove_file(&gz).ok();
+        st.job_set(&id, "running", "завантажую снапшот …", None);
+        let mut last_mb: u64 = 0;
+        let size = gh.download_with_progress(&url, &gz, |done| {
+            let mb = done / (1 << 20);
+            if mb > last_mb {
+                last_mb = mb;
+                st.job_set(&id, "running", &format!("завантажено {mb} МБ …"), None);
+            }
+        })?;
+        st.job_set(&id, "running", "розгортаю базу …", None);
+        let restored = rada_db::snapshot::restore(&gz, &db)?;
+        let _ = std::fs::remove_file(&gz);
+        if !keep.is_empty() {
+            st.job_set(&id, "running", &format!("повертаю {n} анотацій …"), None);
+            let conn = db_open(&restored)?;
+            for a in &keep {
+                let _ = rada_db::annotations::insert(
+                    &conn,
+                    &a.nreg,
+                    &a.kind,
+                    &a.text,
+                    a.span_start,
+                    a.span_end,
+                );
+            }
+        }
+        Ok(format!(
+            "індекс оновлено з снапшота ({:.1} МБ, анотацій повернуто: {n})",
+            size as f64 / 1_048_576.0
+        ))
+    })();
+    match outcome {
+        Ok(msg) => st.job_set(&id, "done", "готово", Some(&msg)),
+        Err(e) => st.job_set(&id, "error", "снапшот не вдалося отримати", Some(&format!("{e:#}"))),
     }
 }
 
@@ -698,6 +976,7 @@ fn qget<'a>(q: &'a [(String, String)], key: &str) -> Option<&'a str> {
 mod tests {
     use super::*;
     use rada_core::models::StatusId;
+    use tiny_http::TestRequest;
 
     #[test]
     fn decodes_cyrillic_and_slash() {
@@ -805,6 +1084,185 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("p-article"));
         assert!(ui::INDEX_HTML.contains("p-num"));
         assert!(ui::INDEX_HTML.contains("classifyLine"));
+    }
+
+    // ---- background data jobs («Дані») ---------------------------------------
+
+    fn test_state() -> Arc<State> {
+        let dir = std::env::temp_dir().join("rada-web-jobs-test");
+        Arc::new(State {
+            db_path: dir.join("test.sqlite"),
+            // Long pacing so nothing can hammer the API even by accident;
+            // these tests never start a real (network) job.
+            client: RadaClient::with_pacing(Duration::from_secs(3600)),
+            pace_secs: 3600,
+            jobs: Mutex::new(HashMap::new()),
+            job_seq: AtomicU64::new(0),
+        })
+    }
+
+    /// Drive `route` with a synthetic request and read the JSON body back.
+    fn call(st: &Arc<State>, method: Method, path: &str, body: &'static str) -> (u16, Value) {
+        let mut req: Request = TestRequest::new()
+            .with_method(method)
+            .with_path(path)
+            .with_body(body)
+            .into();
+        let method = req.method().clone();
+        let resp = route(&method, path, &[], &mut req, st).expect("route");
+        let code = resp.status_code().0;
+        let bytes = resp.into_reader().into_inner();
+        let v: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (code, v)
+    }
+
+    #[test]
+    fn job_record_serializes_expected_shape() {
+        let rec = JobRecord {
+            id: "sync-3".into(),
+            kind: "sync".into(),
+            state: "running".into(),
+            line: "оновлюю словники …".into(),
+            result: None,
+            updated: 3,
+        };
+        let v = serde_json::to_value(&rec).unwrap();
+        assert_eq!(v["id"], "sync-3");
+        assert_eq!(v["kind"], "sync");
+        assert_eq!(v["state"], "running");
+        assert_eq!(v["line"], "оновлюю словники …");
+        assert!(v["result"].is_null());
+        assert_eq!(v["updated"], 3);
+    }
+
+    #[test]
+    fn job_registry_claims_one_per_kind() {
+        let st = test_state();
+        let id = claim_job(&st, "sync").expect("first sync claim");
+        assert!(id.starts_with("sync-"));
+        assert!(claim_job(&st, "sync").is_none(), "second concurrent sync rejected");
+        let snap = claim_job(&st, "snapshot").expect("snapshot is an independent kind");
+        // Finishing a job frees its kind (new id, old record kept for the UI).
+        st.job_set(&id, "done", "готово", Some("ok"));
+        let again = claim_job(&st, "sync").expect("done job frees the kind");
+        assert_ne!(again, id);
+        st.job_set(&snap, "error", "помилка", Some("boom"));
+        assert!(claim_job(&st, "snapshot").is_some());
+        let jobs = st.jobs_lock();
+        assert_eq!(jobs.len(), 4);
+        assert_eq!(jobs[&id].result.as_deref(), Some("ok"));
+    }
+
+    #[test]
+    fn jobs_routes_registered() {
+        let st = test_state();
+        // GET /api/jobs — empty registry, list shape.
+        let (code, v) = call(&st, Method::Get, "/api/jobs", "");
+        assert_eq!(code, 200);
+        assert_eq!(v["jobs"].as_array().unwrap().len(), 0);
+        // A running job of the kind ⇒ POST answers 409 (JSON error shape),
+        // no second job is started.
+        let id = claim_job(&st, "sync").unwrap();
+        let (code, v) = call(&st, Method::Post, "/api/jobs/sync", "");
+        assert_eq!(code, 409);
+        assert!(v["error"].as_str().unwrap().contains("sync"));
+        // Both kinds are guarded while running (409, JSON error shape).
+        let _snap = claim_job(&st, "snapshot").unwrap();
+        let (code, v) = call(&st, Method::Post, "/api/jobs/snapshot", "");
+        assert_eq!(code, 409);
+        assert!(v["error"].as_str().unwrap().contains("snapshot"));
+        // The registry lists both running jobs with the UI-visible fields.
+        let (code, v) = call(&st, Method::Get, "/api/jobs", "");
+        assert_eq!(code, 200);
+        let jobs = v["jobs"].as_array().unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert_eq!(jobs[0]["id"], id);
+        assert_eq!(jobs[0]["kind"], "sync");
+        assert_eq!(jobs[0]["state"], "running");
+        assert!(jobs[0]["line"].is_string());
+        assert!(jobs[0]["result"].is_null());
+        assert_eq!(jobs[1]["kind"], "snapshot");
+        // Method / path mistakes match the existing error style.
+        assert_eq!(call(&st, Method::Get, "/api/jobs/sync", "").0, 405);
+        assert_eq!(call(&st, Method::Post, "/api/jobs", "").0, 405);
+        let (code, v) = call(&st, Method::Get, "/api/jobs/nope", "");
+        assert_eq!(code, 404);
+        assert!(v["error"].as_str().unwrap().contains("/api/jobs/nope"));
+    }
+
+    /// `POST /api/jobs/{kind}` success shape via the shared start path, with
+    /// a fake runner so no live API / GitHub traffic happens in tests.
+    #[test]
+    fn start_job_endpoint_shape() {
+        fn fake_runner(_st: Arc<State>, _id: String) {}
+        let st = test_state();
+        let resp = start_job_with(&st, "sync", fake_runner);
+        assert_eq!(resp.status_code().0, 200);
+        let v: Value = serde_json::from_slice(&resp.into_reader().into_inner()).unwrap();
+        assert_eq!(v["kind"], "sync");
+        assert_eq!(v["state"], "running");
+        let id = v["id"].as_str().unwrap().to_string();
+        assert!(id.starts_with("sync-"));
+        // The registry now carries the running job (the fake runner leaves
+        // it `running`, which is also what the second POST below sees).
+        assert_eq!(st.jobs_lock()[&id].state, "running");
+        assert!(claim_job(&st, "sync").is_none());
+    }
+
+    /// End-to-end smoke over a real loopback socket: the whole
+    /// `Server → handle_request → route` path must answer the new endpoints
+    /// and serve the page with the «Дані» area.
+    #[test]
+    fn serve_smoke_jobs_and_page() {
+        use std::io::{Read, Write};
+        let server = Server::http("127.0.0.1:0").expect("bind ephemeral port");
+        let port = server
+            .server_addr()
+            .to_ip()
+            .expect("plain IP listener")
+            .port();
+        let st = test_state();
+        let worker = std::thread::spawn(move || {
+            for req in server.incoming_requests().take(2) {
+                if handle_request(req, &st).is_err() {
+                    break;
+                }
+            }
+        });
+        let get = |path: &str| -> String {
+            let mut s = String::new();
+            if let Ok(mut sock) = std::net::TcpStream::connect(("127.0.0.1", port)) {
+                let _ = sock.write_all(
+                    format!("GET {path} HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                );
+                let _ = sock.read_to_string(&mut s);
+            }
+            s
+        };
+        let body = get("/api/jobs");
+        assert!(body.starts_with("HTTP/1.1 200 OK"), "jobs list: {body}");
+        assert!(body.contains("\"jobs\":[]"), "jobs list: {body}");
+        let page = get("/");
+        assert!(page.starts_with("HTTP/1.1 200 OK"), "index page");
+        assert!(page.contains("id=\"btn-jobs-sync\""), "index page has the jobs buttons");
+        worker.join().expect("worker");
+    }
+
+    #[test]
+    fn ui_page_has_data_jobs_area() {
+        // «Дані» area: both job buttons, the status line, and the polling
+        // client against the new endpoints must be present in the page.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-jobs-sync\""));
+        assert!(ui::INDEX_HTML.contains("id=\"btn-jobs-snapshot\""));
+        assert!(ui::INDEX_HTML.contains("id=\"jobs-status\""));
+        assert!(ui::INDEX_HTML.contains("id=\"jobs-list\""));
+        assert!(ui::INDEX_HTML.contains("Оновити наживо"));
+        assert!(ui::INDEX_HTML.contains("Отримати снапшот"));
+        assert!(ui::INDEX_HTML.contains("\"/api/jobs/\""));
+        assert!(ui::INDEX_HTML.contains("/api/jobs\""));
+        assert!(ui::INDEX_HTML.contains("startDataJob"));
+        assert!(ui::INDEX_HTML.contains("refreshJobs"));
     }
 
     #[test]

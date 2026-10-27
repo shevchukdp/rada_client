@@ -5,7 +5,7 @@
 
 use anyhow::{anyhow, Context, Result};
 use rusqlite::{params, Connection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 /// One annotation row.
 #[derive(Debug, Clone, Serialize)]

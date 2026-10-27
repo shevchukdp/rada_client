@@ -10,8 +10,8 @@ official open-data API:
 
 | Executable | Role |
 |---|---|
-| `rada-client-gui.exe` | **The app.** One egui window: search, document reader (live card/text/editions), annotations, live arrivals feed, index status, one-click snapshot download. |
-| `rada-client.exe` | CLI: build/sync the index, search, live lookups, snapshots, the local web UI. |
+| `rada-client-gui.exe` | **The app.** One egui window: full-text search, document reader with structured act rendering (live card/text/editions), annotations & favorites, live arrivals feed, 17 color themes, one-click snapshot download, live sync and local backup/restore. |
+| `rada-client.exe` | CLI: build/sync the index, search, live lookups, snapshots (create/restore/fetch), annotations, the local web UI. |
 
 > Status: **v0.9.0** — GUI, CLI, web UI, snapshot release automation all
 > built, tested and verified against the live API. Releases:
@@ -54,9 +54,10 @@ official open-data API:
   - **Оновлення** — the live recently-updated feed (`r.tsv`), rows open the
     reader.
   - **Головна** — index status (documents, size, dictionaries),
-    one-click **live sync**, **snapshot download** with progress, and local
-    **backup / restore** of the index to a `.sqlite.gz` file (annotations
-    preserved both ways).
+    one-click **live sync**, **snapshot download** with progress, **full
+    index build** from the official `doc.txt` dump (or a local dump file),
+    and local **backup / restore** of the index to a `.sqlite.gz` file
+    (annotations preserved both ways).
   - Dictionaries are **auto-loaded on startup** when empty (3 paced
     requests), so filters work out of the box.
 - **Full local index** of all 295 340 document cards (metadata + titles),
@@ -72,8 +73,9 @@ official open-data API:
   external assets): search (with publisher filter + live name resolver),
   reader, find-in-text, annotations with **inline editing**
   (`PUT /api/annotations`), export (txt/md/html), keyboard shortcuts,
-  recent documents, auto-loaded «Нові документи» and the same 17 themes
-  (CSS variables, localStorage).
+  recent documents, auto-loaded «Нові документи», a **«Дані» panel** to run
+  live sync and snapshot fetch as background jobs (`POST /api/jobs/sync|snapshot`,
+  `GET /api/jobs`), and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
 

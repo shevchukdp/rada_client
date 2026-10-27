@@ -108,7 +108,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 // Fresh install: propose the snapshot.
                 ui.label(
                     "Немає локального індексу. Найшвидший шлях — завантажити щомісячний \
-                     снапшот (~70 MB) з GitHub і розгорнути його локально.",
+                     снапшот (~70 MB) з GitHub і розгорнути його локально. Або побудуйте \
+                     індекс з офіційного дампу в розділі «Повна побудова індексу» нижче.",
                 );
                 fetch_controls(app, ui);
             } else {
@@ -137,6 +138,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
             ui.add_space(10.0);
             backup_controls(app, ui);
+            ui.add_space(6.0);
+            init_controls(app, ui);
 
             sync_log(app, ui);
 
@@ -314,6 +317,68 @@ fn backup_controls(app: &mut App, ui: &mut egui::Ui) {
     }
 }
 
+/// Full-dump init: build/rebuild the index from the official `doc.txt`
+/// (network download or a locally picked file). Upsert-only, annotations safe.
+fn init_controls(app: &mut App, ui: &mut egui::Ui) {
+    egui::CollapsingHeader::new("Повна побудова індексу (init)")
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.label(
+                "Будує індекс з офіційного дампу doc.txt (~51 MB): завантаження через \
+                 мережу або вибір локального файлу.",
+            );
+            ui.label(
+                "Альтернатива снапшоту, коли GitHub недоступний; анотацій не чіпає.",
+            );
+            ui.horizontal(|ui| {
+                if app.home.init_running {
+                    ui.spinner();
+                    ui.label("побудова індексу ...");
+                } else {
+                    if ui
+                        .button(
+                            egui::RichText::new("Побудувати з офіційного дампу").strong(),
+                        )
+                        .clicked()
+                    {
+                        app.home.confirm_init = true;
+                    }
+                    if ui.button("З файлу дампу ...").clicked() {
+                        app.run_init(true);
+                    }
+                }
+            });
+        });
+
+    if app.home.confirm_init && !app.home.init_running {
+        egui::Window::new("Побудувати індекс з дампу?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label("Завантажити офіційний doc.txt (~51 MB) і поповнити індекс:");
+                ui.label(app.db_path.display().to_string());
+                ui.label("Існуючі документи оновляться; анотації залишаться.");
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Скасувати").clicked() {
+                        app.home.confirm_init = false;
+                    }
+                    if ui
+                        .button(
+                            egui::RichText::new("Завантажити й побудувати")
+                                .strong()
+                                .color(gold()),
+                        )
+                        .clicked()
+                    {
+                        app.run_init(false);
+                    }
+                });
+            });
+    }
+}
+
 fn sync_log(app: &mut App, ui: &mut egui::Ui) {
     if app.home.sync_log.is_empty() {
         return;
@@ -337,4 +402,8 @@ pub struct HomeState {
     pub backup_busy: bool,
     /// Restore-from-file confirmation window is open.
     pub confirm_restore: bool,
+    /// Full-dump init worker is running.
+    pub init_running: bool,
+    /// Full-dump init confirmation window is open.
+    pub confirm_init: bool,
 }
