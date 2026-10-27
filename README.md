@@ -24,6 +24,8 @@ official open-data API:
   matrix/opencode/nord/dracula/solarized/gruvbox/monokai/one-dark/tokyo-night/
   catppuccin/github-dark, header picker, persisted), Ukrainian labels:
   - **Пошук** — local FTS5 search with filters (status/type/date/number/publisher),
+    a **date-range calendar** (Ukrainian months, dates beyond the freshest data
+    fetched from rada are disabled),
     paging, live name resolver; **export of the results list** (.md/.txt);
     one-click **copy nreg** from any result row.
   - **Continue / recents** — the app persists the last opened documents and
@@ -74,8 +76,9 @@ official open-data API:
   external assets): search (with publisher filter + live name resolver),
   reader, find-in-text, annotations with **inline editing**
   (`PUT /api/annotations`), export (txt/md/html), keyboard shortcuts,
-  recent documents, auto-loaded «Нові документи», a **«Дані» panel** to run
-  live sync and snapshot fetch as background jobs (`POST /api/jobs/sync|snapshot`,
+  recent documents, auto-loaded «Нові документи», a **Favorites (Обране) tab**
+  (all annotations, filters, delete/edit, JSON export/import), a **«Дані» panel**
+  to run live sync and snapshot fetch as background jobs (`POST /api/jobs/sync|snapshot`,
   `GET /api/jobs`), and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.

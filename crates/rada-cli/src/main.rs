@@ -270,9 +270,10 @@ fn cmd_sync(db: &PathBuf, pace: u64) -> Result<()> {
                     status: j.status,
                     types: j.types.clone(),
                     organs: format!(
-                        "{}:{}:",
+                        "{}:{}:{}",
                         j.org,
-                        j.orgdat.map(|d| d.to_string()).unwrap_or_default()
+                        j.orgdat.map(|d| d.to_string()).unwrap_or_default(),
+                        j.orgnum.clone().unwrap_or_default()
                     ),
                     minjust: j.minjust.clone().unwrap_or_default(),
                     npix: 0,

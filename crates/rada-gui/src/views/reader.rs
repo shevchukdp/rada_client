@@ -253,7 +253,10 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
     let mut nav_req: Option<i64> = None;
 
     ui.heading(
-        egui::RichText::new(&title).strong().color(gold()).size(19.0),
+        egui::RichText::new(&title)
+            .strong()
+            .color(gold())
+            .size(19.0 * app.settings.text_scale()),
     );
     ui.horizontal(|ui| {
         let (label, color) = chip(status);
@@ -399,6 +402,7 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
         .filter(|a| a.kind == "highlight" && !a.text.trim().is_empty())
         .map(|a| a.text.clone())
         .collect();
+    let zoom_scale = app.settings.text_scale();
 
     // card details (from live card)
     if let Some(c) = app.reader.as_ref().unwrap().card.clone() {
@@ -446,6 +450,32 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
         }
         if ui.button("⬇ Експорт .html").clicked() {
             app.export_reader("html");
+        }
+        ui.separator();
+        // Reader font zoom: A−  100%  A+   (persisted in settings.ini).
+        let z = app.settings.zoom;
+        let zlabel = if z == 0 { "100%".to_string() } else { format!("{z}%") };
+        if ui
+            .button("A−")
+            .on_hover_text("дрібніший текст")
+            .clicked()
+        {
+            let cur = if z == 0 { 100 } else { z };
+            app.settings.zoom = cur.saturating_sub(10).max(60);
+            crate::settings::save(&app.settings);
+        }
+        if ui.button(egui::RichText::new(zlabel).small()).clicked() {
+            app.settings.zoom = 0; // reset
+            crate::settings::save(&app.settings);
+        }
+        if ui
+            .button("A+")
+            .on_hover_text("більший текст")
+            .clicked()
+        {
+            let cur = if z == 0 { 100 } else { z };
+            app.settings.zoom = (cur + 10).min(250);
+            crate::settings::save(&app.settings);
         }
         if loading {
             ui.spinner();
@@ -570,16 +600,17 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
                 let ann = ann_spans(&para.text, &snippets);
                 let kind = para.kind;
                 let centered = matches!(kind, PKind::DocTitle | PKind::Subtitle);
+                let scale = zoom_scale;
                 let body = |ui: &mut egui::Ui| {
                     ui.horizontal_wrapped(|ui| {
                         for (seg, part) in styled(&para.text, &ann, &p_hits) {
                             match seg {
                                 Seg::Plain => {
-                                    ui.label(base_rt(kind, part));
+                                    ui.label(base_rt(kind, part, scale));
                                 }
                                 Seg::Ann => {
                                     ui.label(
-                                        base_rt(kind, part)
+                                        base_rt(kind, part, scale)
                                             .background_color(gold())
                                             .color(egui::Color32::BLACK)
                                             .strong(),
@@ -911,15 +942,28 @@ pub fn paragraphs(t: &str) -> Vec<Para> {
 }
 
 /// Base styling of one paragraph kind (find/annotation spans may override).
-fn base_rt(kind: PKind, part: &str) -> egui::RichText {
+/// `scale` comes from the user's reader zoom setting (1.0 = default).
+fn base_rt(kind: PKind, part: &str, scale: f32) -> egui::RichText {
     let rt = egui::RichText::new(part);
     match kind {
-        PKind::DocTitle => rt.strong().size(20.0).color(gold()),
-        PKind::Subtitle => rt.strong().size(17.0).color(crate::themes::info()),
-        PKind::Meta => rt.small().weak(),
-        PKind::Section => rt.strong().size(16.0).color(gold()),
-        PKind::Article => rt.strong().size(15.0),
-        PKind::Num | PKind::Plain => rt,
+        PKind::DocTitle => rt.strong().size(20.0 * scale).color(gold()),
+        PKind::Subtitle => rt.strong().size(17.0 * scale).color(crate::themes::info()),
+        PKind::Meta => {
+            if scale == 1.0 {
+                rt.small().weak()
+            } else {
+                rt.size(11.0 * scale).weak()
+            }
+        }
+        PKind::Section => rt.strong().size(16.0 * scale).color(gold()),
+        PKind::Article => rt.strong().size(15.0 * scale),
+        PKind::Num | PKind::Plain => {
+            if scale == 1.0 {
+                rt
+            } else {
+                rt.size(13.0 * scale)
+            }
+        }
     }
 }
 

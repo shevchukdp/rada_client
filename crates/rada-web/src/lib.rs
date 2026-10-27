@@ -364,7 +364,9 @@ fn dict_handler(method: &Method, rest: &str, st: &State) -> Resp {
 
 /// `GET /api/annotations?nreg=`, `POST /api/annotations`,
 /// `PUT /api/annotations` (body `{"id":…, "text":…}`),
-/// `DELETE /api/annotations/{id}`.
+/// `DELETE /api/annotations/{id}`, plus the «Обране» page routes
+/// `GET /api/annotations/all`, `GET /api/annotations/export` and
+/// `POST /api/annotations/import`.
 fn annotations_handler(
     method: &Method,
     rest: &str,
@@ -372,6 +374,32 @@ fn annotations_handler(
     st: &State,
     req: &mut Request,
 ) -> Resp {
+    // Aggregate sub-routes (each one guards its own method) must be matched
+    // before the generic id/body handling below.
+    match rest {
+        "annotations/all" => {
+            return if method == &Method::Get {
+                annotations_all(st)
+            } else {
+                json_err(405, "method not allowed")
+            };
+        }
+        "annotations/export" => {
+            return if method == &Method::Get {
+                annotations_export(st)
+            } else {
+                json_err(405, "method not allowed")
+            };
+        }
+        "annotations/import" => {
+            return if method == &Method::Post {
+                annotations_import(st, req)
+            } else {
+                json_err(405, "method not allowed")
+            };
+        }
+        _ => {}
+    }
     match method {
         Method::Get => {
             let Some(nreg) = qget(q, "nreg") else {
@@ -460,6 +488,77 @@ fn annotations_handler(
             }
         }
         _ => json_err(405, "method not allowed"),
+    }
+}
+
+/// `GET /api/annotations/all` — every annotation across all documents,
+/// newest first, joined with the indexed document title («Обране» page).
+/// Title is `""` when the document is no longer in the index.
+fn annotations_all(st: &State) -> Resp {
+    let conn = match open_db(st) {
+        Ok(c) => c,
+        Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
+    };
+    match rada_db::annotations::all(&conn) {
+        Ok(items) => {
+            // `all()` returns rows ordered by id; the UI wants newest first.
+            let items: Vec<Value> = items
+                .into_iter()
+                .rev()
+                .map(|a| {
+                    json!({
+                        "id": a.id,
+                        "nreg": a.nreg,
+                        "title": rada_db::title_by_nreg(&conn, &a.nreg).unwrap_or_default(),
+                        "kind": a.kind,
+                        "text": a.text,
+                        "created_at": a.created_at,
+                    })
+                })
+                .collect();
+            json_ok(&json!({ "items": items }))
+        }
+        Err(e) => json_err(500, &e.to_string()),
+    }
+}
+
+/// `GET /api/annotations/export` — the portable JSON backup
+/// (`annotations::export_json`) served as a file download.
+fn annotations_export(st: &State) -> Resp {
+    let conn = match open_db(st) {
+        Ok(c) => c,
+        Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
+    };
+    match rada_db::annotations::export_json(&conn) {
+        Ok(body) => {
+            let stamp = rada_db::build::now_stamp().replace(' ', "_").replace(':', "");
+            let filename = format!("rada-annotations-{stamp}.json");
+            Response::from_string(body)
+                .with_header(h("Content-Type", "application/json; charset=utf-8"))
+                .with_header(h(
+                    "Content-Disposition",
+                    &format!("attachment; filename=\"{filename}\""),
+                ))
+        }
+        Err(e) => json_err(500, &e.to_string()),
+    }
+}
+
+/// `POST /api/annotations/import` — body is the export JSON (a plain array
+/// or `{"annotations": […]}`); malformed items are skipped. Returns the
+/// number of imported annotations.
+fn annotations_import(st: &State, req: &mut Request) -> Resp {
+    let body = match read_body(req) {
+        Ok(b) => b,
+        Err(e) => return json_err(400, &format!("bad body: {e}")),
+    };
+    let conn = match open_db(st) {
+        Ok(c) => c,
+        Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
+    };
+    match rada_db::annotations::import_json(&conn, &body) {
+        Ok(n) => json_ok(&json!({ "imported": n })),
+        Err(e) => json_err(400, &e.to_string()),
     }
 }
 
@@ -899,7 +998,12 @@ fn json_err(status: u16, msg: &str) -> Resp {
 }
 
 fn html_response() -> Resp {
-    Response::from_string(ui::INDEX_HTML.to_string())
+    // Serve the page with a Content-Length instead of chunked encoding:
+    // tiny_http chunks any body ≥ its 32 KiB threshold by default, and a
+    // chunk boundary can cut a multibyte UTF-8 character in half, which
+    // breaks naive raw-socket readers (and the loopback smoke test).
+    Response::from_data(ui::INDEX_HTML.as_bytes().to_vec())
+        .with_chunked_threshold(usize::MAX)
         .with_header(h("Content-Type", "text/html; charset=utf-8"))
 }
 
@@ -1263,6 +1367,151 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("/api/jobs\""));
         assert!(ui::INDEX_HTML.contains("startDataJob"));
         assert!(ui::INDEX_HTML.contains("refreshJobs"));
+    }
+
+    // ---- «Обране» (favorites): /api/annotations/all|export|import ----------
+
+    /// Fresh indexed db for one favorites test: migrated schema + one titled
+    /// document (`2341-14`), so title joins are observable. Unique dir per
+    /// tag keeps parallel tests from colliding.
+    fn favorites_state(tag: &str) -> Arc<State> {
+        let dir = std::env::temp_dir().join(format!("rada-web-fav-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let st = Arc::new(State {
+            db_path: dir.join("test.sqlite"),
+            client: RadaClient::with_pacing(Duration::from_secs(3600)),
+            pace_secs: 3600,
+            jobs: Mutex::new(HashMap::new()),
+            job_seq: AtomicU64::new(0),
+        });
+        let conn = db_open(&st.db_path).expect("open test index");
+        conn.execute(
+            "INSERT INTO docs(nreg, nazva) VALUES('2341-14', 'Про тестовий закон')",
+            [],
+        )
+        .expect("seed doc");
+        drop(conn);
+        st
+    }
+
+    #[test]
+    fn annotations_all_route_shape() {
+        let st = favorites_state("all");
+        let conn = db_open(&st.db_path).unwrap();
+        let c1 = rada_db::annotations::insert(&conn, "2341-14", "comment", "коментар", None, None).unwrap();
+        let b1 = rada_db::annotations::insert(&conn, "2341-14", "bookmark", "", None, None).unwrap();
+        let h1 = rada_db::annotations::insert(&conn, "0000-00", "highlight", "виділення", Some(1), Some(9)).unwrap();
+        drop(conn);
+        let (code, v) = call(&st, Method::Get, "/api/annotations/all", "");
+        assert_eq!(code, 200);
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        // Newest first (ids descend).
+        assert_eq!(items[0]["id"], h1);
+        assert_eq!(items[1]["id"], b1);
+        assert_eq!(items[2]["id"], c1);
+        // Exact JSON shape of one item.
+        for key in ["id", "nreg", "title", "kind", "text", "created_at"] {
+            assert!(items[0].get(key).is_some(), "missing key {key}");
+        }
+        assert_eq!(items[0].as_object().unwrap().len(), 6);
+        assert_eq!(items[0]["nreg"], "0000-00");
+        assert_eq!(items[0]["kind"], "highlight");
+        assert_eq!(items[0]["text"], "виділення");
+        // Title from the docs lookup; empty string for a missing document.
+        assert_eq!(items[0]["title"], "");
+        assert_eq!(items[2]["title"], "Про тестовий закон");
+        assert!(items[1]["created_at"].as_str().unwrap().len() >= 19);
+        // Wrong method matches the shared error style.
+        let (code, v) = call(&st, Method::Post, "/api/annotations/all", "");
+        assert_eq!(code, 405);
+        assert!(v["error"].as_str().unwrap().contains("method"));
+    }
+
+    #[test]
+    fn annotations_export_route_downloads_json() {
+        let st = favorites_state("export");
+        let conn = db_open(&st.db_path).unwrap();
+        rada_db::annotations::insert(&conn, "2341-14", "comment", "привіт", None, None).unwrap();
+        drop(conn);
+        let mut req: Request = TestRequest::new()
+            .with_method(Method::Get)
+            .with_path("/api/annotations/export")
+            .into();
+        let resp = route(&Method::Get, "/api/annotations/export", &[], &mut req, &st).expect("route");
+        assert_eq!(resp.status_code().0, 200);
+        let hdr = |name: &str| -> String {
+            resp.headers()
+                .iter()
+                .find(|x| x.field.as_str().as_str().eq_ignore_ascii_case(name))
+                .map(|x| x.value.to_string())
+                .unwrap_or_default()
+        };
+        let ct = hdr("content-type");
+        assert!(ct.contains("application/json"), "content-type: {ct}");
+        let cd = hdr("content-disposition");
+        assert!(cd.contains("attachment"), "disposition: {cd}");
+        assert!(cd.contains("rada-annotations-"), "disposition: {cd}");
+        let body = resp.into_reader().into_inner();
+        let v: Value = serde_json::from_slice(&body).unwrap();
+        let arr = v.as_array().unwrap();
+        assert_eq!(arr.len(), 1);
+        assert_eq!(arr[0]["nreg"], "2341-14");
+        assert_eq!(arr[0]["kind"], "comment");
+        assert_eq!(arr[0]["text"], "привіт");
+        // Wrong method → 405 JSON error.
+        assert_eq!(call(&st, Method::Post, "/api/annotations/export", "").0, 405);
+    }
+
+    #[test]
+    fn annotations_import_route_counts() {
+        let st = favorites_state("import");
+        // One valid + one blank-nreg item: only the valid one is imported.
+        let body = r#"[{"nreg":"2341-14","kind":"comment","text":"імпортовано"},
+                       {"nreg":"  ","kind":"comment","text":"не має потрапити"}]"#;
+        let (code, v) = call(&st, Method::Post, "/api/annotations/import", body);
+        assert_eq!(code, 200);
+        assert_eq!(v["imported"], 1);
+        // The imported annotation is visible through the «Обране» list.
+        let (code, v) = call(&st, Method::Get, "/api/annotations/all", "");
+        assert_eq!(code, 200);
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0]["text"], "імпортовано");
+        assert_eq!(items[0]["title"], "Про тестовий закон");
+        // Non-JSON is a hard 400 with the shared error shape; GET is 405.
+        let (code, v) = call(&st, Method::Post, "/api/annotations/import", "не json");
+        assert_eq!(code, 400);
+        assert!(v["error"].is_string());
+        assert_eq!(call(&st, Method::Get, "/api/annotations/import", "").0, 405);
+    }
+
+    #[test]
+    fn ui_page_has_favorites_tab() {
+        // «Обране» page: topbar tab, section with header controls, kind
+        // filter chips, list container, and the three new endpoints.
+        assert!(ui::INDEX_HTML.contains("data-tab=\"favorites\""));
+        assert!(ui::INDEX_HTML.contains("Обране"));
+        assert!(ui::INDEX_HTML.contains("id=\"tab-favorites\""));
+        assert!(ui::INDEX_HTML.contains("id=\"fav-refresh\""));
+        assert!(ui::INDEX_HTML.contains("id=\"fav-count\""));
+        assert!(ui::INDEX_HTML.contains("id=\"fav-export\""));
+        assert!(ui::INDEX_HTML.contains("id=\"fav-import\""));
+        assert!(ui::INDEX_HTML.contains("id=\"fav-import-file\""));
+        assert!(ui::INDEX_HTML.contains("id=\"fav-status\""));
+        assert!(ui::INDEX_HTML.contains("id=\"fav-list\""));
+        assert!(ui::INDEX_HTML.contains("/api/annotations/all"));
+        assert!(ui::INDEX_HTML.contains("/api/annotations/export"));
+        assert!(ui::INDEX_HTML.contains("/api/annotations/import"));
+        assert!(ui::INDEX_HTML.contains("loadFavorites"));
+        assert!(ui::INDEX_HTML.contains("renderFavorites"));
+        // Kind filter chips: усі | коментарі | виділення | закладки.
+        assert!(ui::INDEX_HTML.contains("data-kind=\"\""));
+        assert!(ui::INDEX_HTML.contains("data-kind=\"comment\""));
+        assert!(ui::INDEX_HTML.contains("data-kind=\"highlight\""));
+        assert!(ui::INDEX_HTML.contains("data-kind=\"bookmark\""));
+        // Inline edit reuses the extracted PUT flow shared with the reader.
+        assert!(ui::INDEX_HTML.contains("makeAnnEdit"));
     }
 
     #[test]

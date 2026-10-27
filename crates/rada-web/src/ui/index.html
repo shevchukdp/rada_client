@@ -330,6 +330,46 @@
     flex: 1; min-width: 200px; background: var(--panel2); color: var(--text);
     border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 14px;
   }
+  /* «Обране» page: kind filter chips + annotation cards (same tag colors as
+     the reader's annotation list, driven only by theme variables). */
+  #fav-filters .chip {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #fav-filters .chip:hover { color: var(--text); border-color: var(--accent); }
+  #fav-filters .chip.active {
+    background: var(--accent); color: var(--accent-text); border-color: var(--accent);
+  }
+  #fav-list .fav-item {
+    display: flex; gap: 8px; align-items: center; padding: 8px 12px;
+    border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; font-size: 14px;
+  }
+  #fav-list .tag {
+    font-size: 11px; text-transform: uppercase; color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 5px; padding: 1px 6px; white-space: nowrap;
+  }
+  #fav-list .fav-item.comment .tag { color: var(--ok); border-color: var(--ok); }
+  #fav-list .fav-item.highlight .tag { color: var(--link); border-color: var(--link); }
+  #fav-list .fav-item .when { color: var(--muted); font-size: 12px; white-space: nowrap; }
+  #fav-list .fav-item .col { flex: 1; min-width: 0; }
+  #fav-list .fav-item .title { color: var(--link); cursor: pointer; }
+  #fav-list .fav-item .title:hover { text-decoration: underline; }
+  #fav-list .fav-item .txt { word-break: break-word; }
+  #fav-list .fav-item .jump, #fav-list .fav-item .edit, #fav-list .fav-item .del {
+    background: transparent; color: var(--muted);
+    border: 1px solid var(--border); border-radius: 5px;
+    padding: 1px 7px; font-size: 13px; line-height: 1.3;
+  }
+  #fav-list .fav-item .jump:hover, #fav-list .fav-item .edit:hover {
+    color: var(--text); border-color: var(--accent);
+  }
+  #fav-list .fav-item .del:hover { color: var(--err); border-color: var(--err); }
+  #fav-list .fav-item textarea {
+    flex: 1; min-width: 200px; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 14px;
+  }
+  #fav-status.ok { color: var(--ok); }
+  #fav-status.err { color: var(--err); }
   .form-error { color: var(--err); font-size: 14px; margin: 4px 2px 8px; }
   details#card-details {
     background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
@@ -362,6 +402,7 @@
   <nav class="tabs">
     <button data-tab="search" class="active">Пошук</button>
     <button data-tab="arrivals">Нові документи</button>
+    <button data-tab="favorites">Обране</button>
     <button data-tab="status">Індекс</button>
   </nav>
   <div class="theme-pick">
@@ -437,6 +478,24 @@
       <span class="hint">документи, оновлені з минулого серверного збігу</span>
     </div>
     <div id="arrivals"></div>
+  </section>
+
+  <section id="tab-favorites" hidden>
+    <div class="row">
+      <button id="fav-refresh" type="button">оновити</button>
+      <span id="fav-count" class="hint"></span>
+      <button id="fav-export" type="button" title="Резервна копія всіх анотацій у файл JSON">⬇ Експорт .json</button>
+      <button id="fav-import" type="button" title="Додати анотації з резервної копії JSON">⬆ Імпорт .json</button>
+      <input id="fav-import-file" type="file" accept=".json,application/json" hidden>
+      <span id="fav-status" class="hint"></span>
+    </div>
+    <div class="row" id="fav-filters">
+      <button class="chip active" type="button" data-kind="">усі</button>
+      <button class="chip" type="button" data-kind="comment">коментарі</button>
+      <button class="chip" type="button" data-kind="highlight">виділення</button>
+      <button class="chip" type="button" data-kind="bookmark">закладки</button>
+    </div>
+    <div id="fav-list" class="hint"></div>
   </section>
 
   <section id="tab-status" hidden>
@@ -981,6 +1040,57 @@ function showFind(delta, scroll) {
     (findIdx + 1) + " / " + findHits.length + " " + pluralFind(findHits.length);
 }
 
+/// Inline-edit controls for one annotation: «змінити» → textarea +
+/// Зберегти/скасувати driving the PUT /api/annotations flow. Shared by the
+/// reader's annotation list and the «Обране» page. `tx` is the plain-text
+/// element hidden while editing; `refresh()` re-renders the owning list.
+function makeAnnEdit(a, tx, refresh) {
+  const ta = document.createElement("textarea");
+  ta.value = a.text || "";
+  ta.rows = 1;
+  ta.hidden = true;
+  const save = document.createElement("button");
+  save.className = "edit";
+  save.type = "button";
+  save.textContent = "Зберегти";
+  save.hidden = true;
+  const cancel = document.createElement("button");
+  cancel.className = "edit";
+  cancel.type = "button";
+  cancel.textContent = "скасувати";
+  cancel.hidden = true;
+  const editBtn = document.createElement("button");
+  editBtn.className = "edit";
+  editBtn.type = "button";
+  editBtn.textContent = "змінити";
+  const setMode = (editing) => {
+    tx.hidden = editing;
+    ta.hidden = !editing;
+    save.hidden = !editing;
+    cancel.hidden = !editing;
+    editBtn.hidden = editing;
+  };
+  editBtn.onclick = () => { setMode(true); ta.focus(); };
+  cancel.onclick = () => setMode(false);
+  save.onclick = async () => {
+    const t = ta.value.trim();
+    if (!t) { alert("Текст анотації не може бути порожнім."); return; }
+    save.disabled = true;
+    try {
+      await api("/api/annotations", {
+        method: "PUT",
+        body: JSON.stringify({ id: a.id, text: t }),
+      });
+    } catch (e) {
+      save.disabled = false;
+      alert("Помилка: " + e.message);
+      return;
+    }
+    refresh();
+  };
+  return { ta, save, cancel, editBtn };
+}
+
 async function loadAnnotations(nreg) {
   const ul = $("annotations");
   ul.innerHTML = "";
@@ -1003,50 +1113,10 @@ async function loadAnnotations(nreg) {
         try { await api("/api/annotations/" + a.id, { method: "DELETE" }); loadAnnotations(nreg); }
         catch (e) { alert("Помилка: " + e.message); }
       };
-      // «змінити» → inline textarea + Зберегти/скасувати (PUT).
-      const ta = document.createElement("textarea");
-      ta.value = a.text || "";
-      ta.rows = 1;
-      ta.hidden = true;
-      const save = document.createElement("button");
-      save.className = "edit";
-      save.type = "button";
-      save.textContent = "Зберегти";
-      save.hidden = true;
-      const cancel = document.createElement("button");
-      cancel.className = "edit";
-      cancel.type = "button";
-      cancel.textContent = "скасувати";
-      cancel.hidden = true;
-      const editBtn = document.createElement("button");
-      editBtn.className = "edit";
-      editBtn.type = "button";
-      editBtn.textContent = "змінити";
-      const setMode = (editing) => {
-        tx.hidden = editing;
-        ta.hidden = !editing;
-        save.hidden = !editing;
-        cancel.hidden = !editing;
-        editBtn.hidden = editing;
-      };
-      editBtn.onclick = () => { setMode(true); ta.focus(); };
-      cancel.onclick = () => setMode(false);
-      save.onclick = async () => {
-        const t = ta.value.trim();
-        if (!t) { alert("Текст анотації не може бути порожнім."); return; }
-        save.disabled = true;
-        try {
-          await api("/api/annotations", {
-            method: "PUT",
-            body: JSON.stringify({ id: a.id, text: t }),
-          });
-        } catch (e) {
-          save.disabled = false;
-          alert("Помилка: " + e.message);
-          return;
-        }
-        loadAnnotations(nreg); // re-render + repaint the gold marks
-      };
+      // «змінити» → inline textarea + Зберегти/скасувати (PUT); the flow is
+      // shared with the «Обране» page via makeAnnEdit.
+      const ed = makeAnnEdit(a, tx, () => loadAnnotations(nreg)); // re-render + repaint the gold marks
+      const ta = ed.ta, save = ed.save, cancel = ed.cancel, editBtn = ed.editBtn;
       li.appendChild(tag); li.appendChild(tx); li.appendChild(ta);
       li.appendChild(save); li.appendChild(cancel); li.appendChild(editBtn);
       // «→ текст» — scroll the document to the first occurrence.
@@ -1230,12 +1300,14 @@ function pollJobs() {
 function switchTab(name) {
   document.querySelectorAll("header .tabs button").forEach(b =>
     b.classList.toggle("active", b.dataset.tab === name));
-  for (const t of ["search", "arrivals", "status"]) {
+  for (const t of ["search", "arrivals", "favorites", "status"]) {
     $("tab-" + t).hidden = (t !== name);
   }
   if (name === "status") loadStatusTab();
   // «нові документи» auto-loads the live feed on the first tab opening.
   if (name === "arrivals" && !arrivalsLoaded) loadArrivals();
+  // «Обране» likewise fetches the annotation list once; «оновити» re-fetches.
+  if (name === "favorites" && !favLoaded) loadFavorites();
 }
 
 // ---- recent documents -----------------------------------------------------
@@ -1281,6 +1353,136 @@ function renderRecent() {
     box.appendChild(chip);
   }
 }
+
+// ---- favorites («Обране») ---------------------------------------------------
+// All annotations across documents (GET /api/annotations/all, newest first):
+// kind filter chips, jump-into-reader via the find bar, delete, inline edit
+// (the PUT flow shared with the reader via makeAnnEdit), and the JSON backup
+// export / import against the two new server routes.
+let favItems = [];      // last /api/annotations/all payload
+let favKind = "";       // active filter chip ("" = усі)
+let favLoaded = false;  // fetched once on the first tab opening
+
+async function loadFavorites() {
+  const box = $("fav-list");
+  box.textContent = "Завантаження…";
+  try {
+    const d = await api("/api/annotations/all");
+    favItems = d.items || [];
+    favLoaded = true;
+    renderFavorites();
+    refreshFoot(); // the footer annotation count may have changed
+  } catch (e) {
+    favItems = [];
+    $("fav-count").textContent = "";
+    box.textContent = "Помилка: " + e.message;
+  }
+}
+
+function renderFavorites() {
+  const box = $("fav-list");
+  box.innerHTML = "";
+  const items = favKind ? favItems.filter(a => a.kind === favKind) : favItems;
+  $("fav-count").textContent = favItems.length
+    ? "Збережено: " + favItems.length + " " +
+      plural(favItems.length, "анотація", "анотації", "анотацій")
+    : "";
+  if (!items.length) {
+    box.textContent = favItems.length
+      ? "Немає анотацій цього типу."
+      : "Поки що нічого не збережено — додавайте закладки, виділення та коментарі в читалці.";
+    return;
+  }
+  for (const a of items) {
+    const row = document.createElement("div");
+    row.className = "fav-item " + a.kind;
+    const tag = document.createElement("span");
+    tag.className = "tag";
+    tag.textContent = a.kind;
+    const when = document.createElement("span");
+    when.className = "when";
+    when.textContent = a.created_at || "";
+    const col = document.createElement("div");
+    col.className = "col";
+    const title = document.createElement("a");
+    title.className = "title";
+    title.textContent = a.title || a.nreg;
+    title.title = a.nreg;
+    title.onclick = () => { switchTab("search"); openDoc(a.nreg); };
+    const txt = document.createElement("div");
+    txt.className = "txt";
+    txt.textContent = a.text || "(закладка)";
+    col.appendChild(title);
+    col.appendChild(txt);
+    const ed = makeAnnEdit(a, txt, loadFavorites);
+    // «→ текст» — open the reader and run the annotation text through the
+    // find bar (bookmarks without text have nothing to find → hidden).
+    const jump = document.createElement("button");
+    jump.className = "jump";
+    jump.type = "button";
+    jump.textContent = "→ текст";
+    jump.title = "Відкрити документ і знайти текст";
+    jump.hidden = !a.text;
+    jump.onclick = () => favJump(a);
+    const del = document.createElement("button");
+    del.className = "del";
+    del.type = "button";
+    del.textContent = "×";
+    del.title = "Видалити анотацію";
+    del.onclick = async () => {
+      if (!window.confirm("Видалити цю анотацію?")) return;
+      try {
+        await api("/api/annotations/" + a.id, { method: "DELETE" });
+        loadFavorites();
+      } catch (e) { alert("Помилка: " + e.message); }
+    };
+    row.appendChild(tag); row.appendChild(when); row.appendChild(col);
+    row.appendChild(ed.ta); row.appendChild(ed.save); row.appendChild(ed.cancel);
+    row.appendChild(ed.editBtn); row.appendChild(jump); row.appendChild(del);
+    box.appendChild(row);
+  }
+}
+
+/// Open the annotation's document in the reader tab and find its text. The
+/// live text load is paced (≈5 s/request), so wait briefly for it before
+/// reusing jumpToText (which reports when nothing could be loaded).
+async function favJump(a) {
+  switchTab("search");
+  if (state.curNreg !== a.nreg) await openDoc(a.nreg);
+  for (let i = 0; i < 40 && state.curNreg === a.nreg && !state.curText; i++) {
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  if (a.text) jumpToText(a.text);
+}
+
+$("fav-refresh").onclick = loadFavorites;
+$("fav-export").onclick = () => { location.href = "/api/annotations/export"; };
+$("fav-import").onclick = () => $("fav-import-file").click();
+$("fav-import-file").addEventListener("change", async (ev) => {
+  const f = ev.target.files && ev.target.files[0];
+  ev.target.value = "";
+  if (!f) return;
+  const st = $("fav-status");
+  st.classList.remove("ok", "err");
+  st.textContent = "імпортую…";
+  try {
+    const raw = await f.text();
+    const d = await api("/api/annotations/import", { method: "POST", body: raw });
+    st.textContent = "імпортовано: " + (d.imported || 0);
+    st.classList.add("ok");
+    loadFavorites();
+  } catch (e) {
+    st.textContent = "Помилка імпорту: " + e.message;
+    st.classList.add("err");
+  }
+});
+document.querySelectorAll("#fav-filters .chip").forEach(b =>
+  b.addEventListener("click", () => {
+    favKind = b.dataset.kind || "";
+    document.querySelectorAll("#fav-filters .chip").forEach(c =>
+      c.classList.toggle("active", c === b));
+    renderFavorites();
+  }));
 
 // ---- wiring ---------------------------------------------------------------
 document.querySelectorAll("header .tabs button").forEach(b =>

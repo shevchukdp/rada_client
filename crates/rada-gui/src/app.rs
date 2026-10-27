@@ -88,6 +88,9 @@ pub enum FetchProg {
 pub struct IndexStatus {
     pub docs: i64,
     pub last_import: Option<String>,
+    /// Newest `org_date` (YYYYMMDD) among indexed cards: the freshest data
+    /// actually fetched from rada — the calendar anchor.
+    pub max_date: Option<String>,
     pub size_bytes: u64,
     pub dicts: Vec<(String, i64)>,
 }
@@ -673,9 +676,10 @@ impl App {
                     status: j.status,
                     types: j.types.clone(),
                     organs: format!(
-                        "{}:{}:",
+                        "{}:{}:{}",
                         j.org,
-                        j.orgdat.map(|d| d.to_string()).unwrap_or_default()
+                        j.orgdat.map(|d| d.to_string()).unwrap_or_default(),
+                        j.orgnum.clone().unwrap_or_default()
                     ),
                     minjust: j.minjust.clone().unwrap_or_default(),
                     npix: 0,
@@ -1391,6 +1395,7 @@ fn read_index_status(db: &PathBuf) -> IndexStatus {
             return IndexStatus {
                 docs: 0,
                 last_import: None,
+                max_date: None,
                 size_bytes: 0,
                 dicts: Vec::new(),
             }
@@ -1400,12 +1405,21 @@ fn read_index_status(db: &PathBuf) -> IndexStatus {
     let mut st = IndexStatus {
         docs: 0,
         last_import: None,
+        max_date: None,
         size_bytes: meta.len(),
         dicts: Vec::new(),
     };
     if let Ok(conn) = rada_db::open(db) {
         st.docs = rada_db::doc_count(&conn).unwrap_or(0);
         st.last_import = rada_db::last_import(&conn);
+        st.max_date = conn
+            .query_row(
+                "SELECT MAX(NULLIF(org_date,'')) FROM docs",
+                [],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .ok()
+            .flatten();
         for kind in ["stan", "typs", "organs"] {
             let count: i64 = conn
                 .query_row(

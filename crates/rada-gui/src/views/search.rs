@@ -42,10 +42,25 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         egui::TextEdit::singleline(&mut app.search.f_date_from)
                             .hint_text("20240101"),
                     );
+                    if ui
+                        .button("…")
+                        .on_hover_text("відкрити календар")
+                        .clicked()
+                    {
+                        open_calendar(app, PickKind::From);
+                    }
                     ui.add_sized(
                         [96.0, 24.0],
-                        egui::TextEdit::singleline(&mut app.search.f_date_to).hint_text("20241231"),
+                        egui::TextEdit::singleline(&mut app.search.f_date_to)
+                            .hint_text("20241231"),
                     );
+                    if ui
+                        .button("…")
+                        .on_hover_text("відкрити календар")
+                        .clicked()
+                    {
+                        open_calendar(app, PickKind::To);
+                    }
                 });
                 ui.end_row();
 
@@ -228,6 +243,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             }
         });
     });
+
+    calendar_popup(app, ctx);
 }
 
 fn status_combo(app: &mut App, ui: &mut egui::Ui) {
@@ -368,6 +385,9 @@ impl Default for SearchState {
             f_typ: None,
             f_date_from: String::new(),
             f_date_to: String::new(),
+            pick: None,
+            pick_year: 0,
+            pick_month: 0,
             f_number: String::new(),
             f_org: None,
             f_org_label: String::new(),
@@ -397,6 +417,10 @@ pub struct SearchState {
     pub f_typ: Option<i64>,
     pub f_date_from: String,
     pub f_date_to: String,
+    /// Open calendar popup (None = closed); month shown while open.
+    pub pick: Option<PickKind>,
+    pub pick_year: u32,
+    pub pick_month: u32,
     pub f_number: String,
     /// Publisher (organs dict id) filter; also holds the picked label.
     pub f_org: Option<i64>,
@@ -504,6 +528,304 @@ impl SearchState {
             offset: self.offset_field,
         };
         self.invalid_date = invalid;
+        // A reversed date range would silently match nothing — swap it.
+        if let (Some(a), Some(b)) = (&q.date_from, &q.date_to) {
+            if a > b {
+                let (f, t) = (q.date_to.clone(), q.date_from.clone());
+                return rada_db::search::SearchQuery {
+                    date_from: f,
+                    date_to: t,
+                    ..q
+                };
+            }
+        }
         q
+    }
+}
+
+// ---------------------------------------------------------------------
+// date picker: calendar popup anchored on the freshest fetched data
+// ---------------------------------------------------------------------
+
+/// Which filter date field the calendar edits.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum PickKind {
+    From,
+    To,
+}
+
+const MONTHS_UK: [&str; 12] = [
+    "Січень",
+    "Лютий",
+    "Березень",
+    "Квітень",
+    "Травень",
+    "Червень",
+    "Липень",
+    "Серпень",
+    "Вересень",
+    "Жовтень",
+    "Листопад",
+    "Грудень",
+];
+const WEEKDAYS_UK: [&str; 7] = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"];
+
+fn is_leap(y: u32) -> bool {
+    (y % 4 == 0 && y % 100 != 0) || y % 400 == 0
+}
+
+fn days_in_month(y: u32, m: u32) -> u32 {
+    match m {
+        1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+        4 | 6 | 9 | 11 => 30,
+        2 => {
+            if is_leap(y) {
+                29
+            } else {
+                28
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// Days since 1970-01-01 (Howard Hinnant's civil calendar algorithm).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let mp = if m > 2 { (m - 3) as i64 } else { (m + 9) as i64 };
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+fn civil_from_days(z0: i64) -> (u32, u32, u32) {
+    let z = z0 + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    (y as u32, m as u32, d as u32)
+}
+
+/// Monday = 0 … Sunday = 6.
+fn weekday_mon0(y: u32, m: u32, d: u32) -> u32 {
+    ((days_from_civil(y as i64, m, d) + 3).rem_euclid(7)) as u32
+}
+
+fn today_ymd() -> (u32, u32, u32) {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    civil_from_days((secs / 86_400) as i64)
+}
+
+/// Strict `YYYYMMDD` parse (also used to keep the typed fields honest).
+pub fn parse_ymd(s: &str) -> Option<(u32, u32, u32)> {
+    let t: String = s.chars().filter(|c| c.is_ascii_digit()).collect();
+    if t.len() != 8 {
+        return None;
+    }
+    let y: u32 = t[..4].parse().ok()?;
+    let m: u32 = t[4..6].parse().ok()?;
+    let d: u32 = t[6..8].parse().ok()?;
+    if !(1900..=2100).contains(&y) || !(1..=12).contains(&m) {
+        return None;
+    }
+    if d == 0 || d > days_in_month(y, m) {
+        return None;
+    }
+    Some((y, m, d))
+}
+
+/// Freshest data actually fetched from rada: the newest card date in the
+/// index, falling back to the last successful import/sync, then real today.
+pub fn data_today(app: &App) -> (u32, u32, u32) {
+    if let Some(st) = app.index_status.as_ref() {
+        if let Some(md) = st.max_date.as_deref().and_then(parse_ymd) {
+            return md;
+        }
+        if let Some(li) = st.last_import.as_deref() {
+            // "YYYY-MM-DD HH:MM:SS" -> YYYYMMDD
+            let t: String = li.chars().take(10).filter(|c| c.is_ascii_digit()).collect();
+            if let Some(d) = parse_ymd(&t) {
+                return d;
+            }
+        }
+    }
+    today_ymd()
+}
+
+/// Open the calendar for `kind`, scrolled to its value or the data month.
+pub fn open_calendar(app: &mut App, kind: PickKind) {
+    let cur = match kind {
+        PickKind::From => app.search.f_date_from.clone(),
+        PickKind::To => app.search.f_date_to.clone(),
+    };
+    let (y, m) = parse_ymd(&cur)
+        .map(|(y, m, _)| (y, m))
+        .unwrap_or_else(|| {
+            let (y, m, _) = data_today(app);
+            (y, m)
+        });
+    app.search.pick = Some(kind);
+    app.search.pick_year = y;
+    app.search.pick_month = m;
+}
+
+fn calendar_popup(app: &mut App, ctx: &egui::Context) {
+    let Some(kind) = app.search.pick else {
+        return;
+    };
+    let (ay, am, ad) = data_today(app);
+    let selected = parse_ymd(match kind {
+        PickKind::From => &app.search.f_date_from,
+        PickKind::To => &app.search.f_date_to,
+    });
+    let mut close = false;
+    let title = match kind {
+        PickKind::From => "Дата з",
+        PickKind::To => "Дата по",
+    };
+    egui::Window::new(title)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            let y = app.search.pick_year;
+            let m = app.search.pick_month;
+            ui.horizontal(|ui| {
+                if ui.button("‹").clicked() {
+                    if m == 1 {
+                        app.search.pick_year = y.saturating_sub(1);
+                        app.search.pick_month = 12;
+                    } else {
+                        app.search.pick_month = m - 1;
+                    }
+                }
+                ui.label(
+                    egui::RichText::new(format!("{} {}", MONTHS_UK[(m - 1) as usize], y)).strong(),
+                );
+                if ui.button("›").clicked() {
+                    if m == 12 {
+                        app.search.pick_year = y + 1;
+                        app.search.pick_month = 1;
+                    } else {
+                        app.search.pick_month = m + 1;
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                for w in WEEKDAYS_UK {
+                    ui.add_sized(
+                        [31.0, 18.0],
+                        egui::Label::new(egui::RichText::new(w).small().weak()),
+                    );
+                }
+            });
+            let first_w = weekday_mon0(y, m, 1) as usize;
+            let dim = days_in_month(y, m);
+            egui::Grid::new("cal_days")
+                .num_columns(7)
+                .spacing([3.0, 3.0])
+                .show(ui, |ui| {
+                    let mut idx = 0usize;
+                    for _ in 0..first_w {
+                        ui.add_sized([31.0, 24.0], egui::Label::new(""));
+                        idx += 1;
+                        if idx % 7 == 0 {
+                            ui.end_row();
+                        }
+                    }
+                    for d in 1..=dim {
+                        let date = (y, m, d);
+                        // The index cannot hold data newer than the freshest
+                        // successful fetch: future dates would filter to empty.
+                        let blocked = date > (ay, am, ad) || date < (1990, 1, 1);
+                        let sel = selected == Some(date);
+                        let btn = egui::Button::new(egui::RichText::new(format!("{d}")).small())
+                            .selected(sel);
+                        let r = ui.add_enabled(!blocked, btn);
+                        if blocked && date > (ay, am, ad) {
+                            r.clone().on_hover_text("пізніше за останні отримані з ради дані");
+                        }
+                        if r.clicked() {
+                            let v = format!("{y:04}{m:02}{d:02}");
+                            match kind {
+                                PickKind::From => app.search.f_date_from = v,
+                                PickKind::To => app.search.f_date_to = v,
+                            };
+                            close = true;
+                        }
+                        idx += 1;
+                        if idx % 7 == 0 {
+                            ui.end_row();
+                        }
+                    }
+                });
+            ui.add_space(4.0);
+            ui.label(
+                egui::RichText::new(format!(
+                    "найновіші отримані з ради дані: {ay:04}-{am:02}-{ad:02}"
+                ))
+                .small()
+                .weak(),
+            );
+            ui.horizontal(|ui| {
+                if ui.button("скинути").clicked() {
+                    match kind {
+                        PickKind::From => app.search.f_date_from.clear(),
+                        PickKind::To => app.search.f_date_to.clear(),
+                    };
+                    close = true;
+                }
+                if ui.button("місяць даних").clicked() {
+                    app.search.pick_year = ay;
+                    app.search.pick_month = am;
+                }
+                if ui.button("закрити").clicked() {
+                    close = true;
+                }
+            });
+        });
+    if close {
+        app.search.pick = None;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calendar_math() {
+        assert_eq!(days_in_month(2024, 2), 29);
+        assert_eq!(days_in_month(2023, 2), 28);
+        assert_eq!(days_in_month(2000, 2), 29);
+        assert_eq!(days_in_month(2100, 2), 28);
+        // 2026-10-27 was a Tuesday (Monday = 0).
+        assert_eq!(weekday_mon0(2026, 10, 27), 1);
+        // 2024-01-01 was a Monday.
+        assert_eq!(weekday_mon0(2024, 1, 1), 0);
+        assert_eq!(civil_from_days(0), (1970, 1, 1));
+        assert_eq!(civil_from_days(days_from_civil(2026, 10, 27)), (2026, 10, 27));
+        assert_eq!(civil_from_days(days_from_civil(2000, 2, 29)), (2000, 2, 29));
+    }
+
+    #[test]
+    fn ymd_parse_is_strict() {
+        assert_eq!(parse_ymd("20240101"), Some((2024, 1, 1)));
+        assert_eq!(parse_ymd("20240230"), None); // Feb 30
+        assert_eq!(parse_ymd("20230229"), None); // non-leap
+        assert_eq!(parse_ymd("18991231"), None); // out of range
+        assert_eq!(parse_ymd("2024-01-01"), Some((2024, 1, 1))); // separators tolerated
+        assert_eq!(parse_ymd("240101"), None); // too short
     }
 }

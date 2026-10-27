@@ -28,12 +28,17 @@ where
                  organs, minjust, npix, poddat, fetched_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
              ON CONFLICT(nreg) DO UPDATE SET
-                dokid = excluded.dokid, nazva = excluded.nazva,
+                dokid = CASE WHEN excluded.dokid = 0 THEN docs.dokid ELSE excluded.dokid END,
+                nazva = CASE WHEN excluded.nazva = '' THEN docs.nazva ELSE excluded.nazva END,
                 status = excluded.status, types = excluded.types,
-                org_id = excluded.org_id, org_date = excluded.org_date,
-                org_num = excluded.org_num, organs = excluded.organs,
-                minjust = excluded.minjust, npix = excluded.npix,
-                poddat = excluded.poddat, fetched_at = excluded.fetched_at",
+                org_id = CASE WHEN excluded.org_id = 0 THEN docs.org_id ELSE excluded.org_id END,
+                org_date = CASE WHEN excluded.org_date = '' THEN docs.org_date ELSE excluded.org_date END,
+                org_num = CASE WHEN excluded.org_num = '' THEN docs.org_num ELSE excluded.org_num END,
+                organs = CASE WHEN excluded.organs = '' THEN docs.organs ELSE excluded.organs END,
+                minjust = CASE WHEN excluded.minjust = '' THEN docs.minjust ELSE excluded.minjust END,
+                npix = CASE WHEN excluded.npix = 0 THEN docs.npix ELSE excluded.npix END,
+                poddat = CASE WHEN excluded.poddat = '' THEN docs.poddat ELSE excluded.poddat END,
+                fetched_at = excluded.fetched_at",
         )?;
         let now = crate::build::now_stamp();
         for u in updates {
@@ -90,4 +95,95 @@ where
         }
     }
     Ok(failed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::schema::migrate;
+    use rada_core::models::UpdatedDoc;
+
+    fn doc(nreg: &str, status: i64) -> rada_core::models::DocCard {
+        rada_core::models::DocCard {
+            dokid: 4242,
+            nreg: nreg.into(),
+            nazva: "Про вищу освіту".into(),
+            status,
+            types: "12".into(),
+            organs: "291:20140705:1556-VIII".into(),
+            minjust: "1234".into(),
+            npix: 0,
+            poddat: "20200101".into(),
+        }
+    }
+
+    /// Syncing with a card that lacks dokid/org_num/nazva (the JSON card
+    /// path fabricates zeros/empties) must NOT wipe the stored values.
+    #[test]
+    fn apply_updates_preserves_unknown_fields() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        crate::build::upsert_docs(&mut conn, &[doc("1556-18", 1)]).unwrap();
+
+        let degraded = |nreg: &str| -> Result<rada_core::models::DocCard> {
+            Ok(rada_core::models::DocCard {
+                dokid: 0,
+                nreg: nreg.into(),
+                nazva: String::new(),
+                status: 43, // the only genuinely new field
+                types: "12".into(),
+                organs: String::new(),
+                minjust: String::new(),
+                npix: 0,
+                poddat: String::new(),
+            })
+        };
+        let upd = vec![UpdatedDoc {
+            num: 1,
+            nreg: "1556-18".into(),
+            nazva: String::new(),
+            status: String::new(),
+            publics: String::new(),
+            file: String::new(),
+            size: None,
+            link: String::new(),
+        }];
+        let (applied, failed) = apply_updates(&mut conn, &upd, degraded).unwrap();
+        assert_eq!((applied, failed), (1, 0));
+
+        let (dokid, nazva, status, org_num): (i64, String, i64, String) = conn
+            .query_row(
+                "SELECT dokid, nazva, status, org_num FROM docs WHERE nreg = '1556-18'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(dokid, 4242, "dokid must survive a degraded sync");
+        assert_eq!(nazva, "Про вищу освіту", "nazva must survive");
+        assert_eq!(org_num, "1556-VIII", "org_num must survive");
+        assert_eq!(status, 43, "changed fields must still update");
+    }
+
+    /// A new document (not in the index) is inserted normally.
+    #[test]
+    fn apply_updates_inserts_new_doc() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        let upd = vec![UpdatedDoc {
+            num: 1,
+            nreg: "9999-26".into(),
+            nazva: String::new(),
+            status: String::new(),
+            publics: String::new(),
+            file: String::new(),
+            size: None,
+            link: String::new(),
+        }];
+        let (applied, failed) = apply_updates(&mut conn, &upd, |_| Ok(doc("9999-26", 1))).unwrap();
+        assert_eq!((applied, failed), (1, 0));
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM docs WHERE nreg = '9999-26'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 1);
+    }
 }

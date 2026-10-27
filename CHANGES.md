@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.9.3: зручність читання й дати — масштаб шрифту, календар, надійний синк, «Обране» у веб / 0.9.3: reading & dates — font zoom, calendar picker, robust sync, web Favorites
+
+- **UKR:** 1) **Масштаб тексту читалки**: кнопки «A−»/«A+» і «100%» (клік — скидання); заголовок і всі абзаци масштабуються 60–250% і зберігаються в settings.ini. 2) **Календар дат** у пошуку («…» біля полів «Дата з/по»): назви місяців українською, тижні з понеділка; недоступні дати пізніше **найновіших успішно отриманих з ради даних** (макс. `org_date` в індексі, з фолбеком на останній імпорт); переставлені «з/по» авто-виправляються. 3) **Надійний синк**: оновлення картки більше не обнулює `dokid`/`org_num`/`organs` наявного документа (беруться лише ненульові значення; картка тепер несе `orgnum`) — номерний пошук більше не ламається після sync. 4) **Веб**: вкладка «Обране» — усі анотації з фільтрами, «→ текст», видаленням, редагуванням, JSON експорт/імпорт (`GET /api/annotations/all|export`, `POST …/import`). 5) Тести: 59/59 (+календар, парсер дат, збереження при sync, форми веб-ендпоінтів).
+- **ENG:** 1) **Reader font zoom**: «A−»/«A+» buttons and a «100%» indicator (click resets); the title and every paragraph scale 60–250% and persist in settings.ini. 2) **Date calendar** in search («…» beside the date fields): Ukrainian month names, Monday-first weeks; dates after the **freshest data successfully fetched from rada** (max `org_date`, falling back to last import) are disabled; a reversed from/to range is auto-corrected. 3) **Robust sync**: a card refresh no longer zeroes an existing document's `dokid`/`org_num`/`organs` (only non-empty values are taken; the card now carries `orgnum`) — number search survives syncs. 4) **Web**: an «Обране» tab — all annotations with kind filters, «→ текст», delete, inline edit, JSON export/import (`GET /api/annotations/all|export`, `POST …/import`). 5) Tests: 59/59 (+calendar math, date parser, sync preservation, web endpoint shapes).
+
+---
+
+## 2026-10-28
+
 ### 0.9.2: переносні анотації — JSON експорт/імпорт / 0.9.2: portable annotations — JSON export/import
 
 - **UKR:** 1) **Експорт/імпорт анотацій** у портативний JSON — кнопка «⬇ Експорт .json» на сторінці «Обране» та команди CLI `annot export <файл>` / `annot import <файл>`. 2) Формат сумісний між GUI й CLI; імпорт приймає масив або `{"annotations":[...]}`, пропускає биті рядки, не чіпає наявні (дописує нові). 3) нові функції `annotations::export_json` / `import_json`. 4) Тести: 51/51 (+2 на round-trip та стійкість імпорту).
