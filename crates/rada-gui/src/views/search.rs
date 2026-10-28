@@ -105,6 +105,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             if let Some(e) = &app.search.error {
                 ui.label(egui::RichText::new(e).small().color(err()));
             }
+            ui.separator();
+            let q = app.search.query.trim().to_string();
+            let url = portal_search_url(&q);
+            if ui
+                .button(egui::RichText::new("Розширений пошук на порталі").small())
+                .on_hover_text("відкрити розширений пошук zakon.rada.gov.ua у браузері")
+                .clicked()
+            {
+                ui.ctx().open_url(egui::OpenUrl::new_tab(&url));
+            }
         });
 
         ui.add_space(8.0);
@@ -496,6 +506,37 @@ pub fn fmt_date(d: &str) -> String {
         "—".into()
     } else {
         d.to_string()
+    }
+}
+
+/// Minimal percent-encoder for a URL query value (UTF-8 bytes; only
+/// unreserved characters survive, spaces become `+`).
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.as_bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(*b as char)
+            }
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+/// Portal deep-link for advanced search. Empty query opens the advanced
+/// search page; a non-empty query opens the name-search results with the
+/// terms passed through (`text=a+b`).
+pub fn portal_search_url(query: &str) -> String {
+    let q = query.trim();
+    if q.is_empty() {
+        "https://zakon.rada.gov.ua/laws/adv".to_string()
+    } else {
+        format!(
+            "https://zakon.rada.gov.ua/laws/find/main_result?text={}",
+            url_encode(q)
+        )
     }
 }
 
@@ -958,5 +999,28 @@ mod tests {
         assert_eq!(parse_ymd("18991231"), None); // out of range
         assert_eq!(parse_ymd("2024-01-01"), Some((2024, 1, 1))); // separators tolerated
         assert_eq!(parse_ymd("240101"), None); // too short
+    }
+
+    #[test]
+    fn portal_url_empty_opens_adv() {
+        assert_eq!(
+            portal_search_url("   "),
+            "https://zakon.rada.gov.ua/laws/adv"
+        );
+    }
+
+    #[test]
+    fn portal_url_encodes_query() {
+        // ASCII: spaces become +, reserved chars percent-encoded.
+        assert_eq!(
+            portal_search_url("tax  code&x"),
+            "https://zakon.rada.gov.ua/laws/find/main_result?text=tax++code%26x"
+        );
+        // Cyrillic "код" → UTF-8 percent-encoding (К=0xD0 0x9A …).
+        assert_eq!(
+            url_encode("код"),
+            "%D0%BA%D0%BE%D0%B4"
+        );
+        assert!(portal_search_url("код").ends_with("text=%D0%BA%D0%BE%D0%B4"));
     }
 }

@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.1: повна побудова індексу у веб та посилання на розширений пошук / 0.10.1: full-dump index build in web & portal advanced-search link
+
+- **UKR:** 1) **Веб «Дані» → «Повна побудова індексу»**: кнопка «Побудувати з офіційного дампу» запускає фонову задачу `POST /api/jobs/init`, що завантажує офіційний дамп `doc.txt` (≈51 МБ) і перебудовує локальний індекс у межах однієї транзакції (помилка — відкат, наявний індекс і анотації цілі). Хід виконання видно у панелі задач; побудова блокує бекап/відновлення/снимок на час роботи (і навпаки). 2) **Посилання на розширений пошук**: у «Пошуку» — кнопка «Розширений пошук на порталі», що відкриває zakon.rada.gov.ua у браузері (з поточним запитом, закодованим в UTF-8). 3) Тести: 105/105.
+- **ENG:** 1) **Web «Дані» → full index build**: a «Побудувати з офіційного дампу» button starts a `POST /api/jobs/init` background job that downloads the official `doc.txt` dump (≈51 MB) and rebuilds the local index inside one transaction (failure rolls back; the existing index and annotations stay intact). Progress shows in the jobs panel; a build excludes backup/restore/snapshot while it runs (and vice-versa). 2) **Advanced-search link**: the search page gains a «Розширений пошук на порталі» button opening zakon.rada.gov.ua in the browser (carrying the current query, UTF-8 encoded). 3) Tests: 105/105.
+
+---
+
+## 2026-10-28
+
 ### 0.10.0: умовний HTTP-кеш, пауза наживо, тека експорту, передперегляд обраного / 0.10.0: conditional HTTP cache, live pacing control, export folder memory, favorites preview
 
 - **UKR:** 1) **Економія трафіку**: повторні запити словників і стрічки «Оновлення» використовують умовні HTTP-запити (ETag / If-None-Match, Last-Modified / If-Modified-Since) — сервер відповідає 304 і тіло не завантажується повторно; особливо важливо з урахуванням ліміту ~200 МБ/добу. 2) **Пауза live-запитів керована наживо**: кнопки «−»/«+» у верхній панелі (1–60 с) змінюють паузу без перезапуску й зберігаються між сесіями (CLI `--pace` має пріоритет над збереженою). 3) **Програма пам'ятає теку експорту**: усі діалоги збереження/відкриття (експорт читалки, списку, вибраного, бекапи, імпорт JSON, дамп) відкриваються в останній використаній теці. 4) **Передперегляд у «Обраному»**: для закладок без тексту показується курсивний уривок (≈160–200 символів) з офлайн-кешу тексту — і в GUI, і у веб. 5) Тести: 101/101.

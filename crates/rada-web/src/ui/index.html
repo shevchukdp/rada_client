@@ -543,6 +543,12 @@
         <button id="btn-backup-refresh" type="button" title="перечитати список копій">оновити</button>
         <button id="btn-backup-restore" type="button" title="замінити індекс обраною копією (анотації зберігаються)">Відновити з файлу</button>
       </div>
+      <div class="row" style="margin-top:6px">
+        <strong style="font-size:13px">Повна побудова індексу</strong>
+      </div>
+      <div class="row">
+        <button id="btn-jobs-init" type="button" title="завантажити офіційний дамп doc.txt (≈51 МБ) з data.rada.gov.ua та перебудувати локальний індекс (анотації зберігаються)">Побудувати з офіційного дампу</button>
+      </div>
     </div>
     <div id="status-box" style="margin-top:10px"></div>
   </section>
@@ -1295,18 +1301,20 @@ async function loadStatusTab() {
 // The server keeps one registry of index-update jobs; the page POSTs to
 // start one, then polls /api/jobs every 2 s while anything runs, mirroring
 // the latest progress `line` per kind into the status area.
-const JOB_KINDS = ["sync", "snapshot", "backup", "restore"];
-const jobLabel = { sync: "наживо", snapshot: "снапшот", backup: "копія", restore: "відновлення" };
+const JOB_KINDS = ["sync", "snapshot", "backup", "restore", "init"];
+const jobLabel = { sync: "наживо", snapshot: "снапшот", backup: "копія", restore: "відновлення", init: "побудова" };
 const jobStartMsg = {
   sync: "запускаю синхронізацію…",
   snapshot: "запускаю завантаження снапшота…",
   backup: "запускаю резервне копіювання…",
   restore: "запускаю відновлення…",
+  init: "запускаю повну побудову індексу…",
 };
-const jobDoneName = { sync: "Синхронізацію", snapshot: "Снапшот", backup: "Резервну копію", restore: "Відновлення" };
+const jobDoneName = { sync: "Синхронізацію", snapshot: "Снапшот", backup: "Резервну копію", restore: "Відновлення", init: "Побудову індексу" };
 const jobBtn = {
   sync: $("btn-jobs-sync"), snapshot: $("btn-jobs-snapshot"),
   backup: $("btn-backup-create"), restore: $("btn-backup-restore"),
+  init: $("btn-jobs-init"),
 };
 const jobSeen = {};   // job id → last state we reacted to (notify once)
 let jobsTimer = null; // setInterval id while any job is running
@@ -1785,6 +1793,12 @@ $("btn-backup-restore").onclick = () => {
   }
   if (!confirm("Відновити індекс з файлу " + name + "? Поточний індекс буде замінено (анотації зберегаються).")) return;
   startDataJob("restore", { file: name });
+};
+// «Повна побудова індексу»: POST /api/jobs/init builds the whole index from
+// the official doc.txt dump (~51 MB download, paced) — hence the confirm.
+$("btn-jobs-init").onclick = () => {
+  if (!confirm("Завантажити офіційний дамп doc.txt (≈51 МБ) і повністю перебудувати індекс? Це може тривати кілька хвилин (анотації зберегаються).")) return;
+  startDataJob("init");
 };
 $("recent-clear").onclick = clearRecent;
 

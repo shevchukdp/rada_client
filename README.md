@@ -28,7 +28,9 @@ official open-data API:
     a **date-range calendar** (Ukrainian months, dates beyond the freshest data
     fetched from rada are disabled), **clickable column sorting**
     (Назва ▲▼ / Дата ▲▼ / Редакція ▼ / Релевантність),
-    paging, live name resolver; **export of the results list** (.md/.txt);
+    paging, live name resolver; a **«Розширений пошук на порталі»** button that
+    opens the zakon.rada.gov.ua search with the current query in the browser;
+    **export of the results list** (.md/.txt);
     **checkbox-select results → individual numbered files** in a chosen folder;
     one-click **copy nreg** from any result row.
   - **Offline number search** — typing an nreg (`1556-18`, `1178-2022-п`,
@@ -106,7 +108,8 @@ official open-data API:
   search** (an nreg in the query opens the document), a **Favorites (Обране) tab**
   (all annotations, filters, delete/edit, JSON export/import), a **«Дані» panel**
   to run live sync, snapshot fetch and **index backup/restore as background jobs**
-  (`POST /api/jobs/sync|snapshot|backup|restore`, `GET /api/jobs`, `GET /api/backups`),
+  (`POST /api/jobs/sync|snapshot|backup|restore|init`, `GET /api/jobs`, `GET /api/backups`),
+  including a **full index rebuild from the official dump** as a background job,
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.

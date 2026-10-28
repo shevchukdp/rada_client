@@ -48,7 +48,7 @@ pub struct WebConfig {
 #[derive(Debug, Clone, serde::Serialize)]
 struct JobRecord {
     id: String,
-    /// `sync` | `snapshot` | `backup` | `restore`.
+    /// `sync` | `snapshot` | `backup` | `restore` | `init`.
     kind: String,
     /// `running` | `done` | `error`.
     state: String,
@@ -600,7 +600,7 @@ fn annotations_import(st: &State, req: &mut Request) -> Resp {
 // ---------------------------------------------------------------------------
 
 /// `GET /api/jobs`, `POST /api/jobs/sync`, `POST /api/jobs/snapshot`,
-/// `POST /api/jobs/backup`, `POST /api/jobs/restore`.
+/// `POST /api/jobs/backup`, `POST /api/jobs/restore`, `POST /api/jobs/init`.
 fn jobs_handler(method: &Method, rest: &str, st: &Arc<State>, req: &mut Request) -> Resp {
     match rest {
         "jobs" => {
@@ -638,6 +638,13 @@ fn jobs_handler(method: &Method, rest: &str, st: &Arc<State>, req: &mut Request)
                 json_err(405, "method not allowed")
             }
         }
+        "jobs/init" => {
+            if method == &Method::Post {
+                start_job(st, "init")
+            } else {
+                json_err(405, "method not allowed")
+            }
+        }
         _ => json_err(404, &format!("unknown api path /api/{rest}")),
     }
 }
@@ -663,9 +670,20 @@ fn jobs_list(st: &State) -> Resp {
 }
 
 /// Register a new `kind` job unless one is still running; returns its id.
+/// Tests use this plain per-kind form; the server itself claims through
+/// [`start_job_with`] with its cross-kind exclusions ([`claim_job_guarded`]).
+#[cfg(test)]
 fn claim_job(st: &State, kind: &str) -> Option<String> {
+    claim_job_guarded(st, kind, &[])
+}
+
+/// [`claim_job`] with extra kinds: refuses while any running job's kind is
+/// `kind` itself or one of `also_block`.
+fn claim_job_guarded(st: &State, kind: &str, also_block: &[&str]) -> Option<String> {
     let mut jobs = st.jobs_lock();
-    if jobs.values().any(|r| r.kind == kind && r.state == "running") {
+    if jobs.values().any(|r| {
+        r.state == "running" && (r.kind == kind || also_block.contains(&r.kind.as_str()))
+    }) {
         return None;
     }
     let n = st.job_seq.fetch_add(1, Ordering::SeqCst);
@@ -695,6 +713,7 @@ fn start_job(st: &Arc<State>, kind: &'static str) -> Resp {
         "sync" => run_sync_job,
         "snapshot" => run_snapshot_job,
         "backup" => run_backup_job,
+        "init" => run_init_job,
         _ => return json_err(400, &format!("unknown job kind {kind}")),
     };
     start_job_with(st, kind, runner)
@@ -704,8 +723,16 @@ fn start_job_with<F>(st: &Arc<State>, kind: &str, runner: F) -> Resp
 where
     F: Fn(Arc<State>, String) + Send + 'static,
 {
-    let Some(id) = claim_job(st, kind) else {
-        return json_err(409, &format!("a {kind} job is already running"));
+    // `claim_job` guards one job per kind; the jobs that rebuild or replace
+    // the served db must additionally never overlap each other.
+    let also_block: &[&str] = match kind {
+        "init" => &["snapshot", "backup", "restore"],
+        "snapshot" | "backup" | "restore" => &["init"],
+        _ => &[],
+    };
+    let Some(id) = claim_job_guarded(st, kind, also_block) else {
+        let article = if kind == "init" { "an" } else { "a" };
+        return json_err(409, &format!("{article} {kind} job is already running"));
     };
     let st2 = st.clone();
     let thread_id = id.clone();
@@ -837,6 +864,50 @@ fn run_snapshot_job(st: Arc<State>, id: String) {
     match outcome {
         Ok(msg) => st.job_set(&id, "done", "готово", Some(&msg)),
         Err(e) => st.job_set(&id, "error", "снапшот не вдалося отримати", Some(&format!("{e:#}"))),
+    }
+}
+
+/// Full index rebuild from the official `doc.txt` dump, mirroring the CLI
+/// `init`: paced download via `full_dump()` (no progress callback exists —
+/// the client blocks, so progress lines cover the download / import phases)
+/// then `rada_db::build::import_dump` into the served db. The import runs
+/// in one upsert transaction keyed on `nreg`, so a mid-build failure leaves
+/// the previous index untouched (no file swap needed), and the per-request
+/// `open_db` handlers keep serving the committed state throughout.
+fn run_init_job(st: Arc<State>, id: String) {
+    let outcome = (|| -> Result<usize> {
+        st.job_set(
+            &id,
+            "running",
+            "завантажую офіційний дамп doc.txt (≈51 МБ) …",
+            None,
+        );
+        let c = RadaClient::with_pacing(Duration::from_secs(st.pace_secs));
+        let raw = c.full_dump().map_err(|e| anyhow!("дамп doc.txt недоступний: {e}"))?;
+        st.job_set(
+            &id,
+            "running",
+            &format!("дамп отримано ({} МБ), імпортую …", raw.len() / (1 << 20)),
+            None,
+        );
+        let mut conn = db_open(&st.db_path)?;
+        let n = rada_db::build::import_dump(&mut conn, &raw)?;
+        let _ = conn.execute_batch("ANALYZE;");
+        Ok(n)
+    })();
+    match outcome {
+        Ok(n) => st.job_set(
+            &id,
+            "done",
+            "готово",
+            Some(&format!("індекс побудовано з дампа: {n} документів")),
+        ),
+        Err(e) => st.job_set(
+            &id,
+            "error",
+            "побудова індексу не вдалася",
+            Some(&format!("{e:#}")),
+        ),
     }
 }
 
@@ -1655,6 +1726,74 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("Відновити з файлу"));
         assert!(ui::INDEX_HTML.contains("/api/backups"));
         assert!(ui::INDEX_HTML.contains("loadBackups"));
+        // «Повна побудова індексу» sub-area: the rebuild button, its
+        // Ukrainian labels, and the client against the new endpoint.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-jobs-init\""));
+        assert!(ui::INDEX_HTML.contains("Повна побудова індексу"));
+        assert!(ui::INDEX_HTML.contains("Побудувати з офіційного дампу"));
+        assert!(ui::INDEX_HTML.contains("/api/jobs/init"));
+    }
+
+    // ---- full-dump index build («Повна побудова індексу») --------------------
+
+    /// `POST /api/jobs/init` shape through the shared start path. The real
+    /// runner would download the ~51 MB official dump, so tests only ever
+    /// inject a fake one (exactly like the snapshot start test does).
+    #[test]
+    fn init_job_endpoint_shape() {
+        fn fake_runner(_st: Arc<State>, _id: String) {}
+        let st = test_state();
+        // A running init answers 409 with the JSON error shape (the route
+        // is registered: not 404), and GET is a 405.
+        let running = claim_job(&st, "init").expect("first init claim");
+        let (code, v) = call(&st, Method::Post, "/api/jobs/init", "");
+        assert_eq!(code, 409);
+        assert!(v["error"].as_str().unwrap().contains("init"));
+        assert_eq!(call(&st, Method::Get, "/api/jobs/init", "").0, 405);
+        // Finish it, then check the POST success shape via the fake runner.
+        st.job_set(&running, "done", "готово", Some("ok"));
+        let resp = start_job_with(&st, "init", fake_runner);
+        assert_eq!(resp.status_code().0, 200);
+        let v: Value = serde_json::from_slice(&resp.into_reader().into_inner()).unwrap();
+        assert_eq!(v["kind"], "init");
+        assert_eq!(v["state"], "running");
+        let id = v["id"].as_str().unwrap().to_string();
+        assert!(id.starts_with("init-"));
+        assert_eq!(st.jobs_lock()[&id].state, "running");
+    }
+
+    /// The init job is mutually exclusive with every db-replacing job
+    /// (snapshot / backup / restore), in both directions.
+    #[test]
+    fn init_job_single_flight() {
+        fn fake_runner(_st: Arc<State>, _id: String) {}
+        let st = test_state();
+        // A running snapshot blocks init (409, JSON error shape).
+        let snap = claim_job(&st, "snapshot").expect("first snapshot claim");
+        let (code, v) = call(&st, Method::Post, "/api/jobs/init", "");
+        assert_eq!(code, 409);
+        assert!(v["error"].as_str().unwrap().contains("init"));
+        st.job_set(&snap, "done", "готово", Some("ok"));
+        // A running init blocks the other db-replacing kinds.
+        let init = claim_job(&st, "init").expect("init claim once snapshot is done");
+        let (code, v) = call(&st, Method::Post, "/api/jobs/snapshot", "");
+        assert_eq!(code, 409);
+        assert!(v["error"].as_str().unwrap().contains("snapshot"));
+        assert_eq!(call(&st, Method::Post, "/api/jobs/backup", "").0, 409);
+        let (code, v) = call(&st, Method::Post, "/api/jobs/restore", r#"{"file":"x.sqlite.gz"}"#);
+        // Restore validates first, so an unknown file still answers 400 …
+        assert_eq!(code, 400);
+        assert!(v["error"].is_string());
+        // … and an independent kind (sync) is untouched by the init guard.
+        let resp = start_job_with(&st, "sync", fake_runner);
+        assert_eq!(resp.status_code().0, 200);
+        drop(resp);
+        st.job_set(&init, "done", "готово", Some("ok"));
+        // A finished init frees the db-replacing kinds again.
+        let resp = start_job_with(&st, "snapshot", fake_runner);
+        assert_eq!(resp.status_code().0, 200);
+        let v: Value = serde_json::from_slice(&resp.into_reader().into_inner()).unwrap();
+        assert_eq!(v["kind"], "snapshot");
     }
 
     // ---- backup / restore jobs («Резервна копія») ----------------------------
