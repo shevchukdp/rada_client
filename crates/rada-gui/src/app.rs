@@ -1218,6 +1218,24 @@ impl App {
         });
     }
 
+    /// Export the arrivals page (current filter applied) as a CSV file.
+    pub fn export_arrivals_csv(&mut self, docs: Vec<rada_core::models::UpdatedDoc>) {
+        if docs.is_empty() {
+            self.toast("має бути хоча б один документ", err());
+            return;
+        }
+        let body = views::arrivals::arrivals_csv(&docs);
+        let Some(path) = self.dlg_save("arrivals.csv".to_string()) else {
+            return;
+        };
+        self.spawn(move |tx| {
+            let res = std::fs::write(&path, &body)
+                .map(|_| path)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Exported(res));
+        });
+    }
+
     /// Export the current search results page (offline, from the index)
     /// as md/txt through a save dialog.
     pub fn export_search_list(&mut self, md: bool) {

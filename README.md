@@ -62,7 +62,7 @@ official open-data API:
   - **New-arrival badges** — the arrivals feed is diffed against what you have
     seen: fresh docs are gold, with a «нових» counter and a «лише нові» filter
     (the seen list persists across sessions); the text filter is remembered
-    too.
+    too, and the shown list exports to **CSV** (UTF-8 BOM, Excel-friendly).
   - **Search facets** — after each search, chip rows «Статус/Тип/Видавник» show
     per-option result counts («Чинний (36)」); a click sets that filter and
     re-runs the search, a second click clears it.
@@ -155,6 +155,8 @@ official open-data API:
   **deep links** (`?q=&sort=&status=…` reproduces a search on load,
   `?doc=<nreg>` opens a document directly), **web reader outline («Зміст»** —
   smooth-scroll jump list of «Розділ/Глава/Стаття» headings),
+  **reader copy-text + reading-time stats** (clipboard button and a muted
+  «N слів · M симв. · ~K хв» label),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.

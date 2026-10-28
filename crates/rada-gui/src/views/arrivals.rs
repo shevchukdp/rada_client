@@ -30,6 +30,33 @@ pub fn unseen_docs(docs: &[rada_core::models::UpdatedDoc], seen: &[String]) -> V
         .collect()
 }
 
+/// CSV-quote one field (doubled quotes; quoted when it contains a comma,
+/// quote or line break).
+fn csv_esc(s: &str) -> String {
+    if s.contains(['"', ',', '\n', '\r']) {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    } else {
+        s.to_string()
+    }
+}
+
+/// The arrivals feed rendered as CSV (UTF-8 with BOM so Excel opens
+/// Cyrillic correctly): `nreg,status,nazva,publics`.
+pub fn arrivals_csv(docs: &[rada_core::models::UpdatedDoc]) -> String {
+    let mut out = String::from("\u{FEFF}nreg,status,nazva,publics\n");
+    for d in docs {
+        out.push_str(&csv_esc(&d.nreg));
+        out.push(',');
+        out.push_str(&csv_esc(&d.status));
+        out.push(',');
+        out.push_str(&csv_esc(&d.nazva));
+        out.push(',');
+        out.push_str(&csv_esc(&d.publics));
+        out.push('\n');
+    }
+    out
+}
+
 impl Default for ArrivalsState {
     fn default() -> Self {
         Self {
@@ -92,6 +119,29 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     .clicked()
                 {
                     app.arrivals.only_new = !on;
+                }
+                if ui
+                    .button(egui::RichText::new("CSV").small())
+                    .on_hover_text("зберегти показаний перелік у файл CSV (UTF-8 з BOM)")
+                    .clicked()
+                {
+                    let f = app.arrivals.filter.trim().to_lowercase();
+                    let fresh = app.arrivals.new_nregs.clone();
+                    let only_new = app.arrivals.only_new;
+                    let docs: Vec<rada_core::models::UpdatedDoc> = app
+                        .arrivals
+                        .docs
+                        .iter()
+                        .filter(|d| !only_new || fresh.contains(&d.nreg))
+                        .filter(|d| {
+                            f.is_empty()
+                                || d.nazva.to_lowercase().contains(&f)
+                                || d.nreg.to_lowercase().contains(&f)
+                                || d.publics.to_lowercase().contains(&f)
+                        })
+                        .cloned()
+                        .collect();
+                    app.export_arrivals_csv(docs);
                 }
             }
             if app.arrivals.from_cache {
@@ -214,12 +264,29 @@ mod tests {
     }
 
     #[test]
-    fn unseen_docs_keeps_order_and_new_only() {
-        let docs = vec![doc("1-1"), doc("2-2"), doc("3-3")];
+    fn unseen_docs_keeps_order_and_new_only() {        let docs = vec![doc("1-1"), doc("2-2"), doc("3-3")];
         let seen = vec!["2-2".to_string()];
         assert_eq!(unseen_docs(&docs, &seen), ["1-1", "3-3"]);
         assert_eq!(unseen_docs(&docs, &[]).len(), 3, "nothing seen: all new");
         let all = vec!["1-1".to_string(), "2-2".to_string(), "3-3".to_string()];
         assert!(unseen_docs(&docs, &all).is_empty(), "all seen: nothing new");
+    }
+
+    #[test]
+    fn arrivals_csv_escapes_and_boms() {
+        let mut d = doc("1-1");
+        d.status = "Чинний".into();
+        d.nazva = "Про \"зміни\", частина 1".into();
+        d.publics = "Бюлетень\n2024".into();
+        let csv = arrivals_csv(&[d, doc("2-2")]);
+        // Exact whole-output check: BOM, header, quoted specials (doubled
+        // quotes, comma and newline inside quotes), plain row unquoted.
+        assert_eq!(
+            csv,
+            "\u{FEFF}nreg,status,nazva,publics\n\
+             1-1,Чинний,\"Про \"\"зміни\"\", частина 1\",\"Бюлетень\n2024\"\n\
+             2-2,Чинний,н,\n"
+        );
+        assert!(arrivals_csv(&[]).ends_with("publics\n"), "header-only ok");
     }
 }

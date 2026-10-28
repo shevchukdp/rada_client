@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.14: копіювання у веб, CSV оновлень і картка в файл / web copy-button, arrivals CSV & card to file
+
+- **UKR:** 1) **Веб-читалка**: кнопка «Копіювати текст» (з буфером-запасним шляхом) і тихий рядок статистики «43 733 слів · 340 212 симв. · ~110 хв» у панелі експорту. 2) **CSV в Оновленнях**: кнопка «CSV» зберігає показаний (з урахуванням фільтра і «лише нові») перелік у файл UTF-8 з BOM — Excel відкриває кирилицю правильно. 3) **CLI `card`**: тепер показує людський переказ (номер, стан, дати, редакції); `--json` — звичний JSON, `--out FILE` пише картку (JSON чи переказ) у файл. 4) Тести: 155/155.
+- **ENG:** 1) **Web reader**: a «Копіювати текст» clipboard button (with a textarea fallback) and a muted stats line «43 733 слів · 340 212 симв. · ~110 хв» in the export bar. 2) **Arrivals CSV**: the «CSV» button saves the currently shown list (filter and «лише нові» applied) as UTF-8 with BOM — Excel opens Cyrillic correctly. 3) **CLI `card`**: now prints a human summary (number, status, dates, editions); `--json` keeps the JSON, and `--out FILE` writes the card (JSON or summary) to a file. 4) Tests: 155/155.
+
+---
+
+## 2026-10-28
+
 ### 0.10.13: пошук у словниках, кеш у підвалі та чищення кеша / dictionary search, footer cache stats & cache purge
 
 - **UKR:** 1) **CLI `dict --search TERM`** (і `--json`): фільтр назв словників stan/typs/organs без мережі — локально заповнені словники не перевантажуються (сіра лінія «локально»), групувальні заголовки «stan (стани):» та ін. 2) **Кеш у підвалі веб**: статус-рядок сторінки тепер показує «кеш текстів: N тіл · X.X MB». 3) **Чищення кеша в GUI**: на головній біля рядка «кеш текстів» — кнопка «очистити» з вікном підтвердження (анотації й індекс не чіпаються). 4) Тести: 151/151.

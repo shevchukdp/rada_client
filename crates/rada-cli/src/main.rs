@@ -4,7 +4,7 @@
 //! - `init`      build the full index from the official `doc.txt` dump;
 //! - `sync`      incremental update from the updated-documents feed;
 //! - `search`    local title search (FTS5 + filters);
-//! - `card`      live JSON card for a document;
+//! - `card`      live card for a document (human summary, `--json` for raw JSON);
 //! - `text`      clean text of a document (current or a given edition);
 //! - `dict`      load reference dictionaries (stan/typs/organs) from the live API;
 //! - `arrivals`  live updated-documents feed with a diff against the saved snapshot;
@@ -87,8 +87,17 @@ enum Cmd {
         #[arg(long)]
         facets: bool,
     },
-    /// Show the live JSON card of a document.
-    Card { nreg: String },
+    /// Show the live card of a document (human-readable summary;
+    /// `--json` prints the full JSON card).
+    Card {
+        nreg: String,
+        /// Emit the full JSON card instead of the summary.
+        #[arg(long)]
+        json: bool,
+        /// Write to this file instead of stdout (parent dirs created).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Show the clean text of a document (offline cache fallback when live fails).
     Text {
         nreg: String,
@@ -272,7 +281,7 @@ fn run() -> Result<()> {
             json,
             facets,
         } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, sort, json, facets),
-        Cmd::Card { nreg } => cmd_card(&nreg, cli.pace),
+        Cmd::Card { nreg, json, out } => cmd_card(&nreg, json, out.as_deref(), cli.pace),
         Cmd::Text { nreg, edition, out } => {
             cmd_text(&cli.db, &nreg, edition.as_deref(), out.as_deref(), cli.pace)
         }
@@ -575,11 +584,97 @@ fn cmd_search(
     Ok(())
 }
 
-fn cmd_card(nreg: &str, pace: u64) -> Result<()> {
+/// Live card of one document: human-readable summary by default, the full
+/// JSON card with `--json`. With `--out` the exact stdout body is written to
+/// the file (UTF-8, parent dirs created) and nothing is printed to stdout;
+/// a live fetch failure is a hard error (the card has no offline cache).
+fn cmd_card(nreg: &str, json: bool, out: Option<&Path>, pace: u64) -> Result<()> {
     let c = client(pace);
     let j = c.card(nreg)?;
-    println!("{}", serde_json::to_string_pretty(&j)?);
-    Ok(())
+    let body = if json {
+        serde_json::to_string_pretty(&j)?
+    } else {
+        card_summary(&j)
+    };
+    match out {
+        Some(p) => {
+            if let Some(parent) = p.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("create dir {}", parent.display()))?;
+                }
+            }
+            std::fs::write(p, format!("{body}\n"))
+                .with_context(|| format!("запис {}", p.display()))?;
+            if json {
+                eprintln!("{}", card_out_note(p));
+            } else {
+                eprintln!(
+                    "[card] записано {} симв. → {}",
+                    body.chars().count(),
+                    p.display()
+                );
+            }
+            Ok(())
+        }
+        None => {
+            println!("{body}");
+            Ok(())
+        }
+    }
+}
+
+/// Human-readable summary lines of a live JSON card (the default `card`
+/// stdout). Optional fields print only when present; dates go through
+/// [`fmt_date`].
+fn card_summary(j: &rada_core::models::LawCardJson) -> String {
+    let mut lines = vec![
+        j.nazva.trim().to_string(),
+        format!("nreg    : {}", j.nreg),
+        format!(
+            "status  : {} ({})",
+            rada_core::models::StatusId(j.status).label(),
+            j.status
+        ),
+    ];
+    if let Some(n) = j.orgnum.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        lines.push(format!("number  : {n}"));
+    }
+    if let Some(d) = j.orgdat {
+        lines.push(format!("adopted : {}", fmt_date(&d.to_string())));
+    }
+    if let Some(d) = j.poddat {
+        lines.push(format!("edition : {}", fmt_date(&d.to_string())));
+    }
+    if let Some(d) = j.pridat {
+        lines.push(format!("inforce : {}", fmt_date(&d.to_string())));
+    }
+    if let Some(p) = j.pidstava.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        lines.push(format!("basis   : {p}"));
+    }
+    if !j.types.trim().is_empty() {
+        lines.push(format!("types   : {}", j.types));
+    }
+    if j.org != 0 {
+        lines.push(format!("org     : {}", j.org));
+    }
+    if let Some(m) = j.minjust.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        lines.push(format!("minjust : {m}"));
+    }
+    if let Some(sz) = j.size {
+        lines.push(format!("size    : {sz} bytes"));
+    }
+    if j.is_archive == Some(true) {
+        lines.push("archive : так".to_string());
+    }
+    lines.push(format!("editions: {}", j.eds.len()));
+    lines.join("\n")
+}
+
+/// The stderr note printed after `card --out --json` has written `file`
+/// (the summary mode prints the out_note-style char-count line instead).
+fn card_out_note(file: &Path) -> String {
+    format!("[card] записано JSON → {}", file.display())
 }
 
 fn cmd_text(
@@ -1083,7 +1178,18 @@ fn fmt_date(d: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{dict_matches, facet_lines, new_nregs, normalize_fmt, out_note};
+    use super::{card_out_note, dict_matches, facet_lines, new_nregs, normalize_fmt, out_note};
+
+    #[test]
+    fn card_out_note_formats_json_written_line() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//c.json");
+        let line = card_out_note(file);
+        assert!(line.starts_with("[card] записано "));
+        assert!(line.contains("JSON"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
 
     #[test]
     fn out_note_formats_chars_arrow_and_path() {

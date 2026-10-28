@@ -2820,4 +2820,28 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("function resetToc()"));
         assert!(ui::INDEX_HTML.contains("resetToc(); // stale outline entries must never survive into a new document"));
     }
+
+    #[test]
+    fn ui_page_has_copy_text() {
+        // «Копіювати текст» in the export row (the GUI reader's copy parity):
+        // the clipboard API with a textarea/execCommand fallback and the
+        // transient «скопійовано» / «не вдалося» hint in #copy-hint.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-copy-text\""));
+        assert!(ui::INDEX_HTML.contains("Копіювати текст"));
+        assert!(ui::INDEX_HTML.contains("navigator.clipboard"));
+        assert!(ui::INDEX_HTML.contains("id=\"copy-hint\""));
+    }
+
+    #[test]
+    fn ui_page_has_doc_stats() {
+        // Muted stats line beside the export row, same format as the GUI
+        // reader toolbar: «{words} слів · {chars} симв. · ~{min} хв»
+        // (≈400 wpm, min 1, thousands grouped with plain spaces).
+        assert!(ui::INDEX_HTML.contains("id=\"doc-stats\""));
+        assert!(ui::INDEX_HTML.contains("function groupTh("));
+        assert!(ui::INDEX_HTML.contains("слів"));
+        assert!(ui::INDEX_HTML.contains("симв."));
+        assert!(ui::INDEX_HTML.contains("хв"));
+        assert!(ui::INDEX_HTML.contains("/400"));
+    }
 }

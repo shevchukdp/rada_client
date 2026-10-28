@@ -630,6 +630,9 @@
       <button id="btn-export" type="button">Завантажити файл</button>
       <button id="btn-print" type="button" title="Відкрити друковану версію у новій вкладці">🖨 Друк</button>
       <button id="btn-raw" type="button" title="Простий текст без стилів заголовків/статей">Простий</button>
+      <button id="btn-copy-text" type="button" title="Скопіювати весь текст акту в буфер обміну">Копіювати текст</button>
+      <span id="copy-hint" class="hint"></span>
+      <span id="doc-stats" class="hint"></span>
       <a id="site-link" class="hint" target="_blank">на zakon.rada.gov.ua ↗</a>
     </div>
     <div class="row" id="related-row" hidden>
@@ -1009,6 +1012,8 @@ async function openDoc(nreg) {
   $("find-input").value = "";
   $("find-count").textContent = "";
   resetToc(); // stale outline entries must never survive into a new document
+  $("doc-stats").textContent = ""; // stale stats must never linger either
+  $("copy-hint").textContent = "";
   const pane = $("doc-pane");
   pane.hidden = false;
   $("doc-head").textContent = "Завантаження картки (живий API, ≈5 с)…";
@@ -1345,6 +1350,24 @@ function pluralFind(n) {
   return plural(n, "збіг", "збіги", "збігів");
 }
 
+/// Group thousands in `n` with plain spaces (the GUI reader's stats format).
+function groupTh(n) {
+  return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+}
+
+/// Muted stats line beside the export row, same format as the GUI reader
+/// toolbar: «{words} слів · {chars} симв. · ~{min} хв» (≈400 wpm, min 1,
+/// thousands grouped with spaces). Empty while no text is loaded.
+function renderDocStats() {
+  const el = $("doc-stats");
+  const t = state.curText;
+  if (!t) { el.textContent = ""; return; }
+  const words = t.split(/\s+/).filter(Boolean).length;
+  const chars = Array.from(t).length;
+  const min = Math.max(1, Math.ceil(words/400));
+  el.textContent = groupTh(words) + " слів · " + groupTh(chars) + " симв. · ~" + groupTh(min) + " хв";
+}
+
 /// Re-render the text (base gold HTML, no stale find marks), then wrap every
 /// case-insensitive occurrence of the query in <mark class="find">. Cyrillic
 /// safe: toLowerCase over the raw text nodes, no regexes.
@@ -1355,6 +1378,7 @@ function runFind() {
   const pre = $("doc-text");
   if (state.curText) pre.innerHTML = goldHtml(state.curText);
   buildToc(); // headings were just re-rendered — rebuild the outline from them
+  renderDocStats(); // the body was just painted — refresh the stats line
   if (!q || !state.curText) {
     $("find-count").textContent = "";
     return;
@@ -1980,6 +2004,39 @@ $("find-input").addEventListener("keydown", (ev) => {
 });
 $("find-prev").onclick = () => showFind(-1, true);
 $("find-next").onclick = () => showFind(1, true);
+
+// «Копіювати текст»: the whole act text into the clipboard (the GUI reader's
+// copy parity). Clipboard API first, textarea/execCommand fallback for plain
+// http; the transient verdict lives in #copy-hint for 2 s.
+$("btn-copy-text").onclick = () => {
+  if (!state.curText) return;
+  const hint = $("copy-hint");
+  let timer = null;
+  const say = (ok) => {
+    hint.textContent = ok ? "скопійовано" : "не вдалося";
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { hint.textContent = ""; }, 2000);
+  };
+  const fallback = () => {
+    let ok = false;
+    try {
+      const ta = document.createElement("textarea");
+      ta.value = state.curText;
+      ta.style.position = "fixed";
+      ta.style.left = "-1000px";
+      document.body.appendChild(ta);
+      ta.select();
+      ok = document.execCommand("copy");
+      ta.remove();
+    } catch (_) { ok = false; }
+    say(ok);
+  };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(state.curText).then(() => say(true), fallback);
+  } else {
+    fallback();
+  }
+};
 
 $("btn-export").onclick = () => {
   location.href = "/api/export/" + encNreg(state.curNreg) +
