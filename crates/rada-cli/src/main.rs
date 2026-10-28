@@ -92,11 +92,19 @@ enum Cmd {
         #[arg(long)]
         edition: Option<String>,
     },
-    /// Offline text cache: statistics, or purge (`--purge [nreg]`).
+    /// Offline text cache: statistics, purge (`--purge [nreg]`), or a
+    /// full-text scan of cached bodies (`--search TERM`) — offline, Unicode
+    /// case-insensitive, ranked by occurrence count.
     Cache {
         /// Delete cached texts (all, or only the given nreg).
         #[arg(long)]
         purge: bool,
+        /// Search the cached document texts for this substring.
+        #[arg(long)]
+        search: Option<String>,
+        /// Max results for `--search` (default 30).
+        #[arg(long)]
+        limit: Option<usize>,
         /// Restrict to one document.
         nreg: Option<String>,
     },
@@ -237,7 +245,9 @@ fn run() -> Result<()> {
         } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, sort, json),
         Cmd::Card { nreg } => cmd_card(&nreg, cli.pace),
         Cmd::Text { nreg, edition } => cmd_text(&cli.db, &nreg, edition.as_deref(), cli.pace),
-        Cmd::Cache { purge, nreg } => cmd_cache(&cli.db, purge, nreg.as_deref()),
+        Cmd::Cache { purge, search, limit, nreg } => {
+            cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref())
+        }
         Cmd::Dict { kind } => cmd_dict(&cli.db, cli.pace, kind.as_deref()),
         Cmd::Resolve { text } => cmd_resolve(&text.join(" "), cli.pace),
         Cmd::Related { nreg, json } => cmd_related(&cli.db, &nreg, json, cli.pace),
@@ -528,11 +538,24 @@ fn cmd_export(
     Ok(())
 }
 
-fn cmd_cache(db: &PathBuf, purge: bool, nreg: Option<&str>) -> Result<()> {
+fn cmd_cache(db: &PathBuf, purge: bool, search: Option<&str>, limit: Option<usize>, nreg: Option<&str>) -> Result<()> {
     let conn = rada_db::open(db)?;
     if purge {
         let n = rada_db::textcache::purge(&conn, nreg)?;
         eprintln!("[cache] видалено рядків: {n}");
+        return Ok(());
+    }
+    if let Some(term) = search {
+        let hits = rada_db::textcache::search_bodies(&conn, term, limit.unwrap_or(30).max(1))?;
+        if hits.is_empty() {
+            println!("у кешованому тексті збігів для {term:?} немає");
+            return Ok(());
+        }
+        println!("{} документів(а) з «{term}»:", hits.len());
+        for h in &hits {
+            let title = rada_db::title_by_nreg(&conn, &h.nreg).unwrap_or_default();
+            println!("  {}  ×{}  {title}\n      {}", h.nreg, h.hits, h.snippet);
+        }
         return Ok(());
     }
     let (rows, bytes) = rada_db::textcache::stats(&conn)?;

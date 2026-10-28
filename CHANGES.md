@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.5: повнотекстовий пошук у кеші та фільтри дат у веб / offline cache full-text search & web date filters
+
+- **UKR:** 1) **Пошук у кешованому тексті (офлайн)**: новий рушій `textcache::search_bodies` шукає підрядок у всіх кешованих тілах документів з урахуванням регістру Unicode (кирилицю SQLite `LIKE` не складає), ранжує за кількістю збігів і дає фрагмент контексту. CLI: `cache --search TERM [--limit N]`; веб: кнопка «Пошук у тексті» на сторінці пошуку (`GET /api/cache/search?q=`) зі збігами, назвами з індексу та клацанням для відкриття. 2) **Фільтри дат у веб**: поля «від/до РРРРММДД» — дійсні 8-значні значення надсилаються як `date_from`/`date_to`, некоректні ігноруються й підсвічуються підказкою (пошук ніколи не блокується). 3) Тести: 121/121.
+- **ENG:** 1) **Offline full-text search over the cached texts**: a new `textcache::search_bodies` engine scans every cached document body with Unicode case folding (SQLite `LIKE` does not fold Cyrillic), ranks by occurrence count and returns a context snippet. CLI: `cache --search TERM [--limit N]`; web: a «Пошук у тексті» button on the search page (`GET /api/cache/search?q=`) with hit counts, index titles and click-to-open. 2) **Web date filters**: «від/до РРРРММДД» inputs — valid 8-digit values go out as `date_from`/`date_to`, invalid ones are ignored with a muted hint (the search is never blocked). 3) Tests: 121/121.
+
+---
+
+## 2026-10-28
+
 ### 0.10.4: історія запитів, копіювання тексту, зв'язки у друці / query history, copy-text, related in print
 
 - **UKR:** 1) **Історія запитів**: під полями пошуку з'являються чипи «недавні запити» (до 6) — клік повторює пошук; кнопка «очистити» стирає історію (зберігається між сесіями). 2) **Копіювання тексту**: кнопка «копіювати текст» у читалці копіює весь акт у буфер обміну з підтвердженням. 3) **Друк (веб)**: у друковану версію додається секція «Пов'язані документи» (кнопка «Друк» тепер запитує їх з одним additional live-запитом; без мережі друк друкується як раніше). 4) Тести: 117/117.

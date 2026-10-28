@@ -394,7 +394,6 @@
   }
   #fav-status.ok { color: var(--ok); }
   #fav-status.err { color: var(--err); }
-  .form-error { color: var(--err); font-size: 14px; margin: 4px 2px 8px; }
   details#card-details {
     background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
     padding: 8px 12px; margin: 8px 0; font-size: 14px;
@@ -461,11 +460,13 @@
       <select id="f-typ"><option value="">Тип (усі)</option></select>
       <select id="f-org"><option value="">Видавник (усі)</option></select>
       <input id="f-number" placeholder="№ (частина)" size="12">
-      <input id="f-date-from" placeholder="Від 20200101" size="12">
-      <input id="f-date-to" placeholder="До 20261231" size="12">
+      <span class="hint">Дата:</span>
+      <input id="date-from" placeholder="від РРРРММДД" size="10" autocomplete="off">
+      <input id="date-to" placeholder="до РРРРММДД" size="10" autocomplete="off">
+      <span id="date-hint" class="hint" hidden>дату вказано невірно</span>
       <button class="primary" type="submit">Пошук</button>
+      <button id="btn-cache-search" type="button" title="Повнотекстовий пошук у кешованих тілах документів (офлайн, без мережі)">Пошук у тексті</button>
     </form>
-    <div id="form-error" class="form-error" hidden></div>
     <div class="row">
       <input id="resolve-input" placeholder="Назва документа для пошуку реєстр. номера…" size="32" autocomplete="off">
       <button id="btn-resolve" type="button">Знайти nreg</button>
@@ -737,7 +738,6 @@ function statusLabel(id) {
 
 async function doSearch(offset) {
   state.offset = offset;
-  $("form-error").hidden = true;
   const q = $("q").value.trim();
   // Relevance (FTS rank) is only meaningful for a text query.
   if (!q && state.sort === "relevance") state.sort = "date_desc";
@@ -750,8 +750,16 @@ async function doSearch(offset) {
   if ($("f-typ").value) p.set("typ", $("f-typ").value);
   if ($("f-org").value) p.set("org", $("f-org").value);
   if ($("f-number").value.trim()) p.set("number", $("f-number").value.trim());
-  if ($("f-date-from").value.trim()) p.set("date_from", $("f-date-from").value.trim());
-  if ($("f-date-to").value.trim()) p.set("date_to", $("f-date-to").value.trim());
+  // Optional date range: only exact 8-digit YYYYMMDD values are sent; invalid
+  // input is ignored (never blocks the search) and flagged with a muted hint.
+  let badDate = false;
+  for (const [id, param] of [["date-from", "date_from"], ["date-to", "date_to"]]) {
+    const v = $(id).value.trim();
+    if (!v) continue;
+    if (/^[0-9]{8}$/.test(v)) p.set(param, v);
+    else badDate = true;
+  }
+  $("date-hint").hidden = !badDate;
   const meta = $("results-meta");
   meta.textContent = "Завантаження…";
   $("results").innerHTML = "";
@@ -796,6 +804,51 @@ async function doSearch(offset) {
   }
 }
 
+// ---- offline full-text search over cached bodies («Пошук у тексті») --------
+// Scans docs_text (texts previously read via the reader/web); Unicode
+// case-insensitive, ranked by occurrences. Clicking a row opens the doc.
+$("btn-cache-search").onclick = (ev) => {
+  ev.preventDefault();
+  doCacheSearch();
+};
+async function doCacheSearch() {
+  const q = $("q").value.trim();
+  const meta = $("results-meta");
+  if (!q) {
+    meta.textContent = "введіть текст пошуку в кеші";
+    return;
+  }
+  meta.textContent = "шукаю в кешованому тексті (офлайн)…";
+  $("results").innerHTML = "";
+  $("sort-bar").hidden = true;
+  try {
+    const d = await api("/api/cache/search?q=" + encodeURIComponent(q));
+    const list = $("results");
+    if (!d.items.length) {
+      meta.textContent = "у кешованому тексті збігів немає (документи кешуються при читанні)";
+      return;
+    }
+    meta.textContent = "у кеші знайдено документів(а): " + d.items.length;
+    for (const it of d.items) {
+      const div = document.createElement("div");
+      div.className = "hit";
+      const a = document.createElement("a");
+      a.textContent = it.title || it.nreg;
+      a.onclick = (ev) => { ev.preventDefault(); openDoc(it.nreg); };
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = it.nreg + " · збігів: " + it.hits;
+      const snip = document.createElement("div");
+      snip.className = "sub";
+      snip.textContent = it.snippet;
+      div.appendChild(a); div.appendChild(sub); div.appendChild(snip);
+      list.appendChild(div);
+    }
+  } catch (e) {
+    meta.textContent = "Помилка: " + e.message;
+  }
+}
+
 // ---- sort by column («Пошук» header row above the results list) -------------
 // One chip per sortable column: the first id applies on click, the second
 // is the toggle-back on the next click (so «Редакція» / «Релевантність»
@@ -835,24 +888,6 @@ function clickSort(col) {
   const ids = SORT_CHIPS[col];
   state.sort = state.sort === ids[0] ? ids[1] : ids[0];
   doSearch(0);
-}
-
-/// Optional «Від»/«До» dates must be exactly 8 ASCII digits (YYYYMMDD);
-/// an invalid field shows an inline error and blocks the submit.
-function validDates() {
-  const err = $("form-error");
-  err.hidden = true;
-  const fields = [["f-date-from", "«від»"], ["f-date-to", "«до»"]];
-  for (const [id, label] of fields) {
-    const v = $(id).value.trim();
-    if (v && !/^[0-9]{8}$/.test(v)) {
-      err.textContent = "Помилка: дата " + label +
-        " має бути 8 цифр, як 20200101: «" + v + "»";
-      err.hidden = false;
-      return false;
-    }
-  }
-  return true;
 }
 
 async function openDoc(nreg) {
@@ -1706,7 +1741,6 @@ document.querySelectorAll("header .tabs button").forEach(b =>
 
 $("search-form").addEventListener("submit", (ev) => {
   ev.preventDefault();
-  if (!validDates()) return;
   doSearch(0);
 });
 $("prev").onclick = () => doSearch(Math.max(0, state.offset - state.limit));

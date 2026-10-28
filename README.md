@@ -45,7 +45,9 @@ official open-data API:
     last query.
   - **Offline text cache** — every live document read is stored per edition
     (`docs_text`, schema v3); when the network fails the reader serves the
-    cached copy with a «кешовано» chip. CLI: `cache` / `cache --purge [nreg]`.
+    cached copy with a «кешовано» chip. CLI: `cache` / `cache --purge [nreg]` /
+    `cache --search TERM` (offline full-text scan, Unicode case-insensitive,
+    ranked by occurrences with context snippets).
   - **Related documents («Пов'язані документи»)** — the reader parses the live
     portal page for links to other acts referenced by the open one (one paced
     request), shows their offline titles, and opens any of them on click; the
@@ -121,6 +123,9 @@ official open-data API:
   to run live sync, snapshot fetch and **index backup/restore as background jobs**
   (`POST /api/jobs/sync|snapshot|backup|restore|init`, `GET /api/jobs`, `GET /api/backups`),
   including a **full index rebuild from the official dump** as a background job,
+  **offline full-text search over cached bodies** («Пошук у тексті»,
+  `GET /api/cache/search?q=`), **date-range filters** (`date_from`/`date_to`,
+  validated 8-digit YYYYMMDD, never blocking),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -182,6 +187,7 @@ Launch arguments:
 .\rada-client.exe text 2755-17 --edition 20101202
 .\rada-client.exe cache                 # offline text-cache stats
 .\rada-client.exe cache --purge 2755-17 # drop one document's cached text
+.\rada-client.exe cache --search "освіту" --limit 10   # offline full-text over cached bodies
 .\rada-client.exe resolve "податковий кодекс"   # name → nreg
 .\rada-client.exe export 2755-17 --fmt md --out zakon.md   # cache-first export
 .\rada-client.exe dict                   # load dictionaries (stan/typs/organs)

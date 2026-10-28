@@ -176,6 +176,8 @@ fn route(
         doc_handler(method, rest, q, st)
     } else if rest == "related" || rest.starts_with("related/") {
         related_handler(method, rest, st)
+    } else if rest.starts_with("cache/") {
+        cache_handler(method, rest, q, st)
     } else if rest.starts_with("export/") {
         export_handler(method, rest, q, st, req)
     } else if rest == "annotations" || rest.starts_with("annotations/") {
@@ -363,6 +365,46 @@ fn related_handler(method: &Method, rest: &str, st: &State) -> Resp {
             json_ok(&json!({ "items": items }))
         }
         Err(e) => json_err(502, &format!("related error: {e}")),
+    }
+}
+
+/// `GET /api/cache/search?q=…` — offline full-text scan of the cached
+/// document bodies (`docs_text`), Unicode case-insensitive, ranked.
+fn cache_handler(method: &Method, rest: &str, q: &[(String, String)], st: &State) -> Resp {
+    if method != &Method::Get {
+        return json_err(405, "method not allowed");
+    }
+    if rest != "cache/search" {
+        return json_err(404, "unknown cache path");
+    }
+    let Some(term) = qget(q, "q").filter(|s| !s.trim().is_empty()) else {
+        return json_err(400, "q required");
+    };
+    let limit = qget(q, "limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(30)
+        .max(1)
+        .min(200);
+    let conn = match open_db(st) {
+        Ok(c) => c,
+        Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
+    };
+    match rada_db::textcache::search_bodies(&conn, &term, limit) {
+        Ok(hits) => {
+            let items: Vec<Value> = hits
+                .into_iter()
+                .map(|h| {
+                    json!({
+                        "nreg": h.nreg,
+                        "title": rada_db::title_by_nreg(&conn, &h.nreg).unwrap_or_default(),
+                        "hits": h.hits,
+                        "snippet": h.snippet,
+                    })
+                })
+                .collect();
+            json_ok(&json!({ "items": items }))
+        }
+        Err(e) => json_err(500, &e.to_string()),
     }
 }
 
@@ -2073,6 +2115,53 @@ mod tests {
         assert_eq!(code, 400, "{v}");
     }
 
+    /// Offline full-text cache search endpoint: shape, validation, ranking
+    /// join with the index title. No network (docs_text is seeded directly).
+    #[test]
+    fn cache_search_endpoint() {
+        let st = favorites_state("cache");
+        {
+            let conn = db_open(&st.db_path).unwrap();
+            rada_db::textcache::put(
+                &conn,
+                "2341-14",
+                "",
+                "Стаття 1. КРИМІНАЛЬНА відповідальність. КРИМІНАЛЬНИЙ кодекс.",
+            )
+            .unwrap();
+            rada_db::textcache::put(&conn, "9-9", "", "текст без ключового слова")
+                .unwrap();
+        }
+        // Query-aware call (the plain `call` helper sends no params).
+        let get = |path: &str, query: &str| -> (u16, Value) {
+            let mut req: Request = TestRequest::new()
+                .with_method(Method::Get)
+                .with_path(path)
+                .into();
+            let resp = route(&Method::Get, path, &parse_query(query), &mut req, &st).unwrap();
+            let code = resp.status_code().0;
+            let bytes = resp.into_reader().into_inner();
+            (code, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        };
+        let (code, _) = call(&st, Method::Post, "/api/cache/search", "");
+        assert_eq!(code, 405);
+        let (code, v) = get("/api/cache/search", "");
+        assert_eq!(code, 400, "{v}");
+        let (code, v) = get("/api/cache/nope", "q=x");
+        assert_eq!(code, 404, "{v}");
+        let (code, v) = get("/api/cache/search", "q=%D0%BA%D1%80%D0%B8%D0%BC%D1%96%D0%BD%D0%B0%D0%BB%D1%8C%D0%BD");
+        assert_eq!(code, 200, "{v}");
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "only the matching doc: {items:?}");
+        assert_eq!(items[0]["nreg"], "2341-14");
+        assert_eq!(items[0]["title"], "Про тестовий закон", "index title join");
+        assert_eq!(items[0]["hits"], 2, "two folded occurrences");
+        assert!(items[0]["snippet"]
+            .as_str()
+            .unwrap()
+            .contains("КРИМІНАЛЬНА"));
+    }
+
     /// Fresh indexed db for one favorites test: migrated schema + one titled
     /// document (`2341-14`), so title joins are observable. Unique dir per
     /// tag keeps parallel tests from colliding.
@@ -2474,5 +2563,36 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("p.set(\"sort\", state.sort)"));
         assert!(ui::INDEX_HTML.contains("renderSortBar"));
         assert!(ui::INDEX_HTML.contains("clickSort"));
+    }
+
+    #[test]
+    fn ui_page_has_date_filters() {
+        // Date-range filters on the «Пошук» page: two compact YYYYMMDD text
+        // inputs with a muted hint for invalid values, and the doSearch
+        // wiring that sends them as `date_from`/`date_to` only when valid.
+        assert!(ui::INDEX_HTML.contains("id=\"date-from\""));
+        assert!(ui::INDEX_HTML.contains("id=\"date-to\""));
+        assert!(ui::INDEX_HTML.contains("id=\"date-hint\""));
+        assert!(ui::INDEX_HTML.contains("від РРРРММДД"));
+        assert!(ui::INDEX_HTML.contains("до РРРРММДД"));
+        assert!(ui::INDEX_HTML.contains("дату вказано невірно"));
+        // runSearch wiring: validated values become query parameters, and
+        // the hint visibility is driven by the 8-digit check.
+        assert!(ui::INDEX_HTML.contains("\"date-from\", \"date_from\""));
+        assert!(ui::INDEX_HTML.contains("\"date-to\", \"date_to\""));
+        assert!(ui::INDEX_HTML.contains("$(\"date-hint\").hidden"));
+        assert!(ui::INDEX_HTML.contains("/^[0-9]{8}$/"));
+    }
+
+    #[test]
+    fn ui_page_has_cache_search() {
+        // «Пошук у тексті»: offline full-text button on the search page that
+        // calls the cache endpoint and renders ranked snippet rows.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-cache-search\""));
+        assert!(ui::INDEX_HTML.contains("Пошук у тексті"));
+        assert!(ui::INDEX_HTML.contains("async function doCacheSearch()"));
+        assert!(ui::INDEX_HTML.contains("/api/cache/search?q="));
+        assert!(ui::INDEX_HTML.contains("it.snippet"));
+        assert!(ui::INDEX_HTML.contains("openDoc(it.nreg)"));
     }
 }

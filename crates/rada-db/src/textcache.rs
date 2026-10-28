@@ -75,39 +75,13 @@ pub fn purge(conn: &Connection, nreg: Option<&str>) -> Result<usize> {
     Ok(deleted)
 }
 
-/// Short context snippet of the cached current text for favorites/lists:
-/// a window centered (case-insensitively) on `needle` when it occurs,
-/// otherwise the document opening. Whitespace is collapsed. `None` when
-/// nothing is cached for `nreg`.
-pub fn preview(conn: &Connection, nreg: &str, needle: &str, max_chars: usize) -> Option<String> {
-    let body = get(conn, nreg, "").ok()??;
-    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+/// Collapse whitespace and cut a window of `max_chars` chars around `pos`
+/// (or from the start), adding ellipses when clipped.
+fn window(flat: &str, pos: Option<usize>, max_chars: usize) -> String {
     let chars: Vec<char> = flat.chars().collect();
     if chars.is_empty() {
-        return None;
+        return String::new();
     }
-    let pos = if needle.trim().is_empty() {
-        None
-    } else {
-        let hay = flat.to_lowercase();
-        let ndl = needle.trim().to_lowercase();
-        let needle_chars: Vec<char> = ndl.chars().collect();
-        let hay_chars: Vec<char> = hay.chars().collect();
-        if needle_chars.is_empty() || needle_chars.len() > hay_chars.len() {
-            None
-        } else {
-            let mut found = None;
-            'outer: for i in 0..=hay_chars.len() - needle_chars.len() {
-                for j in 0..needle_chars.len() {
-                    if hay_chars[i + j] != needle_chars[j] {
-                        continue 'outer;
-                    }
-                }
-                found = Some(i);
-            }
-            found
-        }
-    };
     let max = max_chars.clamp(20, 2000);
     let (start, end) = match pos {
         Some(p) => {
@@ -123,7 +97,111 @@ pub fn preview(conn: &Connection, nreg: &str, needle: &str, max_chars: usize) ->
     if end < chars.len() {
         out.push('…');
     }
-    Some(out)
+    out
+}
+
+/// Short context snippet of the cached current text for favorites/lists:
+/// a window centered (case-insensitively) on `needle` when it occurs,
+/// otherwise the document opening. Whitespace is collapsed. `None` when
+/// nothing is cached for `nreg`.
+pub fn preview(conn: &Connection, nreg: &str, needle: &str, max_chars: usize) -> Option<String> {
+    let body = get(conn, nreg, "").ok()??;
+    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    if flat.is_empty() {
+        return None;
+    }
+    let pos = find_ci(&flat, needle);
+    Some(window(&flat, pos, max_chars))
+}
+
+/// Case-insensitive (Unicode) char-index of `needle` in `hay`; `None` when
+/// the needle is blank or absent.
+fn find_ci(hay: &str, needle: &str) -> Option<usize> {
+    let ndl = needle.trim().to_lowercase();
+    if ndl.is_empty() {
+        return None;
+    }
+    let hay_chars: Vec<char> = hay.to_lowercase().chars().collect();
+    let needle_chars: Vec<char> = ndl.chars().collect();
+    if needle_chars.len() > hay_chars.len() {
+        return None;
+    }
+    'outer: for i in 0..=hay_chars.len() - needle_chars.len() {
+        for j in 0..needle_chars.len() {
+            if hay_chars[i + j] != needle_chars[j] {
+                continue 'outer;
+            }
+        }
+        return Some(i);
+    }
+    None
+}
+
+/// One hit of [`search_bodies`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CacheHit {
+    pub nreg: String,
+    /// Number of occurrences of the needle in the document.
+    pub hits: usize,
+    /// Context window around the first occurrence.
+    pub snippet: String,
+}
+
+/// Offline full-text search over the cached *current* texts: Unicode
+/// case-insensitive substring scan in Rust (SQLite `LIKE`/FTS do not fold
+/// Cyrillic without ICU). Results are ranked by occurrence count (desc),
+/// ties by nreg, capped at `max_results`.
+pub fn search_bodies(
+    conn: &Connection,
+    needle: &str,
+    max_results: usize,
+) -> Result<Vec<CacheHit>> {
+    let ndl = needle.trim().to_lowercase();
+    if ndl.is_empty() {
+        return Ok(Vec::new());
+    }
+    let needle_chars: Vec<char> = ndl.chars().collect();
+    let mut stmt = conn
+        .prepare("SELECT nreg, body FROM docs_text WHERE edition = ''")
+        .context("search_bodies docs_text")?;
+    let mut rows = stmt
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))
+        .context("search_bodies docs_text")?;
+    let mut found: Vec<CacheHit> = Vec::new();
+    while let Some((nreg, body)) = rows.next().transpose()? {
+        let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+        let low: Vec<char> = flat.to_lowercase().chars().collect();
+        if low.len() < needle_chars.len() {
+            continue;
+        }
+        let mut hits = 0usize;
+        let mut first: Option<usize> = None;
+        for i in 0..=low.len() - needle_chars.len() {
+            let mut same = true;
+            for j in 0..needle_chars.len() {
+                if low[i + j] != needle_chars[j] {
+                    same = false;
+                    break;
+                }
+            }
+            if same {
+                hits += 1;
+                if first.is_none() {
+                    first = Some(i);
+                }
+            }
+        }
+        if hits > 0 {
+            found.push(CacheHit {
+                nreg,
+                hits,
+                snippet: window(&flat, first, 200),
+            });
+        }
+    }
+    found.sort_by(|a, b| b.hits.cmp(&a.hits).then_with(|| a.nreg.cmp(&b.nreg)));
+    found.truncate(max_results);
+    Ok(found)
 }
 
 #[cfg(test)]
@@ -173,6 +251,32 @@ mod tests {
         // Short bodies have no ellipses at all.
         put(&conn, "2-2", "", "короткий текст").unwrap();
         assert_eq!(preview(&conn, "2-2", "", 60).unwrap(), "короткий текст");
+    }
+
+    /// search_bodies(): Unicode case folding (Cyrillic), ranking, edition
+    /// filter, snippet around the first hit, empty-needle guard.
+    #[test]
+    fn search_bodies_ranks_and_folds_case() {
+        let conn = conn();
+        put(&conn, "a-1", "", "Стаття 1. КРИМІНАЛЬНА відповідальність настає за КРИМІНАЛЬНИЙ злочин.").unwrap();
+        put(&conn, "b-2", "", "кримінальний кодекс у тексту одного разу").unwrap();
+        put(&conn, "c-3", "", "повністю інший акт про освіту").unwrap();
+        put(&conn, "d-4", "ed20200101", "кримінальний кримінальний кримінальний").unwrap();
+        // Empty needle: nothing.
+        assert!(search_bodies(&conn, "  ", 10).unwrap().is_empty());
+        let hits = search_bodies(&conn, "КРИМІНАЛЬН", 10).unwrap();
+        // d-4 has 3 occurrences but only the CURRENT edition counts → excluded.
+        assert_eq!(
+            hits.iter().map(|h| h.nreg.as_str()).collect::<Vec<_>>(),
+            ["a-1", "b-2"],
+            "ranked by occurrences, current edition only"
+        );
+        assert_eq!(hits[0].hits, 2);
+        assert_eq!(hits[1].hits, 1);
+        // Snippet contains the match (folded comparison, no ellipsis for short docs).
+        assert!(hits[1].snippet.contains("кримінальний"), "{}", hits[1].snippet);
+        // max_results cap.
+        assert_eq!(search_bodies(&conn, "кримінальн", 1).unwrap().len(), 1);
     }
 
     /// Editions are distinct keys; re-putting the same key replaces the body.
