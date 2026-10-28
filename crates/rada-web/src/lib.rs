@@ -3356,4 +3356,43 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("\"URL: \" + siteUrlFor(nreg)"));
         assert!(ui::INDEX_HTML.contains(".trimEnd()"));
     }
+
+    #[test]
+    fn ui_page_has_hash_deep_link_parse() {
+        // Pure parseHash helper for shareable fragments: both fields default
+        // to null, the leading '#' is optional, parameters are separated by
+        // '&' and split on the FIRST '=' each (values may contain '='),
+        // unknown keys are ignored, and decodeURIComponent sits inside a
+        // try/catch so a bad % sequence drops the parameter instead of
+        // throwing (a malformed hash reads like no hash at all).
+        assert!(ui::INDEX_HTML.contains("function parseHash(h)"));
+        assert!(ui::INDEX_HTML.contains("{ doc: null, q: null }"));
+        assert!(ui::INDEX_HTML.contains("charAt(0) === \"#\""));
+        assert!(ui::INDEX_HTML.contains("split(\"&\")"));
+        assert!(ui::INDEX_HTML.contains("indexOf(\"=\")"));
+        assert!(ui::INDEX_HTML.contains("key !== \"doc\" && key !== \"q\""));
+        assert!(ui::INDEX_HTML.contains("try { val = decodeURIComponent("));
+        assert!(ui::INDEX_HTML.contains("} catch (_) { continue; }"));
+    }
+
+    #[test]
+    fn ui_page_has_hash_deep_link_apply() {
+        // The hash is read once during init (after the normal startup has
+        // run): "#doc=" opens the reader on the «Пошук» tab and "#q=" fills
+        // the query box and searches, doc winning when both are present.
+        // No hashchange listener exists, so the openDoc/doSearch hash sync
+        // (replaceState, so no history entry and no anchor jump) can never
+        // feed back into the on-load application.
+        assert!(ui::INDEX_HTML.contains(
+            "parseHash(window.location.hash || location.hash)"
+        ));
+        assert!(ui::INDEX_HTML.contains("if (h.doc)"));
+        assert!(ui::INDEX_HTML.contains("openDoc(h.doc);"));
+        assert!(ui::INDEX_HTML.contains("} else if (h.q) {"));
+        assert!(ui::INDEX_HTML.contains("$(\"q\").value = h.q;"));
+        assert!(ui::INDEX_HTML.contains("doSearch(0);"));
+        assert!(!ui::INDEX_HTML.contains("hashchange"));
+        assert!(ui::INDEX_HTML.contains("\"#doc=\" + encNreg(nreg)"));
+        assert!(ui::INDEX_HTML.contains("\"#q=\" + encodeURIComponent(q)"));
+    }
 }

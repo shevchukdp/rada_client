@@ -141,8 +141,8 @@ official open-data API:
     reader, with a «оновлено: щойно / N хв тому / N год тому / N дн тому»
     freshness label beside the document counter.
   - **Головна** — index status (documents, size, dictionaries) with a **quick
-    dictionary search** (substring over stan/typs/organs, matches listed with
-    their ids) and the six **recently opened documents** (chips with a relative open time: «щойно /
+    dictionary search** (substring over stan/typs/organs; clicking a match
+    applies that status/type/publisher filter and searches) and the six **recently opened documents** (chips with a relative open time: «щойно /
     N хв тому / N год тому / N дн тому»),
     one-click **live sync**, **snapshot download** with progress, **full
     index build** from the official `doc.txt` dump (or a local dump file),
@@ -177,7 +177,9 @@ official open-data API:
   counts after each search), **theme-colored printing** (the print view keeps
   the current theme's accent on white paper),
   **deep links** (`?q=&sort=&status=…` reproduces a search on load,
-  `?doc=<nreg>` opens a document directly), **web reader outline («Зміст»** —
+  `?doc=<nreg>` opens a document directly; the URL also carries a
+  copy-friendly `#doc=<nreg>` / `#q=<term>` fragment kept in sync without
+  adding browser-history entries), **web reader outline («Зміст»** —
   smooth-scroll jump list of «Розділ/Глава/Стаття» headings),
   **reader copy-text + reading-time stats** (clipboard button and a muted
   «N слів · M симв. · ~K хв» label),
@@ -269,6 +271,7 @@ Launch arguments:
 .\rada-client.exe text 2755-17          # clean current text (offline cache fallback)
 .\rada-client.exe text 2755-17 --out zakon.txt   # write the text to a file (UTF-8)
 .\rada-client.exe text 2755-17 --edition 20101202
+.\rada-client.exe text 2755-17 --grep "стаття 7" --context 2   # grep the body: «N: line», «--» between blocks
 .\rada-client.exe cache                 # offline text-cache stats
 .\rada-client.exe stats                  # offline index report (docs, dicts, cache, snapshot)
 .\rada-client.exe stats --json           # machine-readable

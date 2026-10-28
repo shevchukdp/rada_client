@@ -5,7 +5,8 @@
 //! - `sync`      incremental update from the updated-documents feed;
 //! - `search`    local title search (FTS5 + filters);
 //! - `card`      live card for a document (human summary, `--json` for raw JSON);
-//! - `text`      clean text of a document (current or a given edition);
+//! - `text`      clean text of a document (current or a given edition;
+//!               `--grep TERM` greps the body with `--context N` windows);
 //! - `backfill`  fetch and cache the act texts of the top hits of a local
 //!               title search, so later reading works offline
 //!               (`--dry-run` lists cached/missing without fetching);
@@ -123,8 +124,20 @@ enum Cmd {
         #[arg(long)]
         edition: Option<String>,
         /// Write to this file instead of stdout (parent dirs created).
+        /// With `--grep` the file receives the grepped output instead of
+        /// the full body.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Grep the body: print only lines containing this substring
+        /// (case-insensitive), each prefixed «N: line» with its 1-based line
+        /// number; «збігів немає» on stdout when nothing matches. An empty
+        /// string prints the whole body with a muted stderr warning.
+        #[arg(long)]
+        grep: Option<String>,
+        /// With `--grep`: also print N context lines before/after each
+        /// match (disjoint blocks separated by «--», like `grep -C`).
+        #[arg(long, default_value_t = 0)]
+        context: usize,
     },
     /// Offline text cache: statistics, purge (`--purge [nreg]`), or a
     /// full-text scan of cached bodies (`--search TERM`) — offline, Unicode
@@ -414,9 +427,21 @@ fn run() -> Result<()> {
             out,
         } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, sort, json, facets, out.as_deref()),
         Cmd::Card { nreg, json, out } => cmd_card(&nreg, json, out.as_deref(), cli.pace),
-        Cmd::Text { nreg, edition, out } => {
-            cmd_text(&cli.db, &nreg, edition.as_deref(), out.as_deref(), cli.pace)
-        }
+        Cmd::Text {
+            nreg,
+            edition,
+            out,
+            grep,
+            context,
+        } => cmd_text(
+            &cli.db,
+            &nreg,
+            edition.as_deref(),
+            out.as_deref(),
+            grep.as_deref(),
+            context,
+            cli.pace,
+        ),
         Cmd::Cache { purge, search, limit, nreg, json, out } => {
             cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref(), json, out.as_deref())
         }
@@ -1025,6 +1050,8 @@ fn cmd_text(
     nreg: &str,
     edition: Option<&str>,
     out: Option<&Path>,
+    grep: Option<&str>,
+    context: usize,
     pace: u64,
 ) -> Result<()> {
     let c = client(pace);
@@ -1039,7 +1066,7 @@ fn cmd_text(
             if let Ok(conn) = rada_db::open(db) {
                 let _ = rada_db::textcache::put(&conn, nreg, key, &text);
             }
-            emit_text(&text, out)
+            emit_text(&text, out, grep, context)
         }
         Err(e) => {
             // Offline fallback: serve the cached copy when we have one.
@@ -1049,7 +1076,7 @@ fn cmd_text(
             match hit {
                 Some(text) => {
                     eprintln!("[text] live fetch failed ({e}); served from offline cache");
-                    emit_text(&text, out)
+                    emit_text(&text, out, grep, context)
                 }
                 None => Err(anyhow::anyhow!("text {nreg}: {e} (no cached copy)")),
             }
@@ -1058,8 +1085,23 @@ fn cmd_text(
 }
 
 /// Print `text` to stdout, or (with `--out`) write it as UTF-8 to the file,
-/// creating parent directories; a write failure is a hard error.
-fn emit_text(text: &str, out: Option<&Path>) -> Result<()> {
+/// creating parent directories; a write failure is a hard error. With a
+/// non-empty `--grep` needle the grepped output replaces the full body on
+/// both stdout and the `--out` file ([`emit_grep`]); an empty (or
+/// whitespace-only) needle only prints a muted stderr warning and the full
+/// body follows. Without `--grep` the behavior is byte-identical to the
+/// historical one (`--context` is ignored).
+fn emit_text(
+    text: &str,
+    out: Option<&Path>,
+    grep: Option<&str>,
+    context: usize,
+) -> Result<()> {
+    match grep {
+        Some(needle) if !needle.trim().is_empty() => return emit_grep(text, needle, out, context),
+        Some(_) => eprintln!("grep: порожній рядок — друкуємо все"),
+        None => {}
+    }
     match out {
         Some(p) => {
             if let Some(parent) = p.parent() {
@@ -1079,9 +1121,103 @@ fn emit_text(text: &str, out: Option<&Path>) -> Result<()> {
     }
 }
 
+/// The `--grep` output of `text` (shared by stdout and `--out` so the two
+/// cannot drift). Matched lines print as `{n}: {line}` (1-based line
+/// number); with `--context N` the N untouched lines around each match are
+/// kept too, disjoint blocks separated by `--` ([`grep_render`]). Zero
+/// matches: the single «збігів немає» line goes to stdout only (the
+/// `search --facets` rule) plus a muted stderr note, and the `--out` file
+/// carries the UTF-8 BOM alone (the `cache --search --out` rule) with a
+/// `записано 0 рядків` note. A non-empty result on stdout prints exactly
+/// the rendered lines; with `--out` the same bytes go to the file with the
+/// Excel-friendly BOM prefix ([`write_out_file`]) and one
+/// `[text] записано {matches} рядків → {file}` note goes to stderr.
+fn emit_grep(text: &str, needle: &str, out: Option<&Path>, context: usize) -> Result<()> {
+    let kept = grep_body(text, needle, context);
+    let matches = kept.iter().filter(|(_, _, m)| *m).count();
+    let lines = grep_render(&kept);
+    if kept.is_empty() {
+        println!("збігів немає");
+        eprintln!("[text] збігів немає");
+        if let Some(p) = out {
+            write_out_file(p, "\u{FEFF}".as_bytes())?;
+            eprintln!("{}", text_grep_out_note(0, p));
+        }
+        return Ok(());
+    }
+    match out {
+        Some(p) => {
+            // human table: UTF-8 BOM prefix, the same Excel-friendly
+            // convention as search/arrivals/resolve/related
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", text_grep_out_note(matches, p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Pure grep core behind `text --grep`: keep every line of `body` whose
+/// plain `to_lowercase` form contains the trimmed-lowercased `needle`, plus
+/// the `context` lines before and after each match (overlapping windows
+/// merge, lines are deduped and stay in ascending 1-based order). Returns
+/// `(line_no, line text, is_match)` triples; `is_match` marks the actual
+/// matches (context lines are `false`). An empty or whitespace-only needle
+/// matches every line; the caller decides whether that means "print all".
+fn grep_body(body: &str, needle: &str, context: usize) -> Vec<(usize, String, bool)> {
+    let needle = needle.trim().to_lowercase();
+    let lines: Vec<&str> = body.lines().collect();
+    let matched: Vec<bool> = lines
+        .iter()
+        .map(|l| l.to_lowercase().contains(&needle))
+        .collect();
+    let mut keep = vec![false; lines.len()];
+    for (i, m) in matched.iter().enumerate() {
+        if *m {
+            let lo = i.saturating_sub(context);
+            let hi = (i + context).min(lines.len() - 1);
+            for k in lo..=hi {
+                keep[k] = true;
+            }
+        }
+    }
+    lines
+        .into_iter()
+        .enumerate()
+        .filter(|(i, _)| keep[*i])
+        .map(|(i, l)| (i + 1, l.to_string(), matched[i]))
+        .collect()
+}
+
+/// Render the kept [`grep_body`] lines as `{n}: {line}` strings, inserting
+/// a `--` separator between disjoint blocks — maximal runs of kept lines
+/// whose numbers are consecutive: a boundary that skips ≥1 body line emits
+/// the separator, never at the very start or end. Empty input renders no
+/// lines (the caller prints the stdout-only «збігів немає» instead).
+fn grep_render(kept: &[(usize, String, bool)]) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::with_capacity(kept.len());
+    for (idx, (n, text, _)) in kept.iter().enumerate() {
+        if idx > 0 && *n != kept[idx - 1].0 + 1 {
+            lines.push("--".to_string());
+        }
+        lines.push(format!("{n}: {text}"));
+    }
+    lines
+}
+
 /// The stderr note printed after `text --out` has written `file`.
 fn out_note(chars: usize, file: &Path) -> String {
     format!("[text] записано {chars} симв. → {}", file.display())
+}
+
+/// The stderr note printed after `text --grep --out` has written the
+/// grepped output (`matches` matched lines) to `file`.
+fn text_grep_out_note(matches: usize, file: &Path) -> String {
+    format!("[text] записано {matches} рядків → {}", file.display())
 }
 
 /// Validate the `--format` value; returns the canonical format string.
@@ -2370,10 +2506,10 @@ mod tests {
     use super::{
         annot_list_out_note, annot_out_note, annot_text_file_note, arrivals_date_key,
         arrivals_out_note, backfill_summary, cache_search_out_note, card_out_note, dict_fresh_lines,
-        dict_matches, dict_out_note, export_html,
+        dict_matches, dict_out_note, export_html, grep_body, grep_render,
         export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
         normalize_fmt, out_note, related_out_note, resolve_out_note, search_out_note, since_note,
-        stats_lines, stats_out_note, today_yyyymmdd, StatsInfo,
+        stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, StatsInfo,
     };
 
     #[test]
@@ -2907,5 +3043,91 @@ mod tests {
         assert_eq!(t.len(), 8);
         assert!(t.chars().all(|c| c.is_ascii_digit()));
         assert!(super::ymd_to_days(&t).is_some());
+    }
+
+    #[test]
+    fn grep_body_merges_context_blocks() {
+        // ten lines, case-insensitive matches at lines 3 and 7 (4 apart)
+        let body = "l1\nl2\nПодатковий A\nl4\nl5\nl6\nподатковий B\nl8\nl9\nl10";
+        // context 0: only the two match lines, 1-based numbers + flags
+        assert_eq!(
+            grep_body(body, "податковий", 0),
+            vec![
+                (3, "Податковий A".to_string(), true),
+                (7, "податковий B".to_string(), true),
+            ]
+        );
+        // matches 4 lines apart: context 1 keeps the untouched neighbours
+        // (is_match = false) and the blocks stay DISJOINT (gap at line 5)
+        let kept = grep_body(body, "податковий", 1);
+        assert_eq!(
+            kept,
+            vec![
+                (2, "l2".to_string(), false),
+                (3, "Податковий A".to_string(), true),
+                (4, "l4".to_string(), false),
+                (6, "l6".to_string(), false),
+                (7, "податковий B".to_string(), true),
+                (8, "l8".to_string(), false),
+            ]
+        );
+        // context 3: the windows [1..6] and [4..10] overlap → one MERGED
+        // gap-free ascending run of all ten lines, match flags preserved
+        let merged = grep_body(body, "податковий", 3);
+        assert_eq!(merged.len(), 10);
+        assert_eq!(merged[0].0, 1);
+        for w in merged.windows(2) {
+            assert_eq!(w[1].0, w[0].0 + 1, "merged blocks must be gap-free");
+        }
+        assert_eq!(merged.iter().filter(|(_, _, m)| *m).count(), 2);
+        assert!(merged[2].2 && merged[6].2, "lines 3 and 7 are the matches");
+        assert!(!merged[0].2 && !merged[9].2, "context lines are not matches");
+        // no match ⇒ nothing kept
+        assert!(grep_body(body, "немає-такого", 1).is_empty());
+        // the needle is trimmed once and case-folded (plain to_lowercase)
+        assert_eq!(grep_body("Кодекс", "  КОДЕКС ", 0).len(), 1);
+    }
+
+    #[test]
+    fn grep_render_separates_blocks() {
+        // two disjoint blocks (gap at line 5): «--» between them,
+        // every kept line prefixed «{n}: {line}»
+        let kept = vec![
+            (2, "l2".to_string(), false),
+            (3, "Податковий A".to_string(), true),
+            (4, "l4".to_string(), false),
+            (6, "l6".to_string(), false),
+            (7, "податковий B".to_string(), true),
+        ];
+        assert_eq!(
+            grep_render(&kept),
+            vec![
+                "2: l2".to_string(),
+                "3: Податковий A".to_string(),
+                "4: l4".to_string(),
+                "--".to_string(),
+                "6: l6".to_string(),
+                "7: податковий B".to_string(),
+            ]
+        );
+        // one consecutive block: no separator at the edges
+        let one = vec![(1, "a".to_string(), true), (2, "b".to_string(), false)];
+        assert_eq!(
+            grep_render(&one),
+            vec!["1: a".to_string(), "2: b".to_string()]
+        );
+        // empty input renders no lines
+        assert!(grep_render(&[]).is_empty());
+        // the stderr note printed after `--grep --out` has written the file
+        let file = std::path::Path::new("out//g.txt");
+        let note = text_grep_out_note(5, file);
+        assert_eq!(
+            note,
+            format!("[text] записано 5 рядків → {}", file.display())
+        );
+        assert!(note.starts_with("[text] записано "));
+        assert!(note.contains("рядків"));
+        assert!(note.contains('→'));
+        assert!(note.contains(&file.display().to_string()));
     }
 }

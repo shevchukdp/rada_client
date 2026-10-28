@@ -932,6 +932,20 @@ async function init() {
   // Re-attach to jobs that are still running after a page reload.
   await refreshJobs();
   if (jobsAnyRunning) pollJobs();
+  // Hash deep links apply only after the normal startup above has run:
+  // "#doc=<nreg>" opens the reader on the «Пошук» tab, "#q=<term>" fills
+  // the query box and searches (doc wins when both are present). The hash
+  // is read once on load — no fragment-change listener is registered,
+  // openDoc/doSearch are the only writers, so no feedback loop is possible.
+  const h = parseHash(window.location.hash || location.hash);
+  if (h.doc) {
+    switchTab("search"); // the reader pane lives under the «Пошук» tab
+    openDoc(h.doc);
+  } else if (h.q) {
+    switchTab("search");
+    $("q").value = h.q;
+    doSearch(0);
+  }
 }
 
 // ---- deep link: URL <-> search state ----------------------------------------
@@ -972,6 +986,29 @@ function writeDeepLink() {
   if (n) { p.set("number", n); }
   const url = p.toString() ? "?" + p.toString() : location.pathname;
   history.replaceState(null, "", url);
+}
+
+// Shareable hash form of the deep links above: "#doc=<nreg>" opens the reader,
+// "#q=<term>" runs a search (doc wins when both are present). Pure parser: the
+// leading '#' is optional, parameters are separated by '&' and split on the
+// FIRST '=' each (values may contain '='), unknown keys are ignored,
+// decodeURIComponent failures never throw (the parameter is simply dropped),
+// and missing or empty values stay null so a malformed hash is indistinguishable
+// from no hash at all (normal startup).
+function parseHash(h) {
+  const out = { doc: null, q: null };
+  let s = h ? String(h) : "";
+  if (s.charAt(0) === "#") s = s.slice(1);
+  for (const part of s.split("&")) {
+    const eq = part.indexOf("=");
+    if (eq < 0) continue;
+    const key = part.slice(0, eq);
+    if (key !== "doc" && key !== "q") continue; // unknown keys are ignored
+    let val = null;
+    try { val = decodeURIComponent(part.slice(eq + 1)); } catch (_) { continue; }
+    if (val) out[key] = val;
+  }
+  return out;
 }
 
 // Original option labels per select + option value, captured once when the
@@ -1194,6 +1231,13 @@ async function doSearch(offset) {
   }
   $("date-hint").hidden = !badDate;
   writeDeepLink();
+  if (offset === 0) {
+    // Keep the shareable "#q=<term>" fragment in sync with the first search
+    // page (replaceState: no history entry, no anchor jump); an empty term
+    // drops the fragment. Later pages leave the page-1 URL untouched.
+    history.replaceState(null, "", location.pathname + location.search +
+      (q ? "#q=" + encodeURIComponent(q) : ""));
+  }
   const meta = $("results-meta");
   meta.textContent = "Завантаження…";
   $("results").innerHTML = "";
@@ -1414,7 +1458,8 @@ async function openDoc(nreg) {
   state.curNreg = nreg;
   navPos = navList.indexOf(nreg); // -1 when opened outside any result list
   updateNavUi();
-  history.replaceState(null, "", "?doc=" + encodeURIComponent(nreg));
+  history.replaceState(null, "", "?doc=" + encodeURIComponent(nreg) +
+    "#doc=" + encNreg(nreg));
   state.curText = "";
   state.annots = [];
   state.curCard = null; // a stale title must never leak into the next citation

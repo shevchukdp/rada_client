@@ -176,19 +176,29 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             if !needle.is_empty() {
                 let show = 8usize;
                 let mut total = 0usize;
+                let mut jump: Option<(DictField, i64, String)> = None;
                 for (name, list) in [("stan", &stan), ("typs", &typs), ("organs", &organs)] {
                     let hits = dict_hits(list, &needle, usize::MAX);
                     if hits.is_empty() {
                         continue;
                     }
+                    let Some(field) = dict_field(name) else {
+                        continue;
+                    };
                     total += hits.len();
                     ui.horizontal_wrapped(|ui| {
                         ui.label(egui::RichText::new(format!("{name}:")).small().strong());
                         for (id, label) in hits.iter().take(show) {
                             let short: String = label.chars().take(60).collect();
-                            ui.label(
-                                egui::RichText::new(format!("«{short}» ({id})")).small().weak(),
-                            );
+                            if ui
+                                .button(
+                                    egui::RichText::new(format!("«{short}» ({id})")).small(),
+                                )
+                                .on_hover_text("показати документи з цим значенням")
+                                .clicked()
+                            {
+                                jump = Some((field, *id, label.clone()));
+                            }
                         }
                         if hits.len() > show {
                             ui.label(
@@ -205,6 +215,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             .small()
                             .weak(),
                     );
+                }
+                // clicking a value applies the matching filter and searches
+                if let Some((f, id, label)) = jump {
+                    match f {
+                        DictField::Status => app.search.f_status = Some(id),
+                        DictField::Typ => app.search.f_typ = Some(id),
+                        DictField::Org => {
+                            app.search.f_org = Some(id);
+                            app.search.f_org_label = label;
+                        }
+                    }
+                    app.search.set_offset(0);
+                    app.page = crate::app::Page::Search;
+                    app.run_search();
                 }
             }
 
@@ -563,6 +587,25 @@ pub struct HomeState {
     pub dict_query: String,
 }
 
+/// Which search filter a dictionary feeds (for click-to-filter jumps from
+/// the home dictionary search).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DictField {
+    Status,
+    Typ,
+    Org,
+}
+
+/// Map a dictionary name to its search filter; unknown names → `None`.
+pub fn dict_field(name: &str) -> Option<DictField> {
+    match name {
+        "stan" => Some(DictField::Status),
+        "typs" => Some(DictField::Typ),
+        "organs" => Some(DictField::Org),
+        _ => None,
+    }
+}
+
 /// Case-insensitive substring search over dictionary entries
 /// (`(id, label)` pairs): returns matching entries in their original order,
 /// at most `cap` of them. An empty/whitespace needle matches nothing —
@@ -582,7 +625,7 @@ pub fn dict_hits(dicts: &[(i64, String)], needle: &str, cap: usize) -> Vec<(i64,
 
 #[cfg(test)]
 mod tests {
-    use super::dict_hits;
+    use super::{dict_field, dict_hits, DictField};
 
     fn d(id: i64, label: &str) -> (i64, String) {
         (id, label.to_string())
@@ -604,6 +647,15 @@ mod tests {
         );
         // surrounding spaces are trimmed before matching
         assert_eq!(dict_hits(&dicts, "  недію  ", 10), vec![d(2, "недіючий")]);
+    }
+
+    #[test]
+    fn dict_field_maps_known_dictionaries_only() {
+        assert_eq!(dict_field("stan"), Some(DictField::Status));
+        assert_eq!(dict_field("typs"), Some(DictField::Typ));
+        assert_eq!(dict_field("organs"), Some(DictField::Org));
+        assert_eq!(dict_field("Stan"), None, "names are exact ids");
+        assert_eq!(dict_field(""), None);
     }
 
     #[test]

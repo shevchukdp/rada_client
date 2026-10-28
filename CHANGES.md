@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.32: поділ посиланням у веб, grep текстів з CLI та перехід до пошуку з словника / shareable links, body grep & dictionary jump-to-search
+
+- **UKR:** 1) **Посилання на сторінку у веб**: URL з `#doc=номер` одразу відкриває акт, `#q=запит` — одразу шукає; адреса оновлюється без сміття в історії браузера — таке посилання можна копіювати колезі. 2) **CLI `text <nreg> --grep TERM [--context N]`**: рядки тіла з підсвіткою пошуку у стилі grep — «N: рядок», сусідні рядки навколо збігів, «--» між блоками; з `--out` файл отримує відфільтрований текст. 3) **Клік по значенню в пошуку словників на Головна** застосовує відповідний фільтр (стан/тип/видавець) і одразу шукає документи. 4) Тести: 236/236.
+- **ENG:** 1) **Shareable links in the web UI**: a URL with `#doc=<nreg>` opens that act directly, `#q=<term>` searches on load; the address updates without polluting browser history — send the link to a colleague. 2) **CLI `text <nreg> --grep TERM [--context N]`**: grep-style body lines — «N: line», N neighbour lines around each match, «--» between blocks; `--out` writes the filtered text. 3) **Clicking a dictionary-search hit on Home** applies that status/type/publisher filter and searches immediately. 4) Tests: 236/236.
+
+---
+
+## 2026-10-28
+
 ### 0.10.31: словниковий пошук на Головна, підсвічування в кеш-пошуку та звіт «stats» / home dictionary search, cache-hit highlighting & stats report
 
 - **UKR:** 1) **Пошук у словниках на Головна**: поле під лічильниками словників миттєво знаходить значення стану/типу/видавця за підрядком і показує їх з ідентифікаторами (««Міністерство юстиції» (45)», до 8 на словник + «… ще N»). 2) **Підсвічування у «Пошук у тексті»**: слова запиту тепер виділені й у назвах, і у фрагментах кешованих тіл — тією самою позначкою, що і у звичайній видачі. 3) **CLI `stats`**: офлайн звіт стану одним рядком на джерело — індекс (файл, розмір, імпорт/синк), документи, анотації, три словники, кеш текстів; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 4) Тести: 231/231.
