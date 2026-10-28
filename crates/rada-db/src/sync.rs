@@ -70,8 +70,31 @@ where
     Ok((applied, failed))
 }
 
-/// Convenience: load the three standard dictionaries in one call.
-/// `fetch_dict` returns raw bytes for a dictionary name.
+/// Persist a snapshot of the arrivals feed (`r.tsv`) into `meta`, together
+/// with its save time, so the page can be shown offline.
+pub fn save_arrivals(conn: &Connection, docs: &[UpdatedDoc]) -> Result<()> {
+    let json = serde_json::to_string(docs).context("encode arrivals")?;
+    crate::set_meta(conn, "arrivals", &json)?;
+    crate::set_meta(conn, "arrivals_at", &crate::build::now_stamp())
+}
+
+/// Last saved arrivals snapshot: `(docs, saved_at)`, `None` when absent or
+/// unreadable.
+pub fn load_arrivals(conn: &Connection) -> Option<(Vec<UpdatedDoc>, String)> {
+    let json = conn
+        .query_row("SELECT value FROM meta WHERE key='arrivals'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .ok()?;
+    let at = conn
+        .query_row("SELECT value FROM meta WHERE key='arrivals_at'", [], |r| {
+            r.get::<_, String>(0)
+        })
+        .unwrap_or_default();
+    serde_json::from_str(&json).ok().map(|d| (d, at))
+}
+
+/// Convenience: load the three standard dictionaries in one call./// `fetch_dict` returns raw bytes for a dictionary name.
 ///
 /// Tolerant: a kind that fails to fetch or load (e.g. the server does not
 /// publish that file) is skipped; the list of failed kinds (or
@@ -162,6 +185,33 @@ mod tests {
         assert_eq!(nazva, "Про вищу освіту", "nazva must survive");
         assert_eq!(org_num, "1556-VIII", "org_num must survive");
         assert_eq!(status, 43, "changed fields must still update");
+    }
+
+    /// Arrivals snapshot round-trips through `meta`.
+    #[test]
+    fn arrivals_snapshot_roundtrip() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        migrate(&mut conn).unwrap();
+        assert!(crate::sync::load_arrivals(&conn).is_none(), "empty at first");
+        let docs = vec![UpdatedDoc {
+            num: 7,
+            nreg: "123-26".into(),
+            nazva: "Про тест".into(),
+            status: "Чинний".into(),
+            publics: "ВР, 2026, №1".into(),
+            file: "123-26.doc.txt".into(),
+            size: Some(1234),
+            link: "https://zakon.rada.gov.ua/go/123-26/ed20260101".into(),
+        }];
+        crate::sync::save_arrivals(&conn, &docs).unwrap();
+        let (got, at) = crate::sync::load_arrivals(&conn).expect("saved");
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].nreg, "123-26");
+        assert_eq!(got[0].nazva, "Про тест");
+        assert!(!at.is_empty(), "save stamp recorded");
+        // corrupt JSON is tolerated (None), not a panic.
+        crate::set_meta(&conn, "arrivals", "{oops").unwrap();
+        assert!(crate::sync::load_arrivals(&conn).is_none());
     }
 
     /// A new document (not in the index) is inserted normally.

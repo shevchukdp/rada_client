@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.9.9: номерний пошук, фід офлайн, резервні копії у веб, CLI export / 0.9.9: number search, offline arrivals, web backups, CLI export
+
+- **UKR:** 1) **Пошук за номером офлайн**: рядок вигляду `1556-18`, `1178-2022-п`, `n0423500-26` у полі «Заголовок» відкриває документ напряму в читалці (точний пошук `by_nreg`, без мережі); у веб — те саме через `?q=` (`nreg_exact`). 2) **Фід «Оновлення» тепер офлайн-доступний**: останній знімок зберігається в індексі, при недоступній мережі показується з позначкою «збережене» + час; додано фільтр за назвою/номером/публікацією. 3) **Веб «Дані» → «Резервна копія»**: створення копій (`POST /api/jobs/backup`), список (`GET /api/backups`), відновлення з вибраного файлу з підтвердженням (`POST /api/jobs/restore`) — анотації повертаються, пошкоджений файл видаляється, безпечна заміна БД. 4) **CLI**: `export <nreg> --fmt txt|md|html [--edition] [--out]` — спершу кеш, потім наживо; без картки експортується TXT з кешу. 5) Тести: 92/92.
+- **ENG:** 1) **Offline number search**: a query shaped like `1556-18`, `1178-2022-п` or `n0423500-26` opens the document straight in the reader (exact `by_nreg`, no network); the web UI mirrors this via `?q=` (`nreg_exact` auto-open). 2) **The arrivals feed works offline**: the last snapshot is stored in the index and shown with a «збережене» chip + save time when the network fails; new substring filter by title/number/publication. 3) **Web «Дані» → backup area**: create (`POST /api/jobs/backup`), list (`GET /api/backups`) and restore (`POST /api/jobs/restore`, confirm-protected) snapshots — annotations are re-attached, failed unpacks are removed, the db swap is crash-safe. 4) **CLI**: `export <nreg> --fmt txt|md|html [--edition] [--out]` — cache first, then live; card-less offline txt export. 5) Tests: 92/92.
+
+---
+
+## 2026-10-28
+
 ### 0.9.8: експорт вибраного у файли та розумніший FTS / 0.9.8: checked-results file export & smarter FTS
 
 - **UKR:** 1) **Експорт вибраного окремими файлами**: чекбокс біля кожного результату, «вибрати все»/«зняти», «Вибране у файли .md/.txt» — обрані документи записуються в обрану теку окремими нумерованими файлами `NNN - №документа - назва.ext`; тексти беруться з кешу, за потреби — наживо (з поповненням кешу); лічильник ходу та фінальний тіст. 2) **Якісніший FTS-пошук**: запит із 2+ слів тепер звужує (AND) замість «або», останнє слово — з префіксом («кодек» знаходить «кодексу»); якщо AND нічого не дав — автоматичне повернення до OR. Приклад на реальній базі: «податковий митний» — 1 документ замість тисяч. 3) Тести: 82/82 (+5 FTS).

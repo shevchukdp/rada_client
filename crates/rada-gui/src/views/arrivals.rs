@@ -9,6 +9,12 @@ pub struct ArrivalsState {
     pub loading: bool,
     pub docs: Vec<rada_core::models::UpdatedDoc>,
     pub error: Option<String>,
+    /// The shown feed is the last saved snapshot (live fetch failed/offline).
+    pub from_cache: bool,
+    /// Save time of that snapshot (`YYYY-MM-DD HH:MM:SS`).
+    pub saved_at: Option<String>,
+    /// Client-side substring filter over title/nreg/publication.
+    pub filter: String,
 }
 
 impl Default for ArrivalsState {
@@ -18,6 +24,9 @@ impl Default for ArrivalsState {
             loading: false,
             docs: Vec::new(),
             error: None,
+            from_cache: false,
+            saved_at: None,
+            filter: String::new(),
         }
     }
 }
@@ -54,8 +63,42 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     egui::RichText::new(format!("{} документів", app.arrivals.docs.len())).small(),
                 );
             }
+            if app.arrivals.from_cache {
+                ui.label(
+                    egui::RichText::new(" збережене ")
+                        .small()
+                        .strong()
+                        .color(egui::Color32::BLACK)
+                        .background_color(egui::Color32::from_rgb(120, 170, 255)),
+                )
+                .on_hover_text(
+                    "живий фід недоступний — показано останній збережений знімок",
+                );
+            }
+            if let Some(at) = &app.arrivals.saved_at {
+                ui.label(egui::RichText::new(format!("збережено: {at}")).small().weak());
+            }
             if let Some(e) = &app.arrivals.error {
                 ui.label(egui::RichText::new(e).small().color(err()));
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("Фільтр:").small());
+            let n = app.arrivals.filter.clone();
+            ui.add_sized(
+                [280.0, 24.0],
+                egui::TextEdit::singleline(&mut app.arrivals.filter)
+                    .hint_text("назва, номер чи публікація"),
+            );
+            if n != app.arrivals.filter && !app.arrivals.filter.is_empty() {
+                // typing narrows without a reload — nothing else to do.
+            }
+            if !app.arrivals.filter.is_empty()
+                && ui
+                    .button(egui::RichText::new("×").small())
+                    .clicked()
+            {
+                app.arrivals.filter.clear();
             }
         });
         ui.add_space(4.0);
@@ -64,7 +107,27 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for d in app.arrivals.docs.clone() {
+                let f = app.arrivals.filter.trim().to_lowercase();
+                let docs: Vec<rada_core::models::UpdatedDoc> = app
+                    .arrivals
+                    .docs
+                    .iter()
+                    .filter(|d| {
+                        f.is_empty()
+                            || d.nazva.to_lowercase().contains(&f)
+                            || d.nreg.to_lowercase().contains(&f)
+                            || d.publics.to_lowercase().contains(&f)
+                    })
+                    .cloned()
+                    .collect();
+                if docs.is_empty() && !f.is_empty() {
+                    ui.label(
+                        egui::RichText::new("під фільтр нічого не підійшло")
+                            .small()
+                            .weak(),
+                    );
+                }
+                for d in docs {
                     let meta = format!("{}   [{}]   pub: {}", d.nreg, d.status, d.publics);
                     let doc = format!("{}\n{}", d.nazva, meta);
                     if ui

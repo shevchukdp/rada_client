@@ -185,7 +185,7 @@ fn about_window(app: &mut App, ctx: &egui::Context) {
                 .weak(),
             );
             ui.horizontal(|ui| {
-                let mut link = |ui: &mut egui::Ui, label: &str, url: &str| {
+                let link = |ui: &mut egui::Ui, label: &str, url: &str| {
                     if ui.button(egui::RichText::new(label).small()).clicked() {
                         ui.ctx().open_url(egui::OpenUrl::new_tab(url));
                     }

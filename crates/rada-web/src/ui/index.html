@@ -406,9 +406,9 @@
     white-space: pre-wrap; color: var(--text);
   }
   /* Background-job status line («Дані» area). */
-  #jobs-status { white-space: pre-wrap; }
-  #jobs-status.ok { color: var(--ok); }
-  #jobs-status.err { color: var(--err); }
+  #jobs-status, #backup-status { white-space: pre-wrap; }
+  #jobs-status.ok, #backup-status.ok { color: var(--ok); }
+  #jobs-status.err, #backup-status.err { color: var(--err); }
   [hidden] { display: none; }
 </style>
 </head>
@@ -533,6 +533,16 @@
         <span id="jobs-status" class="hint"></span>
       </div>
       <div id="jobs-list" class="hint" style="font-size:13px"></div>
+      <div class="row" style="margin-top:6px">
+        <strong style="font-size:13px">Резервна копія</strong>
+        <span id="backup-status" class="hint"></span>
+      </div>
+      <div class="row">
+        <button id="btn-backup-create" type="button" title="зберегти gzip-знімок поточного індексу у каталог backups поруч із базою">Зберегти резервну копію</button>
+        <select id="backup-list" title="наявні резервні копії (свіжі попереду)"></select>
+        <button id="btn-backup-refresh" type="button" title="перечитати список копій">оновити</button>
+        <button id="btn-backup-restore" type="button" title="замінити індекс обраною копією (анотації зберігаються)">Відновити з файлу</button>
+      </div>
     </div>
     <div id="status-box" style="margin-top:10px"></div>
   </section>
@@ -729,6 +739,12 @@ async function doSearch(offset) {
   $("sort-bar").hidden = true;
   try {
     const d = await api("/api/search?" + p.toString());
+    // Offline number search: exact nreg hit opens the document directly.
+    if (d.nreg_exact && d.hits.length === 1) {
+      meta.textContent = "Документ знайдено за номером: " + d.hits[0].nreg;
+      openDoc(d.hits[0].nreg);
+      return;
+    }
     state.nregs = d.hits.map(h => h.nreg);
     meta.textContent = "Знайдено: " + d.total + " (показано " + d.hits.length + ")";
     renderSortBar(q, d.hits.length > 0);
@@ -1272,14 +1288,26 @@ async function loadStatusTab() {
   } catch (e) {
     $("status-box").textContent = e.message;
   }
+  loadBackups(); // «Резервна копія» picker reflects the backups directory
 }
 
 // ---- background data jobs («Дані»: live sync + snapshot fetch) -------------
 // The server keeps one registry of index-update jobs; the page POSTs to
 // start one, then polls /api/jobs every 2 s while anything runs, mirroring
 // the latest progress `line` per kind into the status area.
-const JOB_KINDS = ["sync", "snapshot"];
-const jobBtn = { sync: $("btn-jobs-sync"), snapshot: $("btn-jobs-snapshot") };
+const JOB_KINDS = ["sync", "snapshot", "backup", "restore"];
+const jobLabel = { sync: "наживо", snapshot: "снапшот", backup: "копія", restore: "відновлення" };
+const jobStartMsg = {
+  sync: "запускаю синхронізацію…",
+  snapshot: "запускаю завантаження снапшота…",
+  backup: "запускаю резервне копіювання…",
+  restore: "запускаю відновлення…",
+};
+const jobDoneName = { sync: "Синхронізацію", snapshot: "Снапшот", backup: "Резервну копію", restore: "Відновлення" };
+const jobBtn = {
+  sync: $("btn-jobs-sync"), snapshot: $("btn-jobs-snapshot"),
+  backup: $("btn-backup-create"), restore: $("btn-backup-restore"),
+};
 const jobSeen = {};   // job id → last state we reacted to (notify once)
 let jobsTimer = null; // setInterval id while any job is running
 let jobsAnyRunning = false;
@@ -1299,11 +1327,16 @@ function latestJobOf(jobs, kind) {
   return rec;
 }
 
-async function startDataJob(kind) {
+async function startDataJob(kind, body) {
   jobBtn[kind].disabled = true;
-  setJobsStatus(kind === "sync" ? "запускаю синхронізацію…" : "запускаю завантаження снапшота…", "");
+  setJobsStatus(jobStartMsg[kind], "");
   try {
-    await api("/api/jobs/" + kind, { method: "POST" });
+    const opts = { method: "POST" };
+    if (body !== undefined) {
+      opts.headers = { "Content-Type": "application/json" };
+      opts.body = JSON.stringify(body);
+    }
+    await api("/api/jobs/" + kind, opts);
   } catch (e) {
     // 409 (already running) and connection errors land here; the poll below
     // re-reads the registry, so button states stay authoritative.
@@ -1332,9 +1365,9 @@ async function refreshJobs() {
     jobBtn[kind].disabled = running;
     if (running) {
       jobsAnyRunning = true;
-      lines.push((kind === "sync" ? "наживо" : "снапшот") + ": " + rec.line);
+      lines.push(jobLabel[kind] + ": " + rec.line);
     } else if (rec && rec.state === "error") {
-      lines.push((kind === "sync" ? "наживо" : "снапшот") + ": " + (rec.result || rec.line));
+      lines.push(jobLabel[kind] + ": " + (rec.result || rec.line));
     }
   }
   if (lines.length) setJobsStatus(lines.join(" · "), "");
@@ -1352,11 +1385,13 @@ async function refreshJobs() {
 /// the toast role here); then refresh whatever the page shows about the index.
 function onJobFinished(job) {
   const ok = job.state === "done";
-  const what = job.kind === "sync" ? "Синхронізацію" : "Снапшот";
   setJobsStatus(
-    (ok ? "✓ " : "✗ ") + what + (ok ? " завершено" : " не вдалося") +
+    (ok ? "✓ " : "✗ ") + (jobDoneName[job.kind] || job.kind) +
+    (ok ? " завершено" : " не вдалося") +
     ": " + (job.result || job.line || ""),
     ok ? "ok" : "err");
+  // Backup / restore changed the files behind the picker — refill it.
+  if (job.kind === "backup" || job.kind === "restore") loadBackups();
   refreshFoot(); // docs / import / annotations counts changed
   if (!$("tab-status").hidden) loadStatusTab();
 }
@@ -1367,6 +1402,39 @@ function pollJobs() {
     await refreshJobs();
     if (!jobsAnyRunning) { clearInterval(jobsTimer); jobsTimer = null; }
   }, 2000);
+}
+
+// ---- backup / restore («Резервна копія» sub-area, GUI home-tab parity) ------
+// Backups live server-side in `backups/` next to the index; the page only
+// ever names files by basename (the API rejects anything else).
+
+function setBackupStatus(msg, cls) {
+  const el = $("backup-status");
+  el.textContent = msg;
+  el.classList.toggle("ok", cls === "ok");
+  el.classList.toggle("err", cls === "err");
+}
+
+/// Refill the picker from `GET /api/backups` (server orders newest first).
+async function loadBackups() {
+  const sel = $("backup-list");
+  const keep = sel.value;
+  sel.textContent = "";
+  let items = [];
+  try {
+    items = (await api("/api/backups")).backups || [];
+  } catch (e) {
+    setBackupStatus("Помилка: " + e.message, "err");
+    return;
+  }
+  for (const b of items) {
+    const opt = document.createElement("option");
+    opt.value = b.name;
+    opt.textContent = b.name + " · " + b.size_mb + " МБ";
+    sel.appendChild(opt);
+  }
+  if (keep && items.some((b) => b.name === keep)) sel.value = keep;
+  setBackupStatus(items.length ? "копій: " + items.length : "немає резервних копій", "");
 }
 
 function switchTab(name) {
@@ -1698,6 +1766,17 @@ $("arrivals-load").onclick = loadArrivals;
 $("status-refresh").onclick = loadStatusTab;
 $("btn-jobs-sync").onclick = () => startDataJob("sync");
 $("btn-jobs-snapshot").onclick = () => startDataJob("snapshot");
+$("btn-backup-create").onclick = () => startDataJob("backup");
+$("btn-backup-refresh").onclick = loadBackups;
+$("btn-backup-restore").onclick = () => {
+  const name = $("backup-list").value;
+  if (!name) {
+    setBackupStatus("спочатку створіть або оберіть резервну копію", "err");
+    return;
+  }
+  if (!confirm("Відновити індекс з файлу " + name + "? Поточний індекс буде замінено (анотації зберегаються).")) return;
+  startDataJob("restore", { file: name });
+};
 $("recent-clear").onclick = clearRecent;
 
 // ---- theme picker (the head script applied the saved theme before paint) ---

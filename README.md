@@ -31,6 +31,12 @@ official open-data API:
     paging, live name resolver; **export of the results list** (.md/.txt);
     **checkbox-select results → individual numbered files** in a chosen folder;
     one-click **copy nreg** from any result row.
+  - **Offline number search** — typing an nreg (`1556-18`, `1178-2022-п`,
+    `n0423500-26`) in the title box opens the document directly, no network
+    (GUI and web).
+  - **Arrivals offline** — the last feed snapshot is stored in the index and
+    replayed with a «збережене» chip when the network is down; substring
+    filter by title/number/publication.
   - **Continue / recents** — the app persists the last opened documents and
     query (`%LOCALAPPDATA%\rada-client\settings.ini`); Home shows clickable
     chips of the **last opened documents**, and the search field pre-loads the
@@ -89,10 +95,12 @@ official open-data API:
   external assets): search (with publisher filter + live name resolver),
   reader, find-in-text, annotations with **inline editing**
   (`PUT /api/annotations`), export (txt/md/html), keyboard shortcuts,
-  recent documents, auto-loaded «Нові документи», a **Favorites (Обране) tab**
+  recent documents, auto-loaded «Нові документи» (offline-capable), **number
+  search** (an nreg in the query opens the document), a **Favorites (Обране) tab**
   (all annotations, filters, delete/edit, JSON export/import), a **«Дані» panel**
-  to run live sync and snapshot fetch as background jobs (`POST /api/jobs/sync|snapshot`,
-  `GET /api/jobs`), and the same 17 themes (CSS variables, localStorage).
+  to run live sync, snapshot fetch and **index backup/restore as background jobs**
+  (`POST /api/jobs/sync|snapshot|backup|restore`, `GET /api/jobs`, `GET /api/backups`),
+  and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
 
@@ -154,6 +162,7 @@ Launch arguments:
 .\rada-client.exe cache                 # offline text-cache stats
 .\rada-client.exe cache --purge 2755-17 # drop one document's cached text
 .\rada-client.exe resolve "податковий кодекс"   # name → nreg
+.\rada-client.exe export 2755-17 --fmt md --out zakon.md   # cache-first export
 .\rada-client.exe dict                   # load dictionaries (stan/typs/organs)
 .\rada-client.exe dict --kind typs
 

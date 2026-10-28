@@ -123,6 +123,34 @@ pub struct SearchHit {
     pub poddat: String,
 }
 
+/// Exact-`nreg` lookup for offline "search by number" (`254к/96-вр`,
+/// `1178-2022-п`, `n0423500-26`…). Returns the hit without any FTS/LIKE.
+pub fn by_nreg(conn: &Connection, nreg: &str) -> Result<Option<SearchHit>> {
+    let n = nreg.trim();
+    if n.is_empty() {
+        return Ok(None);
+    }
+    let res = conn.query_row(
+        "SELECT nreg, nazva, status, org_date, org_num, poddat FROM docs WHERE nreg = ?1",
+        [n],
+        |r| {
+            Ok(SearchHit {
+                nreg: r.get(0)?,
+                nazva: r.get(1)?,
+                status: r.get(2)?,
+                org_date: r.get(3)?,
+                org_num: r.get(4)?,
+                poddat: r.get(5)?,
+            })
+        },
+    );
+    match res {
+        Ok(h) => Ok(Some(h)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e).context("by_nreg"),
+    }
+}
+
 fn is_multi_word(term: &str) -> bool {
     let t = term.trim();
     !t.is_empty() && t.split_whitespace().count() >= 2
@@ -319,6 +347,24 @@ fn search_with(
         hits.push(row.context("next search row")?);
     }
     Ok((hits, total))
+}
+
+/// Heuristic: could this token be an nreg (system number) rather than a
+/// title? Single word, 4..=20 chars, has a digit, only nreg-safe chars,
+/// and contains a separator (`-`, `_` or `/`).
+pub fn looks_like_nreg(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() || t.split_whitespace().count() != 1 {
+        return false;
+    }
+    let bytes_ok = t
+        .chars()
+        .all(|c| c.is_alphanumeric() || matches!(c, '-' | '_' | '/'));
+    if !bytes_ok || !t.chars().any(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let len = t.chars().count();
+    (4..=20).contains(&len) && t.contains(['-', '_', '/'])
 }
 
 #[cfg(test)]
@@ -524,6 +570,33 @@ mod tests {
             assert_eq!(Sort::parse(s.as_str()), s);
         }
         assert_eq!(Sort::parse("garbage"), Sort::DateDesc);
+    }
+
+    #[test]
+    fn by_nreg_exact_hit_and_miss() {
+        let conn = seeded();
+        let h = by_nreg(&conn, "2341-14").unwrap().expect("hit");
+        assert_eq!(h.nazva, "Кримінальний кодекс України");
+        assert!(by_nreg(&conn, "2341-14 ").unwrap().is_some(), "trims");
+        assert!(by_nreg(&conn, "9999-99").unwrap().is_none());
+        assert!(by_nreg(&conn, "").unwrap().is_none());
+        // partial nreg is NOT a match (exact only).
+        assert!(by_nreg(&conn, "2341").unwrap().is_none());
+    }
+
+    #[test]
+    fn looks_like_nreg_heuristic() {
+        assert!(looks_like_nreg("254к/96-вр"), "Cyrillic nreg letters");
+        assert!(looks_like_nreg("1178-2022-п"));
+        assert!(looks_like_nreg("n0423500-26"));
+        assert!(looks_like_nreg("984_006-06"));
+        assert!(!looks_like_nreg("кодекс")); // no digit/separator
+        assert!(!looks_like_nreg("abc")); // too short
+        assert!(!looks_like_nreg("2041")); // no separator
+        assert!(!looks_like_nreg("два слова 12-3")); // multi-word
+        assert!(!looks_like_nreg("has space 1-2"));
+        assert!(!looks_like_nreg("1-2..3")); // dot not allowed
+        assert!(!looks_like_nreg(""));
     }
 
     /// `seeded()` plus one more «кодекс» doc so AND and OR expressions give

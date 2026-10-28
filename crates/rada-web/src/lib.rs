@@ -48,7 +48,7 @@ pub struct WebConfig {
 #[derive(Debug, Clone, serde::Serialize)]
 struct JobRecord {
     id: String,
-    /// `sync` | `snapshot`.
+    /// `sync` | `snapshot` | `backup` | `restore`.
     kind: String,
     /// `running` | `done` | `error`.
     state: String,
@@ -179,8 +179,14 @@ fn route(
         annotations_handler(method, rest, q, st, req)
     } else if rest.starts_with("dict/") {
         dict_handler(method, rest, st)
+    } else if rest == "backups" {
+        if method == &Method::Get {
+            backups_list(st)
+        } else {
+            json_err(405, "method not allowed")
+        }
     } else if rest.starts_with("jobs") {
-        jobs_handler(method, rest, st)
+        jobs_handler(method, rest, st, req)
     } else {
         match rest {
             "status" => {
@@ -268,10 +274,28 @@ fn search_handler(st: &State, q: &[(String, String)]) -> Resp {
         offset: qget(q, "offset").and_then(|s| s.parse().ok()).unwrap_or(0),
     };
     match open_db(st) {
-        Ok(conn) => match search(&conn, &q) {
-            Ok((hits, total)) => json_ok(&json!({ "total": total, "hits": hits })),
-            Err(e) => json_err(500, &format!("search error: {e:#}")),
-        },
+        Ok(conn) => {
+            // Offline number search: an nreg-shaped `q` with an exact index
+            // hit answers with that single document (see `nreg_exact`).
+            if let Some(t) = q.nazva.as_deref() {
+                if q.org_id.is_none()
+                    && q.typ.is_none()
+                    && q.status.is_none()
+                    && q.date_from.is_none()
+                    && q.date_to.is_none()
+                    && q.doc_number.is_none()
+                    && rada_db::looks_like_nreg(t)
+                {
+                    if let Ok(Some(hit)) = rada_db::by_nreg(&conn, t) {
+                        return json_ok(&json!({ "total": 1, "hits": [hit], "nreg_exact": true }));
+                    }
+                }
+            }
+            match search(&conn, &q) {
+                Ok((hits, total)) => json_ok(&json!({ "total": total, "hits": hits })),
+                Err(e) => json_err(500, &format!("search error: {e:#}")),
+            }
+        }
         Err(e) => json_err(500, &format!("index unavailable: {e:#}")),
     }
 }
@@ -568,8 +592,9 @@ fn annotations_import(st: &State, req: &mut Request) -> Resp {
 // Background index-update jobs («Дані»: live sync + snapshot fetch)
 // ---------------------------------------------------------------------------
 
-/// `GET /api/jobs`, `POST /api/jobs/sync`, `POST /api/jobs/snapshot`.
-fn jobs_handler(method: &Method, rest: &str, st: &Arc<State>) -> Resp {
+/// `GET /api/jobs`, `POST /api/jobs/sync`, `POST /api/jobs/snapshot`,
+/// `POST /api/jobs/backup`, `POST /api/jobs/restore`.
+fn jobs_handler(method: &Method, rest: &str, st: &Arc<State>, req: &mut Request) -> Resp {
     match rest {
         "jobs" => {
             if method == &Method::Get {
@@ -588,6 +613,20 @@ fn jobs_handler(method: &Method, rest: &str, st: &Arc<State>) -> Resp {
         "jobs/snapshot" => {
             if method == &Method::Post {
                 start_job(st, "snapshot")
+            } else {
+                json_err(405, "method not allowed")
+            }
+        }
+        "jobs/backup" => {
+            if method == &Method::Post {
+                start_job(st, "backup")
+            } else {
+                json_err(405, "method not allowed")
+            }
+        }
+        "jobs/restore" => {
+            if method == &Method::Post {
+                start_restore_job(st, req)
             } else {
                 json_err(405, "method not allowed")
             }
@@ -645,11 +684,19 @@ type JobRunner = fn(Arc<State>, String);
 /// Start a background job. Blocking work (paced live requests, SQLite)
 /// runs on a plain OS thread — this server has no async runtime.
 fn start_job(st: &Arc<State>, kind: &'static str) -> Resp {
-    let runner: JobRunner = if kind == "sync" { run_sync_job } else { run_snapshot_job };
+    let runner: JobRunner = match kind {
+        "sync" => run_sync_job,
+        "snapshot" => run_snapshot_job,
+        "backup" => run_backup_job,
+        _ => return json_err(400, &format!("unknown job kind {kind}")),
+    };
     start_job_with(st, kind, runner)
 }
 
-fn start_job_with(st: &Arc<State>, kind: &str, runner: JobRunner) -> Resp {
+fn start_job_with<F>(st: &Arc<State>, kind: &str, runner: F) -> Resp
+where
+    F: Fn(Arc<State>, String) + Send + 'static,
+{
     let Some(id) = claim_job(st, kind) else {
         return json_err(409, &format!("a {kind} job is already running"));
     };
@@ -784,6 +831,194 @@ fn run_snapshot_job(st: Arc<State>, id: String) {
         Ok(msg) => st.job_set(&id, "done", "готово", Some(&msg)),
         Err(e) => st.job_set(&id, "error", "снапшот не вдалося отримати", Some(&format!("{e:#}"))),
     }
+}
+
+// ---------------------------------------------------------------------------
+// Backup / restore jobs («Дані»: gzip snapshots kept next to the index)
+// ---------------------------------------------------------------------------
+
+/// Directory for `rada-backup-*.sqlite.gz` files: `backups/` next to the db.
+fn backups_dir(st: &State) -> PathBuf {
+    st.db_path
+        .parent()
+        .map(|p| p.join("backups"))
+        .unwrap_or_else(|| PathBuf::from("backups"))
+}
+
+/// Validate a `{"file": …}` restore target: a plain `*.sqlite.gz` basename —
+/// no path separators, traversal or drive letters. `None` ⇒ caller 400s.
+fn validate_backup_name(file: &str) -> Option<String> {
+    let name = file.trim();
+    if name.is_empty()
+        || !name.ends_with(".sqlite.gz")
+        || name.contains('/')
+        || name.contains('\\')
+        || name.contains("..")
+        || name.contains(':')
+    {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// `POST /api/jobs/backup` job body: gzip the current index into
+/// `backups/rada-backup-<stamp>.sqlite.gz` — the same `snapshot::create`
+/// path the GUI «Резервна копія» uses.
+fn run_backup_job(st: Arc<State>, id: String) {
+    st.job_set(&id, "running", "створюю резервну копію …", None);
+    let stamp = rada_db::build::now_stamp().replace(' ', "_").replace(':', "");
+    let name = format!("rada-backup-{stamp}.sqlite.gz");
+    let out = backups_dir(&st).join(&name);
+    match rada_db::snapshot::create(&st.db_path, &out) {
+        Ok(size) => st.job_set(
+            &id,
+            "done",
+            "готово",
+            Some(&format!(
+                "резервну копію збережено: {name} ({:.1} МБ)",
+                size as f64 / 1_048_576.0
+            )),
+        ),
+        Err(e) => {
+            let _ = std::fs::remove_file(&out);
+            st.job_set(&id, "error", "резервна копія не вдалася", Some(&format!("{e:#}")));
+        }
+    }
+}
+
+/// `POST /api/jobs/restore` with body `{"file": "<basename>.sqlite.gz"}`.
+/// Everything is validated *before* the single-flight guard is claimed, so
+/// bad requests never occupy the registry.
+fn start_restore_job(st: &Arc<State>, req: &mut Request) -> Resp {
+    let body = match read_body(req) {
+        Ok(b) => b,
+        Err(e) => return json_err(400, &format!("bad body: {e}")),
+    };
+    let v: Value = match serde_json::from_str(&body) {
+        Ok(v) => v,
+        Err(e) => return json_err(400, &format!("bad JSON: {e}")),
+    };
+    let Some(raw) = v.get("file").and_then(Value::as_str) else {
+        return json_err(400, "file required");
+    };
+    let Some(name) = validate_backup_name(raw) else {
+        return json_err(
+            400,
+            "file must be a *.sqlite.gz basename from the backups directory",
+        );
+    };
+    if !backups_dir(st).join(&name).is_file() {
+        return json_err(400, &format!("backup {name} not found"));
+    }
+    start_job_with(st, "restore", move |st, id| {
+        run_restore_job(&st, &id, &name);
+    })
+}
+
+/// Restore a validated backup over the db path, mirroring the GUI
+/// `run_restore_local` order of operations (annotations out → restore → in).
+/// The gzip is unpacked to a temp file first — `snapshot::restore` runs its
+/// integrity check there — and the previous db is only parked + swapped once
+/// the new file is verified, so a failed restore never loses a usable db.
+fn run_restore_job(st: &Arc<State>, id: &str, name: &str) {
+    let db = st.db_path.clone();
+    let src = backups_dir(st).join(name);
+    st.job_set(id, "running", "зберігаю анотації …", None);
+    let keep: Vec<rada_db::annotations::Annotation> = std::fs::metadata(&db)
+        .ok()
+        .and_then(|_| db_open(&db).ok())
+        .map(|conn| rada_db::annotations::all(&conn).unwrap_or_default())
+        .unwrap_or_default();
+    let n = keep.len();
+    let outcome = (|| -> Result<String> {
+        st.job_set(id, "running", "розгортаю резервну копію …", None);
+        let tmp = db.with_extension("sqlite.restore-tmp");
+        std::fs::remove_file(&tmp).ok();
+        let restored = rada_db::snapshot::restore(&src, &tmp)?;
+        // Swap: park the old db (with its WAL siblings), move the verified
+        // file in, roll the park back if that last step ever fails.
+        let old = db.with_extension("sqlite.restore-old");
+        std::fs::remove_file(&old).ok();
+        let had_db = std::fs::metadata(&db).is_ok();
+        if had_db {
+            std::fs::rename(&db, &old).with_context(|| format!("park {}", db.display()))?;
+            std::fs::remove_file(db.with_extension("sqlite-wal")).ok();
+            std::fs::remove_file(db.with_extension("sqlite-shm")).ok();
+        }
+        if let Err(e) = std::fs::rename(&restored, &db) {
+            if had_db {
+                let _ = std::fs::rename(&old, &db);
+            }
+            return Err(e).with_context(|| format!("swap {}", db.display()));
+        }
+        if had_db {
+            let _ = std::fs::remove_file(&old);
+        }
+        if !keep.is_empty() {
+            st.job_set(id, "running", &format!("повертаю {n} анотацій …"), None);
+            let conn = db_open(&db)?;
+            for a in &keep {
+                let _ = rada_db::annotations::insert(
+                    &conn,
+                    &a.nreg,
+                    &a.kind,
+                    &a.text,
+                    a.span_start,
+                    a.span_end,
+                );
+            }
+        }
+        Ok(format!("індекс відновлено з {name} (анотацій повернуто: {n})"))
+    })();
+    match outcome {
+        Ok(msg) => st.job_set(id, "done", "готово", Some(&msg)),
+        Err(e) => st.job_set(id, "error", "відновлення не вдалося", Some(&format!("{e:#}"))),
+    }
+}
+
+/// `GET /api/backups` — the `*.sqlite.gz` files in the backups directory,
+/// newest first, for the «Дані» restore picker.
+fn backups_list(st: &State) -> Resp {
+    let dir = backups_dir(st);
+    let mut entries: Vec<(u64, String, f64)> = Vec::new();
+    if let Ok(rd) = std::fs::read_dir(&dir) {
+        for ent in rd.flatten() {
+            let path = ent.path();
+            let Some(name) = path.file_name().and_then(|s| s.to_str()).map(str::to_string) else {
+                continue;
+            };
+            if !name.ends_with(".sqlite.gz") {
+                continue;
+            }
+            let Ok(md) = std::fs::metadata(&path) else {
+                continue;
+            };
+            if !md.is_file() {
+                continue;
+            }
+            let created = md
+                .created()
+                .or_else(|_| md.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|d| d.as_secs())
+                .unwrap_or(0);
+            entries.push((created, name, md.len() as f64 / 1_048_576.0));
+        }
+    }
+    // Newest first; name breaks exact-timestamp ties deterministically.
+    entries.sort_by(|a, b| b.0.cmp(&a.0).then_with(|| a.1.cmp(&b.1)));
+    let backups: Vec<Value> = entries
+        .into_iter()
+        .map(|(created, name, mb)| {
+            json!({
+                "name": name,
+                "size_mb": (mb * 10.0).round() / 10.0,
+                "created": created,
+            })
+        })
+        .collect();
+    json_ok(&json!({ "backups": backups }))
 }
 
 // ---------------------------------------------------------------------------
@@ -1401,6 +1636,192 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("/api/jobs\""));
         assert!(ui::INDEX_HTML.contains("startDataJob"));
         assert!(ui::INDEX_HTML.contains("refreshJobs"));
+        // «Резервна копія» sub-area (GUI backup/restore parity): the create
+        // button, the backup picker + refresh, the restore button, its own
+        // status line, and the client against the new endpoints.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-backup-create\""));
+        assert!(ui::INDEX_HTML.contains("id=\"backup-list\""));
+        assert!(ui::INDEX_HTML.contains("id=\"btn-backup-refresh\""));
+        assert!(ui::INDEX_HTML.contains("id=\"btn-backup-restore\""));
+        assert!(ui::INDEX_HTML.contains("id=\"backup-status\""));
+        assert!(ui::INDEX_HTML.contains("Зберегти резервну копію"));
+        assert!(ui::INDEX_HTML.contains("Відновити з файлу"));
+        assert!(ui::INDEX_HTML.contains("/api/backups"));
+        assert!(ui::INDEX_HTML.contains("loadBackups"));
+    }
+
+    // ---- backup / restore jobs («Резервна копія») ----------------------------
+
+    /// Fresh indexed db for one backup/restore test: migrated schema + one
+    /// titled document, unique dir per tag so parallel tests never collide.
+    fn backups_state(tag: &str) -> Arc<State> {
+        let dir = std::env::temp_dir().join(format!("rada-web-backup-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let st = Arc::new(State {
+            db_path: dir.join("test.sqlite"),
+            client: RadaClient::with_pacing(Duration::from_secs(3600)),
+            pace_secs: 3600,
+            jobs: Mutex::new(HashMap::new()),
+            job_seq: AtomicU64::new(0),
+        });
+        let conn = db_open(&st.db_path).expect("open test index");
+        conn.execute(
+            "INSERT INTO docs(nreg, nazva) VALUES('2341-14', 'Про тестовий закон')",
+            [],
+        )
+        .expect("seed doc");
+        drop(conn);
+        st
+    }
+
+    /// Basenames of `*.sqlite.gz` files currently in the state's backups dir.
+    fn backup_files(st: &State) -> Vec<String> {
+        std::fs::read_dir(backups_dir(st))
+            .expect("backups dir exists")
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .filter(|n| n.ends_with(".sqlite.gz"))
+            .collect()
+    }
+
+    #[test]
+    fn backup_job_creates_file() {
+        let st = backups_state("create");
+        // While one backup runs the POST answers 409 (JSON error shape) —
+        // the shared claim_job guard covers the new kinds too.
+        let running = claim_job(&st, "backup").expect("first backup claim");
+        let (code, v) = call(&st, Method::Post, "/api/jobs/backup", "");
+        assert_eq!(code, 409);
+        assert!(v["error"].as_str().unwrap().contains("backup"));
+        // Finish it, then run the real (pure-local) job body synchronously.
+        st.job_set(&running, "done", "готово", Some("ok"));
+        let id = claim_job(&st, "backup").unwrap();
+        run_backup_job(st.clone(), id.clone());
+        // Copy the record out: the registry lock must be free again before
+        // the `start_job_with` shape check below claims it once more.
+        let (state, msg) = {
+            let jobs = st.jobs_lock();
+            (jobs[&id].state.clone(), jobs[&id].result.clone())
+        };
+        assert_eq!(state, "done", "result: {msg:?}");
+        let msg = msg.unwrap();
+        let gz = backup_files(&st);
+        assert_eq!(gz.len(), 1, "exactly one backup written: {gz:?}");
+        assert!(gz[0].starts_with("rada-backup-") && gz[0].ends_with(".sqlite.gz"));
+        // The message names the file and reports its size.
+        assert!(msg.contains(&gz[0]), "message {msg:?} must name {}", gz[0]);
+        assert!(msg.contains("МБ"), "message {msg:?} must report the size");
+        // POST success shape via the shared start path (fake runner so no
+        // second file / thread races the assertions above).
+        fn fake_runner(_st: Arc<State>, _id: String) {}
+        let resp = start_job_with(&st, "backup", fake_runner);
+        assert_eq!(resp.status_code().0, 200);
+        let v: Value = serde_json::from_slice(&resp.into_reader().into_inner()).unwrap();
+        assert_eq!(v["kind"], "backup");
+        assert_eq!(v["state"], "running");
+        assert!(v["id"].as_str().unwrap().starts_with("backup-"));
+    }
+
+    #[test]
+    fn restore_job_validates_input() {
+        let st = backups_state("validate");
+        std::fs::create_dir_all(backups_dir(&st)).unwrap();
+        std::fs::write(backups_dir(&st).join("good.sqlite.gz"), b"gz").unwrap();
+        // Traversal, separators, missing files, wrong extensions and junk
+        // bodies all answer 400 with the shared JSON error shape.
+        for body in [
+            r#"{"file":"../x.sqlite.gz"}"#,
+            r#"{"file":"..\\..\\secret.sqlite.gz"}"#,
+            r#"{"file":"sub/dir.sqlite.gz"}"#,
+            r#"{"file":"missing.sqlite.gz"}"#,
+            r#"{"file":"notes.txt"}"#,
+            r#"{"file":"good.tar.gz"}"#,
+            r#"{}"#,
+            "не json",
+        ] {
+            let (code, v) = call(&st, Method::Post, "/api/jobs/restore", body);
+            assert_eq!(code, 400, "body {body}");
+            assert!(v["error"].is_string(), "body {body}");
+        }
+        // A running restore occupies the single-flight guard (409), while
+        // validation still rejects bad input with 400 in parallel.
+        let id = claim_job(&st, "restore").unwrap();
+        let (code, v) = call(&st, Method::Post, "/api/jobs/restore", r#"{"file":"good.sqlite.gz"}"#);
+        assert_eq!(code, 409);
+        assert!(v["error"].as_str().unwrap().contains("restore"));
+        assert_eq!(
+            call(&st, Method::Post, "/api/jobs/restore", r#"{"file":"../x.sqlite.gz"}"#).0,
+            400
+        );
+        st.job_set(&id, "done", "готово", Some("ok"));
+        // Method / path mistakes match the existing error style.
+        assert_eq!(call(&st, Method::Get, "/api/jobs/restore", "").0, 405);
+        assert_eq!(call(&st, Method::Get, "/api/jobs/backup", "").0, 405);
+        assert_eq!(call(&st, Method::Post, "/api/backups", "").0, 405);
+        let (code, v) = call(&st, Method::Get, "/api/jobs/nope", "");
+        assert_eq!(code, 404);
+        assert!(v["error"].as_str().unwrap().contains("/api/jobs/nope"));
+    }
+
+    /// Full local round trip: back the seeded db up, change the live db,
+    /// restore, and check the swap + annotation re-attach (GUI semantics).
+    #[test]
+    fn restore_job_round_trip() {
+        let st = backups_state("roundtrip");
+        let id = claim_job(&st, "backup").unwrap();
+        run_backup_job(st.clone(), id.clone());
+        assert_eq!(st.jobs_lock()[&id].state, "done");
+        let name = backup_files(&st).into_iter().next().expect("one backup");
+        // Post-backup changes: an annotation and a doc the backup cannot know.
+        let conn = db_open(&st.db_path).unwrap();
+        rada_db::annotations::insert(&conn, "2341-14", "comment", "треба зберегти", None, None)
+            .unwrap();
+        conn.execute("INSERT INTO docs(nreg, nazva) VALUES('9999-99', 'Зайвий')", [])
+            .unwrap();
+        drop(conn);
+        let rid = claim_job(&st, "restore").unwrap();
+        run_restore_job(&st, &rid, &name);
+        let (state, msg) = {
+            let jobs = st.jobs_lock();
+            (jobs[&rid].state.clone(), jobs[&rid].result.clone())
+        };
+        assert_eq!(state, "done", "result: {msg:?}");
+        let msg = msg.unwrap();
+        assert!(msg.contains(&name), "message {msg:?} must name the file");
+        assert!(msg.contains("анотацій повернуто: 1"), "message {msg:?}");
+        let conn = db_open(&st.db_path).unwrap();
+        let docs: i64 = conn
+            .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(docs, 1, "post-backup doc is gone (db replaced by the backup)");
+        let anns = rada_db::annotations::all(&conn).unwrap();
+        assert_eq!(anns.len(), 1, "annotations re-attached after the swap");
+        assert_eq!(anns[0].text, "треба зберегти");
+    }
+
+    #[test]
+    fn backups_listing_endpoint() {
+        let st = backups_state("list");
+        // Missing directory behaves like an empty one.
+        let (code, v) = call(&st, Method::Get, "/api/backups", "");
+        assert_eq!(code, 200);
+        assert_eq!(v["backups"].as_array().unwrap().len(), 0);
+        // Only *.sqlite.gz *files* are listed, with the UI's fields.
+        let dir = backups_dir(&st);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("x.sqlite.gz"), b"gz-bytes").unwrap();
+        std::fs::write(dir.join("y.txt"), b"txt").unwrap();
+        std::fs::write(dir.join("z.sqlite"), b"db").unwrap();
+        std::fs::create_dir_all(dir.join("dir.sqlite.gz")).unwrap();
+        let (code, v) = call(&st, Method::Get, "/api/backups", "");
+        assert_eq!(code, 200);
+        let items = v["backups"].as_array().unwrap();
+        assert_eq!(items.len(), 1, "only x.sqlite.gz listed: {items:?}");
+        assert_eq!(items[0]["name"], "x.sqlite.gz");
+        assert!(items[0]["size_mb"].is_number());
+        assert!(items[0]["created"].is_number());
+        assert_eq!(items[0].as_object().unwrap().len(), 3);
     }
 
     // ---- «Обране» (favorites): /api/annotations/all|export|import ----------
@@ -1628,8 +2049,25 @@ mod tests {
     }
 
     #[test]
-    fn search_sort_date_asc() {
-        let st = sorted_state("date");
+    fn search_nreg_exact_shortcut() {
+        let st = sorted_state("nreg");
+        // Exact nreg-shaped query: single hit flagged for direct open.
+        let v = search_get(&st, "q=2000-02");
+        assert_eq!(v["nreg_exact"], true, "{v}");
+        assert_eq!(v["total"], 1);
+        assert_eq!(hit_nregs(&v), ["2000-02"]);
+        // nreg-shaped but not in the index: normal search (no flag).
+        let miss = search_get(&st, "q=9999-99");
+        assert!(miss.get("nreg_exact").is_none(), "{miss}");
+        assert_eq!(miss["total"], 0);
+        // A title-shaped query never takes the shortcut.
+        let title = search_get(&st, "q=%D0%9A%D0%BE%D0%B4%D0%B5%D0%BA%D1%81");
+        assert!(title.get("nreg_exact").is_none(), "{title}");
+        assert_eq!(hit_nregs(&title), ["2000-02"]);
+    }
+
+    #[test]
+    fn search_sort_date_asc() {        let st = sorted_state("date");
         // Oldest adoption date first.
         assert_eq!(
             hit_nregs(&search_get(&st, "sort=date_asc")),

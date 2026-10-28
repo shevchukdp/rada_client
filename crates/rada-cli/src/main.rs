@@ -9,6 +9,7 @@
 //! - `dict`      load reference dictionaries (stan/typs/organs) from the live API;
 //! - `snapshot`  create / restore gzip snapshots;
 //! - `status`    index statistics;
+//! - `export`    save a document (card + text) as txt / md / html;
 //! - `web`       local web UI (search, reader, annotations, export).
 
 use std::path::{Path, PathBuf};
@@ -124,6 +125,20 @@ enum Cmd {
         #[command(subcommand)]
         what: AnnCmd,
     },
+    /// Export a document (card + text) as txt / md / html.
+    /// Text prefers the offline cache; the card is fetched live.
+    Export {
+        nreg: String,
+        /// Output format: txt | md | html.
+        #[arg(long, default_value = "txt")]
+        fmt: String,
+        /// Specific edition date YYYYMMDD (default: current).
+        #[arg(long)]
+        edition: Option<String>,
+        /// Write to this file instead of stdout (parent dirs created).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Start the local web UI (search, reader, annotations, export).
     Web {
         /// Address to bind.
@@ -220,6 +235,9 @@ fn run() -> Result<()> {
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
         Cmd::Status => cmd_status(&cli.db),
         Cmd::Annot { what } => cmd_annot(&cli.db, what),
+        Cmd::Export { nreg, fmt, edition, out } => {
+            cmd_export(&cli.db, &nreg, &fmt, edition.as_deref(), out.as_deref(), cli.pace)
+        }
         Cmd::Web { host, port, open } => cmd_web(&cli.db, &host, port, open, cli.pace),
     }
 }
@@ -417,6 +435,88 @@ fn cmd_text(db: &PathBuf, nreg: &str, edition: Option<&str>, pace: u64) -> Resul
             }
         }
     }
+}
+
+/// Validate the `--fmt` value; returns the canonical format string.
+fn normalize_fmt(fmt: &str) -> Result<&'static str> {
+    match fmt.trim().to_ascii_lowercase().as_str() {
+        "txt" => Ok("txt"),
+        "md" => Ok("md"),
+        "html" => Ok("html"),
+        _ => Err(anyhow::anyhow!(
+            "unknown export format {fmt:?} (expected txt | md | html)"
+        )),
+    }
+}
+
+fn cmd_export(
+    db: &PathBuf,
+    nreg: &str,
+    fmt: &str,
+    edition: Option<&str>,
+    out: Option<&Path>,
+    pace: u64,
+) -> Result<()> {
+    let fmt = normalize_fmt(fmt)?;
+    let key = edition.unwrap_or("");
+    let c = client(pace);
+
+    // Card: live only (there is no offline card cache).
+    let card = c.card(nreg);
+
+    // Text: prefer the offline cache, fall back to a live fetch and refresh it.
+    let cached = rada_db::open(db)
+        .ok()
+        .and_then(|conn| rada_db::textcache::get(&conn, nreg, key).ok().flatten());
+    let text = match cached {
+        Some(text) => text,
+        None => {
+            let fetched = match edition {
+                Some(ed) => c.show_edition_text(nreg, ed),
+                None => c.show_text(nreg),
+            };
+            match fetched {
+                Ok(text) => {
+                    if let Ok(conn) = rada_db::open(db) {
+                        let _ = rada_db::textcache::put(&conn, nreg, key, &text);
+                    }
+                    text
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!(
+                        "text {nreg}: {e} (no cached copy — run `rada-client text {nreg}` once online)"
+                    ));
+                }
+            }
+        }
+    };
+
+    let (body, _) = match card {
+        Ok(card) => rada_web::render_export(nreg, &card, &text, fmt),
+        Err(e) => {
+            // Offline-friendly fallback: plain text from the cache, name unknown.
+            eprintln!("[export] card {nreg} failed ({e}); exporting txt from offline cache (name unknown)");
+            (
+                format!("# {nreg} — назва невідома (офлайн-кеш)\n\n{text}\n"),
+                "txt".to_string(),
+            )
+        }
+    };
+
+    match out {
+        Some(p) => {
+            if let Some(parent) = p.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("create dir {}", parent.display()))?;
+                }
+            }
+            std::fs::write(p, &body).with_context(|| format!("write {}", p.display()))?;
+            println!("wrote {} ({} bytes)", p.display(), body.as_bytes().len());
+        }
+        None => print!("{body}"),
+    }
+    Ok(())
 }
 
 fn cmd_cache(db: &PathBuf, purge: bool, nreg: Option<&str>) -> Result<()> {
@@ -628,5 +728,27 @@ fn fmt_date(d: &str) -> String {
         )
     } else {
         d.to_string()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_fmt;
+
+    #[test]
+    fn normalize_fmt_accepts_known_formats() {
+        assert_eq!(normalize_fmt("txt").unwrap(), "txt");
+        assert_eq!(normalize_fmt("md").unwrap(), "md");
+        assert_eq!(normalize_fmt("html").unwrap(), "html");
+        // case- and whitespace-tolerant
+        assert_eq!(normalize_fmt(" MD ").unwrap(), "md");
+        assert_eq!(normalize_fmt("Html").unwrap(), "html");
+    }
+
+    #[test]
+    fn normalize_fmt_rejects_unknown_formats() {
+        assert!(normalize_fmt("pdf").is_err());
+        assert!(normalize_fmt("").is_err());
+        assert!(normalize_fmt("markdown").is_err());
     }
 }

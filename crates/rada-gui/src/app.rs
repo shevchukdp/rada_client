@@ -48,7 +48,8 @@ pub enum Msg {
     AnnotationDeleted(Outcome<bool>),
     Arrivals {
         run: u64,
-        res: Outcome<Vec<UpdatedDoc>>,
+        /// `(docs, from_cache)` — the saved snapshot answers when live fails.
+        res: Outcome<(Vec<UpdatedDoc>, bool)>,
     },
     /// Every annotation + document title (favorites page).
     Favorites(Outcome<Vec<(rada_db::Annotation, String)>>),
@@ -71,6 +72,9 @@ pub enum Msg {
         res: Option<String>,
     },
     Exported(Outcome<PathBuf>),
+    /// The query was a document number found exactly in the index —
+    /// open it in the reader directly (offline number search).
+    OpenNreg(rada_db::SearchHit),
     /// Individual-file export of checked results finished.
     SelectedExported { written: usize, failed: usize, dir: PathBuf },
     /// Dictionaries-only live fetch finished (auto-run at startup when empty).
@@ -352,11 +356,24 @@ impl App {
         self.search.searched = true;
         self.settings.last_query = self.search.query.trim().to_string();
         crate::settings::save(&self.settings);
+        let nreg_guess = self.search.query.trim().to_string();
         self.spawn(move |tx| {
-            let res = (|| -> Outcome<_> {
-                let conn = rada_db::open(&db).map_err(|e| e.to_string())?;
-                rada_db::search::search(&conn, &q).map_err(|e| e.to_string())
-            })();
+            let conn = match rada_db::open(&db) {
+                Ok(c) => c,
+                Err(e) => {
+                    let _ = tx.send(Msg::Search { run, res: Err(e.to_string()) });
+                    return;
+                }
+            };
+            // Offline number search: a query shaped like an nreg opens the
+            // document directly when the index holds it exactly.
+            if rada_db::looks_like_nreg(&nreg_guess) {
+                if let Ok(Some(hit)) = rada_db::by_nreg(&conn, &nreg_guess) {
+                    let _ = tx.send(Msg::OpenNreg(hit));
+                    return;
+                }
+            }
+            let res = rada_db::search::search(&conn, &q).map_err(|e| e.to_string());
             let _ = tx.send(Msg::Search { run, res });
         });
     }
@@ -640,10 +657,29 @@ impl App {
     pub fn load_arrivals(&mut self) {
         let run = self.next_run();
         let client = self.client.clone();
+        let db = self.db_path.clone();
         self.arrivals.run = run;
         self.arrivals.loading = true;
         self.spawn(move |tx| {
-            let res = client.updated_docs().map_err(|e| e.to_string());
+            let res = match client.updated_docs() {
+                Ok(docs) => {
+                    // Persist for offline viewing.
+                    if let Ok(conn) = rada_db::open(&db) {
+                        let _ = rada_db::sync::save_arrivals(&conn, &docs);
+                    }
+                    Ok((docs, false))
+                }
+                Err(e) => {
+                    // Offline: fall back to the last saved snapshot.
+                    let hit = rada_db::open(&db)
+                        .ok()
+                        .and_then(|conn| rada_db::sync::load_arrivals(&conn));
+                    match hit {
+                        Some((docs, _at)) => Ok((docs, true)),
+                        None => Err(e.to_string()),
+                    }
+                }
+            };
             let _ = tx.send(Msg::Arrivals { run, res });
         });
     }
@@ -1213,6 +1249,21 @@ impl App {
                     self.toast(format!("словники: {e}"), err());
                 }
             }
+            Msg::OpenNreg(hit) => {
+                self.search.loading = false;
+                self.toast(
+                    format!("документ відкрито за номером {}", hit.nreg),
+                    ok(),
+                );
+                let keep = self.search.hits.clone();
+                self.open_reader(hit.clone());
+                // Keep the results list reachable with Alt+←/→ semantics
+                // only when the opened doc is part of it.
+                if keep.iter().any(|h| h.nreg == hit.nreg) {
+                    let idx = keep.iter().position(|h| h.nreg == hit.nreg).unwrap();
+                    self.nav = Some((keep, idx));
+                }
+            }
             Msg::Search { run, res } => {
                 if run == self.search.run {
                     self.search.loading = false;
@@ -1322,12 +1373,24 @@ impl App {
                 if run == self.arrivals.run {
                     self.arrivals.loading = false;
                     match res {
-                        Ok(docs) => {
+                        Ok((docs, from_cache)) => {
                             self.arrivals.docs = docs;
+                            self.arrivals.from_cache = from_cache;
+                            self.arrivals.saved_at = if from_cache {
+                                rada_db::open(&self.db_path)
+                                    .ok()
+                                    .and_then(|c| {
+                                        rada_db::sync::load_arrivals(&c).map(|(_, at)| at)
+                                    })
+                            } else {
+                                None
+                            };
                             self.arrivals.error = None;
                         }
                         Err(e) => {
                             self.arrivals.docs.clear();
+                            self.arrivals.from_cache = false;
+                            self.arrivals.saved_at = None;
                             self.arrivals.error = Some(e);
                         }
                     }
