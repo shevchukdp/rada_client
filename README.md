@@ -59,6 +59,10 @@ official open-data API:
   - **Query history** — «недавні запити» chips under the search filters repeat
     a past search with one click (persisted, clearable); «копіювати текст» in
     the reader copies the whole act to the clipboard.
+  - **Cache full-text search («Знайти в кеші»)** — offline scan of every cached
+    document body (Unicode case-insensitive, ranked, context snippets); rows
+    open in the reader. Also `--cache-search TERM` on launch, CLI
+    `cache --search TERM`, and web «Пошук у тексті».
   - **Plain-text mode** — «Форматований/Простий» toggle (GUI) and «Простий»
     (web) switch off structural styling of titles/sections/articles.
   - **Printing** — «Друк» in the reader (and «🖨 Друк» in the web UI) opens a
@@ -164,6 +168,7 @@ Launch arguments:
 .\rada-client-gui.exe --nreg 2041-15                     # open a document in the reader
 .\rada-client-gui.exe --start arrivals                    # start on the feed page
 .\rada-client-gui.exe --start favorites                   # start on the saved annotations page
+.\rada-client-gui.exe --cache-search "освіту"             # open the search page with a cache full-text scan
 ```
 
 ### CLI (automation / advanced)

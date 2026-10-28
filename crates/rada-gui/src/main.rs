@@ -19,6 +19,7 @@ fn main() {
     let mut start: Option<String> = None;
     let mut query: Option<String> = None;
     let mut nreg: Option<String> = None;
+    let mut cache_query: Option<String> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
@@ -31,6 +32,7 @@ fn main() {
             "--start" => start = args.next(),
             "--query" => query = args.next(),
             "--nreg" => nreg = args.next(),
+            "--cache-search" => cache_query = args.next(),
             _ => {}
         }
     }
@@ -67,6 +69,7 @@ fn main() {
         start_page: start,
         query,
         nreg,
+        cache_query,
     };
 
     eframe::run_native(

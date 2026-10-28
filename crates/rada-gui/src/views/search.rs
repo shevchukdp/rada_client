@@ -143,6 +143,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 ui.label(egui::RichText::new(e).small().color(err()));
             }
             ui.separator();
+            if ui
+                .button(egui::RichText::new("Знайти в кеші").small())
+                .on_hover_text(
+                    "повнотекстовий пошук у кешованих тілах документів \
+                     (офлайн, без мережі; кеш поповнюється при читанні)",
+                )
+                .clicked()
+            {
+                app.run_cache_search();
+            }
+            ui.separator();
             let q = app.search.query.trim().to_string();
             let url = portal_search_url(&q);
             if ui
@@ -377,6 +388,91 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                     });
                 }
+
+                // ---- cache full-text («Знайти в кеші») ----------------
+                let cloading = app.search.cache_loading;
+                let cdone = app.search.cache_done;
+                if cloading || cdone {
+                    ui.add_space(12.0);
+                    ui.separator();
+                    ui.add_space(4.0);
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "у кешованому тексті · «{}»",
+                                app.search.cache_term
+                            ))
+                            .strong()
+                            .size(15.0),
+                        );
+                        if cloading {
+                            ui.spinner();
+                            ui.label(
+                                egui::RichText::new("сканую кешовані тіла …")
+                                    .small()
+                                    .color(crate::themes::weak()),
+                            );
+                        } else if let Some(e) = &app.search.cache_error {
+                            ui.label(egui::RichText::new(format!("помилка: {e}")).small().color(err()));
+                        } else {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "документів(а): {}",
+                                    app.search.cache_hits.len()
+                                ))
+                                .small()
+                                .color(crate::themes::weak()),
+                            );
+                        }
+                    });
+                    let rows = app.search.cache_hits.clone();
+                    for (h, title) in rows {
+                        let label = cache_row_label(&title, &h.nreg);
+                        let avail = (ui.available_width() - 30.0).max(100.0);
+                        let text = egui::RichText::new(format!(
+                            "{}\n{}   збігів: {}",
+                            label, h.nreg, h.hits
+                        ))
+                        .small();
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("•").color(gold()));
+                            if ui
+                                .add_sized([avail, 46.0], egui::Button::new(text).wrap())
+                                .clicked()
+                            {
+                                // Prefer the full offline row (status/dates).
+                                let hit = rada_db::open(&app.db_path)
+                                    .ok()
+                                    .and_then(|conn| {
+                                        rada_db::search::by_nreg(&conn, &h.nreg).ok().flatten()
+                                    });
+                                match hit {
+                                    Some(hit) => app.open_reader(hit),
+                                    None => app
+                                        .open_reader_by_nreg(&h.nreg, &label, 0, "", "", ""),
+                                }
+                            }
+                        });
+                        if !h.snippet.trim().is_empty() {
+                            ui.indent(egui::Id::new(("cache_snip", h.nreg.clone())), |ui| {
+                                ui.label(
+                                    egui::RichText::new(&h.snippet).small().weak().italics(),
+                                );
+                            });
+                        }
+                    }
+                    if cdone && !cloading && app.search.cache_error.is_none()
+                        && app.search.cache_hits.is_empty()
+                    {
+                        ui.label(
+                            egui::RichText::new(
+                                "збігів немає (документи потрапляють у кеш, коли ви читаєте їх у читалці)",
+                            )
+                            .small()
+                            .color(crate::themes::weak()),
+                        );
+                    }
+                }
             });
 
         // ---- resolver -----------------------------------------------
@@ -577,6 +673,16 @@ pub fn portal_search_url(query: &str) -> String {
     }
 }
 
+/// List label of a cache hit: the offline index title when known, else the
+/// bare nreg (uncached rows have no title).
+pub fn cache_row_label(title: &str, nreg: &str) -> String {
+    if title.trim().is_empty() {
+        nreg.to_string()
+    } else {
+        title.to_string()
+    }
+}
+
 impl Default for SearchState {
     fn default() -> Self {
         Self {
@@ -608,6 +714,12 @@ impl Default for SearchState {
             resolve_result: None,
             invalid_date: false,
             live_export: None,
+            cache_run: 0,
+            cache_loading: false,
+            cache_done: false,
+            cache_term: String::new(),
+            cache_hits: Vec::new(),
+            cache_error: None,
         }
     }
 }
@@ -648,6 +760,15 @@ pub struct SearchState {
     pub invalid_date: bool,
     /// In-flight live bulk export (done / total).
     pub live_export: Option<(u64, u64)>,
+    /// Offline full-text search over cached bodies («Знайти в кеші»).
+    pub cache_run: u64,
+    pub cache_loading: bool,
+    pub cache_done: bool,
+    /// Term the displayed cache results belong to.
+    pub cache_term: String,
+    /// `(hit, index title)` pairs, ranked.
+    pub cache_hits: Vec<(rada_db::textcache::CacheHit, String)>,
+    pub cache_error: Option<String>,
 }
 
 impl SearchState {
@@ -1012,6 +1133,13 @@ fn calendar_popup(app: &mut App, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_row_label_prefers_title() {
+        assert_eq!(cache_row_label("Про освіту", "1556-18"), "Про освіту");
+        assert_eq!(cache_row_label("   ", "1556-18"), "1556-18", "blank title falls back");
+        assert_eq!(cache_row_label("", "1-1"), "1-1");
+    }
 
     #[test]
     fn calendar_math() {

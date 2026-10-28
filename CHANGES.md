@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.6: пошук у кеші в GUI / cache full-text search in the GUI
+
+- **UKR:** 1) **«Знайти в кеші» на сторінці пошуку**: кнопка запускає офлайн повнотекстовий пошук у кешованих тілах документів (тільки що прочитані акти); результати з'являються нижче списку — назва з індексу, номер, кількість збігів і курсивний фрагмент контексту; клік відкриває акт у читалці. 2) **CLI читалки**: прапець `--cache-search TERM` відкриває сторінку пошуку з одразу виконаним пошуком у кеші. 3) Тести: 122/122.
+- **ENG:** 1) **«Знайти в кеші» on the search page**: the button runs the offline full-text scan over cached document bodies (acts previously read); results appear below the hit list with the index title, nreg, occurrence count and an italic context snippet; clicking a row opens the act in the reader. 2) **Launcher flag**: `--cache-search TERM` opens the search page with the cache scan already running. 3) Tests: 122/122.
+
+---
+
+## 2026-10-28
+
 ### 0.10.5: повнотекстовий пошук у кеші та фільтри дат у веб / offline cache full-text search & web date filters
 
 - **UKR:** 1) **Пошук у кешованому тексті (офлайн)**: новий рушій `textcache::search_bodies` шукає підрядок у всіх кешованих тілах документів з урахуванням регістру Unicode (кирилицю SQLite `LIKE` не складає), ранжує за кількістю збігів і дає фрагмент контексту. CLI: `cache --search TERM [--limit N]`; веб: кнопка «Пошук у тексті» на сторінці пошуку (`GET /api/cache/search?q=`) зі збігами, назвами з індексу та клацанням для відкриття. 2) **Фільтри дат у веб**: поля «від/до РРРРММДД» — дійсні 8-значні значення надсилаються як `date_from`/`date_to`, некоректні ігноруються й підсвічуються підказкою (пошук ніколи не блокується). 3) Тести: 121/121.

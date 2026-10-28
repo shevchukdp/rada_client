@@ -31,6 +31,11 @@ pub enum Msg {
         run: u64,
         res: Outcome<(Vec<rada_db::SearchHit>, i64)>,
     },
+    /// Offline full-text scan of the cached bodies: `(hit, index title)`.
+    CacheSearch {
+        run: u64,
+        res: Outcome<Vec<(rada_db::textcache::CacheHit, String)>>,
+    },
     Card {
         run: u64,
         res: Outcome<LawCardJson>,
@@ -119,7 +124,7 @@ pub enum Page {
     Favorites,
 }
 
-/// Launch-time options (CLI `--start`, `--query`, `--nreg`).
+/// Launch-time options (CLI `--start`, `--query`, `--nreg`, `--cache-search`).
 #[derive(Default)]
 pub struct Startup {
     /// `home` | `search` | `arrivals`
@@ -128,6 +133,8 @@ pub struct Startup {
     pub query: Option<String>,
     /// Open this document (nreg) in the reader on startup.
     pub nreg: Option<String>,
+    /// Run an offline cache full-text search for this term on startup.
+    pub cache_query: Option<String>,
 }
 
 pub struct App {
@@ -207,7 +214,7 @@ impl App {
             theme_sig: String::new(),
             focus_req: None,
         };
-        if startup.query.is_none() && startup.nreg.is_none() {
+        if startup.query.is_none() && startup.nreg.is_none() && startup.cache_query.is_none() {
             app.search.query = app.settings.last_query.clone();
         }
         app.theme_sig = String::new();
@@ -227,6 +234,12 @@ impl App {
         if let Some(q) = s.query {
             self.search.query = q;
             self.run_search();
+            self.page = Page::Search;
+            return;
+        }
+        if let Some(t) = s.cache_query {
+            self.search.query = t;
+            self.run_cache_search();
             self.page = Page::Search;
             return;
         }
@@ -384,6 +397,40 @@ impl App {
             }
             let res = rada_db::search::search(&conn, &q).map_err(|e| e.to_string());
             let _ = tx.send(Msg::Search { run, res });
+        });
+    }
+
+    /// Offline full-text search over the cached document bodies
+    /// («Знайти в кеші»): Unicode case-insensitive substring scan ranked by
+    /// occurrence count, current edition only (see textcache::search_bodies).
+    pub fn run_cache_search(&mut self) {
+        let term = self.search.query.trim().to_string();
+        if term.is_empty() {
+            self.toast("введіть текст для пошуку в кеші", err());
+            return;
+        }
+        let run = self.next_run();
+        let db = self.db_path.clone();
+        self.search.cache_run = run;
+        self.search.cache_loading = true;
+        self.search.cache_done = false;
+        self.search.cache_term = term.clone();
+        self.search.cache_hits.clear();
+        self.search.cache_error = None;
+        self.spawn(move |tx| {
+            let res = (|| -> Outcome<Vec<(rada_db::textcache::CacheHit, String)>> {
+                let conn = rada_db::open(&db).map_err(|e| e.to_string())?;
+                let hits = rada_db::textcache::search_bodies(&conn, &term, 50)
+                    .map_err(|e| e.to_string())?;
+                Ok(hits
+                    .into_iter()
+                    .map(|h| {
+                        let title = rada_db::title_by_nreg(&conn, &h.nreg).unwrap_or_default();
+                        (h, title)
+                    })
+                    .collect())
+            })();
+            let _ = tx.send(Msg::CacheSearch { run, res });
         });
     }
 
@@ -1379,6 +1426,22 @@ impl App {
                         Err(e) => {
                             self.search.hits.clear();
                             self.search.error = Some(e);
+                        }
+                    }
+                }
+            }
+            Msg::CacheSearch { run, res } => {
+                if run == self.search.cache_run {
+                    self.search.cache_loading = false;
+                    self.search.cache_done = true;
+                    match res {
+                        Ok(rows) => {
+                            self.search.cache_hits = rows;
+                            self.search.cache_error = None;
+                        }
+                        Err(e) => {
+                            self.search.cache_hits.clear();
+                            self.search.cache_error = Some(e);
                         }
                     }
                 }
