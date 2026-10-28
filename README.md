@@ -57,7 +57,7 @@ official open-data API:
     web UI has the same list behind a «Пов'язані документи» button
     (`GET /api/related/{nreg}`) with a «повторити» retry on failure, an empty
     notice, a collapse-on-second-click and a reset on document change.
-    CLI: `related <nreg> [--json]`.
+    CLI: `related <nreg> [--json] [--out FILE]`.
   - **Mouse-selection highlights** — the «Виділення мишею» chip in the reader
     makes the text selectable by mouse; «виділити» saves the selection as a
     gold highlight annotation (double-click selects a word/paragraph).
@@ -79,8 +79,9 @@ official open-data API:
     ~110 хв».
   - **Grouped favorites** — the Обране page groups annotations per document
     (gold «Title (count)» header with an «відкрити» button), with a text/title
-    filter box, kind chips, a «групувати» toggle and sort chips
-    («новіші / старіші / за назвою»).
+    filter box, kind chips, a «групувати» toggle, sort chips
+    («новіші / старіші / за назвою») and **collapsible groups** (click a
+    header to hide its rows; «розгорнути всі» restores them).
   - **Keyboard shortcuts** — Ctrl+F focuses find/query; Alt+←/→ **or**
     Alt+PageUp/PageDown step through the results list inside the reader.
   - **Cache full-text search («Знайти в кеші»)** — offline scan of every cached
@@ -159,7 +160,7 @@ official open-data API:
   (`POST /api/jobs/sync|snapshot|backup|restore|init`, `GET /api/jobs`, `GET /api/backups`),
   including a **full index rebuild from the official dump** as a background job,
   **offline full-text search over cached bodies** («Пошук у тексті»,
-  `GET /api/cache/search?q=`), **date-range filters** (`date_from`/`date_to`,
+  `GET /api/cache/search?q=`, with a «× звичайний пошук» cache-mode banner), **date-range filters** (`date_from`/`date_to`,
   validated 8-digit YYYYMMDD, never blocking),
   **dict facets** (the status/type/publisher dropdowns show per-option result
   counts after each search), **theme-colored printing** (the print view keeps

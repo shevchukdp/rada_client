@@ -35,6 +35,9 @@ pub struct FavoritesState {
     /// Row order: 0 = новіші перші (default), 1 = старіші перші,
     /// 2 = за назвою документа (A→Я).
     pub sort_sel: usize,
+    /// nregs whose group rows are hidden in the grouped view (session-only,
+    /// like the web arrivals group collapse).
+    pub collapsed: Vec<String>,
     /// First visit triggers an auto-load.
     pub loaded: bool,
     /// Two-step import: file picked through «Імпорт .json», waiting for the
@@ -52,6 +55,7 @@ impl Default for FavoritesState {
             kind_sel: 0,
             grouped: true,
             sort_sel: 0,
+            collapsed: Vec::new(),
             loaded: false,
             confirm_import: None,
         }
@@ -115,6 +119,17 @@ pub fn row_matches(a: &rada_db::Annotation, title: &str, needle: &str, kind: usi
 /// appear in first-appearance order of their rows, and rows keep their
 /// input order inside a group. `(nreg, title, rows)`; the group title is
 /// the first non-empty title seen among the group's rows.
+/// Toggle the group rows of one `nreg` in the favorites grouped view
+/// (add when absent, remove when present; no duplicates).
+pub fn toggle_collapse(list: &mut Vec<String>, nreg: &str) {
+    match list.iter().position(|x| x == nreg) {
+        Some(pos) => {
+            list.remove(pos);
+        }
+        None => list.push(nreg.to_string()),
+    }
+}
+
 /// Order rows by the favorites sort chip: 0 = newest first, 1 = oldest
 /// first, 2 = by document title (case-insensitive, empty titles last,
 /// newest first within one title). `created_at` is `YYYY-MM-DD HH:MM:SS`,
@@ -304,6 +319,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     app.fav.sort_sel = i;
                 }
             }
+            if app.fav.grouped && !app.fav.collapsed.is_empty() {
+                ui.separator();
+                if ui
+                    .button(egui::RichText::new("розгорнути всі").small())
+                    .on_hover_text("показати рядки всіх згорнутих груп")
+                    .clicked()
+                {
+                    app.fav.collapsed.clear();
+                }
+            }
         });
         if let Some(e) = &app.fav.error {
             ui.label(egui::RichText::new(e).small().color(err()));
@@ -328,12 +353,26 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         } else {
                             short
                         };
+                        let is_collapsed = app.fav.collapsed.iter().any(|n| n == &nreg);
                         ui.horizontal(|ui| {
-                            ui.label(
-                                egui::RichText::new(format!("{head}  ({})", rows.len()))
-                                    .strong()
-                                    .color(gold()),
+                            let head_lbl = if is_collapsed {
+                                format!("{head}  ({}) — згорнуто", rows.len())
+                            } else {
+                                format!("{head}  ({})", rows.len())
+                            };
+                            let head_btn = ui.add(
+                                egui::Button::new(
+                                    egui::RichText::new(head_lbl).strong().color(gold()),
+                                )
+                                .frame(false)
+                                .small(),
                             );
+                            if head_btn
+                                .on_hover_text("клік — згорнути/розгорнути групу")
+                                .clicked()
+                            {
+                                toggle_collapse(&mut app.fav.collapsed, &nreg);
+                            }
                             if ui
                                 .button(egui::RichText::new("відкрити").small())
                                 .on_hover_text("відкрити документ у читалці")
@@ -342,13 +381,23 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 let (n, t) = (nreg.clone(), title.clone());
                                 app.open_reader_by_nreg(&n, &t, 0, "", "", "");
                             }
-                        });
-                        ui.indent(egui::Id::new(("fav_group", nreg.clone())), |ui| {
-                            for (a, title) in rows {
-                                annotation_row(app, ui, &a, &title);
-                                ui.add_space(4.0);
+                            let toggle_lbl = if is_collapsed { "розгорнути" } else { "згорнути" };
+                            if ui
+                                .button(egui::RichText::new(toggle_lbl).small())
+                                .on_hover_text("сховати/показати рядки цієї групи")
+                                .clicked()
+                            {
+                                toggle_collapse(&mut app.fav.collapsed, &nreg);
                             }
                         });
+                        if !is_collapsed {
+                            ui.indent(egui::Id::new(("fav_group", nreg.clone())), |ui| {
+                                for (a, title) in rows {
+                                    annotation_row(app, ui, &a, &title);
+                                    ui.add_space(4.0);
+                                }
+                            });
+                        }
                         ui.add_space(6.0);
                     }
                 } else {
@@ -740,6 +789,21 @@ mod tests {
         let mut a = ann(id, nreg, "comment", "т");
         a.created_at = created.to_string();
         a
+    }
+
+    #[test]
+    fn toggle_collapse_adds_then_removes_without_duplicates() {
+        let mut v: Vec<String> = Vec::new();
+        toggle_collapse(&mut v, "2041-15");
+        assert_eq!(v, vec!["2041-15".to_string()], "first click collapses");
+        toggle_collapse(&mut v, "2041-15");
+        assert!(v.is_empty(), "second click expands again");
+        // distinct nregs accumulate, each toggles independently
+        toggle_collapse(&mut v, "2041-15");
+        toggle_collapse(&mut v, "16-15");
+        assert_eq!(v, vec!["2041-15".to_string(), "16-15".to_string()]);
+        toggle_collapse(&mut v, "2041-15");
+        assert_eq!(v, vec!["16-15".to_string()]);
     }
 
     #[test]

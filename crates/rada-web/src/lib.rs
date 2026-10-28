@@ -2773,6 +2773,37 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_cache_mode_banner() {
+        // Cache-mode banner under the «недавні запити» row: a hidden-by-default
+        // row that every successful cache search paints (zero hits included)
+        // with the document-count hint and the «× звичайний пошук» exit chip.
+        assert!(ui::INDEX_HTML.contains("id=\"cache-mode\" class=\"row\" hidden"));
+        assert!(ui::INDEX_HTML.contains("пошук у кешованому тексті · документів: "));
+        assert!(ui::INDEX_HTML.contains("id=\"cache-mode-exit\""));
+        assert!(ui::INDEX_HTML.contains("× звичайний пошук"));
+        assert!(ui::INDEX_HTML.contains("function renderCacheMode(count)"));
+        assert!(ui::INDEX_HTML.contains("renderCacheMode(0);"));
+        assert!(ui::INDEX_HTML.contains("renderCacheMode(d.items.length);"));
+    }
+
+    #[test]
+    fn ui_page_cache_mode_exits_to_search() {
+        // The exit chip hides the banner and re-runs the regular search from
+        // the first page with the current #q; doSearch always hides the banner
+        // up front (a regular search is never cache mode), and a failed cache
+        // search leaves no stale banner next to the «Помилка: » meta line.
+        assert!(ui::INDEX_HTML.contains(
+            r##"$("cache-mode").hidden = true; doSearch(0);"##
+        ));
+        assert!(ui::INDEX_HTML.contains(
+            r##"$("cache-mode").hidden = true; // a regular search is never cache mode"##
+        ));
+        assert!(ui::INDEX_HTML.contains(
+            r##"$("cache-mode").hidden = true; // a failed cache search is not cache mode"##
+        ));
+    }
+
+    #[test]
     fn ui_page_has_facet_counts() {
         // Dictionary dropdowns annotate their options with per-option hit
         // counts after every search («Чинний (1204)»): the annotation

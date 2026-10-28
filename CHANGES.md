@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.23: згортання груп в Обраному, режим кеш-пошуку у веб та посилання у файл / favorites group collapse, web cache mode & related to file
+
+- **UKR:** 1) **Згортання груп в Обраному**: клік по золотому заголовку групи (або кнопка «згорнути») ховає рядки цієї групи; з'являється «розгорнути всі». 2) **Режим кеш-пошуку у веб**: після «Пошук у тексті» під полями горить смуга «пошук у кешованому тексті · документів: N» з кнопкою «× звичайний пошук», що повертає звичайну видачу зі сортуванням; звичайний пошук і помилки завжди вимикають режим. 3) **CLI `related <nreg> --out FILE`**: таблиця посилань у файл (з BOM), з `--json` — JSON без BOM; stdout без `--out` не змінився. 4) Тести: 195/195.
+- **ENG:** 1) **Collapsible groups in Favorites**: clicking a gold group header (or its «згорнути» button) hides that group's rows, and «розгорнути всі» appears to restore them all. 2) **Cache-search mode in the web UI**: after «Пошук у тексті» a bar shows «пошук у кешованому тексті · документів: N» with a «× звичайний пошук» button that returns to regular results with sorting; a regular search or any error always leaves the mode. 3) **CLI `related <nreg> --out FILE`**: the link table written to a file (with BOM), or BOM-less JSON with `--json`; stdout without `--out` is unchanged. 4) Tests: 195/195.
+
+---
+
+## 2026-10-28
+
 ### 0.10.22: порівняння редакцій у читалці, групи дат в Оновленнях та коментарі з файла / reader edition compare, arrivals date groups & comments from file
 
 - **UKR:** 1) **«Порівняти редакції» у читалці**: кнопка під вибором редакції відкриває панель А/В; для кожної редакції — «N слів · M симв. · ~K хв», нижче — «різниця: ±N слів» (тексти беруться з кешу або наживо). 2) **Групи дат в Оновленнях веб**: стрічка розбита заголовками «дд.мм.рррр» (з посилання на редакцію), клік по заголовку згортає/розгортає групу, документи без дати — наприкінці під «без дати». 3) **CLI `annot add --text-file ФАЙЛ`**: довгий коментар з UTF-8 файла (обрізається, помилки «читання {file}» / «файл тексту порожній»); обидва способи одразу — «вкажіть текст або --text-file, не обидва». 4) Тести: 191/191.

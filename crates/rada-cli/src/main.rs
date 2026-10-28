@@ -227,6 +227,11 @@ enum Cmd {
         /// Output JSON instead of a plain list.
         #[arg(long)]
         json: bool,
+        /// Write to this file instead of stdout (parent dirs created).
+        /// Plain table gets a UTF-8 BOM (Excel-friendly); with `--json` the
+        /// file is written BOM-less.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Snapshot helpers.
     Snapshot {
@@ -390,7 +395,9 @@ fn run() -> Result<()> {
         Cmd::Resolve { text, limit, json, out } => {
             cmd_resolve(&cli.db, &text.join(" "), limit, json, out.as_deref(), cli.pace)
         }
-        Cmd::Related { nreg, json } => cmd_related(&cli.db, &nreg, json, cli.pace),
+        Cmd::Related { nreg, json, out } => {
+            cmd_related(&cli.db, &nreg, json, out.as_deref(), cli.pace)
+        }
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
         Cmd::Status => cmd_status(&cli.db),
         Cmd::Annot { what } => cmd_annot(&cli.db, what),
@@ -1493,7 +1500,18 @@ fn resolve_out_note(n: usize, file: &Path) -> String {
     format!("[resolve] записано {n} варіантів → {}", file.display())
 }
 
-fn cmd_related(db: &PathBuf, nreg: &str, json: bool, pace: u64) -> Result<()> {
+/// List «related documents» for `nreg`: links parsed from the live portal
+/// page (one paced request), titles preferred from the offline index.
+/// With `--out` the exact stdout body goes to the file (parent dirs created)
+/// and nothing prints to stdout: the plain table is written UTF-8 with a BOM
+/// (Excel-friendly, like arrivals/resolve), the `--json` body BOM-less.
+fn cmd_related(
+    db: &PathBuf,
+    nreg: &str,
+    json: bool,
+    out: Option<&Path>,
+    pace: u64,
+) -> Result<()> {
     let c = client(pace);
     let mut list = c.related(nreg)?;
     // Prefer offline index titles over the page's anchor text (the CLI has
@@ -1512,22 +1530,49 @@ fn cmd_related(db: &PathBuf, nreg: &str, json: bool, pace: u64) -> Result<()> {
             .iter()
             .map(|r| serde_json::json!({ "nreg": r.nreg, "title": r.title }))
             .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({ "items": items }))
-                .map_err(anyhow::Error::from)?
-        );
+        let body = serde_json::to_string_pretty(&serde_json::json!({ "items": items }))
+            .map_err(anyhow::Error::from)?;
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("[related] записано JSON → {}", p.display());
+            }
+            None => println!("{body}"),
+        }
         return Ok(());
     }
-    if list.is_empty() {
-        println!("посилань на інші акти не знайдено");
-        return Ok(());
-    }
-    println!("{} пов'язаних документів:", list.len());
-    for r in &list {
-        println!("  {}  {}", r.nreg, r.title);
+    let body = related_table(&list);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as arrivals.
+            write_out_file(p, format!("\u{FEFF}{body}\n").as_bytes())?;
+            eprintln!("{}", related_out_note(list.len(), p));
+        }
+        None => println!("{body}"),
     }
     Ok(())
+}
+
+/// The plain-table body of `related` (shared by stdout and `--out`):
+/// «{n} пов'язаних документів:» header plus `  {nreg}  {title}` rows, or
+/// «посилань на інші акти не знайдено» when the list is empty.
+fn related_table(list: &[rada_core::related::RelatedDoc]) -> String {
+    if list.is_empty() {
+        return "посилань на інші акти не знайдено".to_string();
+    }
+    let mut lines = Vec::with_capacity(list.len() + 1);
+    lines.push(format!("{} пов'язаних документів:", list.len()));
+    for r in list {
+        lines.push(format!("  {}  {}", r.nreg, r.title));
+    }
+    lines.join("\n")
+}
+
+/// The stderr note printed after `related --out` has written the plain
+/// table (`n` links) to `file`.
+fn related_out_note(n: usize, file: &Path) -> String {
+    format!("[related] записано {n} посилань → {}", file.display())
 }
 
 fn cmd_snapshot(db: &PathBuf, what: SnapCmd) -> Result<()> {
@@ -1777,7 +1822,7 @@ mod tests {
     use super::{
         annot_out_note, annot_text_file_note, arrivals_out_note, backfill_summary, card_out_note,
         dict_fresh_lines, dict_matches, facet_lines, new_nregs, normalize_fmt, out_note,
-        resolve_out_note, stats_lines, StatsReport,
+        related_out_note, resolve_out_note, stats_lines, StatsReport,
     };
 
     #[test]
@@ -1907,6 +1952,18 @@ mod tests {
         assert!(line.starts_with("[resolve] записано "));
         assert!(line.contains("3"));
         assert!(line.contains("варіантів"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn related_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//r.txt");
+        let line = related_out_note(9, file);
+        assert!(line.starts_with("[related] записано "));
+        assert!(line.contains("9"));
+        assert!(line.contains("посилань"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
     }
