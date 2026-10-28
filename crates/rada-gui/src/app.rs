@@ -75,6 +75,12 @@ pub enum Msg {
     /// The query was a document number found exactly in the index —
     /// open it in the reader directly (offline number search).
     OpenNreg(rada_db::SearchHit),
+    /// «Пов'язані документи» parsed from the live page.
+    Related {
+        run: u64,
+        nreg: String,
+        res: Outcome<Vec<rada_core::related::RelatedDoc>>,
+    },
     /// Individual-file export of checked results finished.
     SelectedExported { written: usize, failed: usize, dir: PathBuf },
     /// Dictionaries-only live fetch finished (auto-run at startup when empty).
@@ -507,6 +513,44 @@ impl App {
                 }
             };
             let _ = tx.send(Msg::Text { run, res });
+        });
+    }
+
+    /// Fetch «Пов'язані документи» for the open document (one paced request;
+    /// parsing is the tested `rada_core::related::extract_related`).
+    pub fn load_related(&mut self) {
+        let Some(r) = self.reader.as_ref() else { return };
+        if r.related_loading || r.related_loaded {
+            return;
+        }
+        self.fetch_related();
+    }
+
+    /// Force-refetch the related list after a failure («оновити»).
+    pub fn retry_related(&mut self) {
+        if let Some(r) = self.reader.as_mut() {
+            r.related_loaded = false;
+            r.related_error = None;
+        }
+        self.fetch_related();
+    }
+
+    fn fetch_related(&mut self) {
+        let Some(r) = self.reader.as_ref() else { return };
+        if r.related_loading {
+            return;
+        }
+        let nreg = r.hit.nreg.clone();
+        let run = self.next_run();
+        let client = self.client.clone();
+        if let Some(r) = self.reader.as_mut() {
+            r.related_run = run;
+            r.related_loading = true;
+            r.related_error = None;
+        }
+        self.spawn(move |tx| {
+            let res = client.related(&nreg).map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Related { run, nreg, res });
         });
     }
 
@@ -1369,6 +1413,39 @@ impl App {
                         r.text = None;
                         r.text_cached = false;
                         r.text_error = Some(e);
+                    }
+                }
+            }
+            Msg::Related { run, nreg, res } => {
+                let Some(r) = self.reader.as_mut() else { return };
+                if run != r.related_run || r.hit.nreg != nreg {
+                    return;
+                }
+                r.related_loading = false;
+                r.related_loaded = true;
+                match res {
+                    Ok(list) => {
+                        // Prefer the offline index title over the page's anchor text.
+                        let list = match rada_db::open(&self.db_path) {
+                            Ok(conn) => list
+                                .into_iter()
+                                .map(|mut d| {
+                                    if let Some(t) = rada_db::title_by_nreg(&conn, &d.nreg) {
+                                        if !t.trim().is_empty() {
+                                            d.title = t;
+                                        }
+                                    }
+                                    d
+                                })
+                                .collect(),
+                            Err(_) => list,
+                        };
+                        r.related = list;
+                        r.related_error = None;
+                    }
+                    Err(e) => {
+                        r.related.clear();
+                        r.related_error = Some(e);
                     }
                 }
             }

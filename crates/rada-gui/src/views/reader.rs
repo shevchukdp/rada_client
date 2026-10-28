@@ -36,6 +36,13 @@ pub struct ReaderState {
     /// Annotation being edited inline (`edit_annotation`): (id, draft).
     pub edit_id: Option<i64>,
     pub edit_text: String,
+    /// «Пов'язані документи» parsed from the live page (lazy, on expand).
+    pub related: Vec<rada_core::related::RelatedDoc>,
+    pub related_run: u64,
+    pub related_loading: bool,
+    pub related_error: Option<String>,
+    /// The related list was already fetched for this document.
+    pub related_loaded: bool,
 }
 
 pub const ANN_KINDS: [&str; 3] = ["Коментар", "Закладка", "Виділення"];
@@ -65,6 +72,11 @@ impl ReaderState {
             find_scroll: false,
             edit_id: None,
             edit_text: String::new(),
+            related: Vec::new(),
+            related_run: 0,
+            related_loading: false,
+            related_error: None,
+            related_loaded: false,
         }
     }
 
@@ -229,8 +241,97 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 ui.add_space(8.0);
                 ui.separator();
                 text_block(app, ui);
+                related_block(app, ui);
             });
     });
+}
+
+// ---------------------------------------------------------------------
+// related documents
+// ---------------------------------------------------------------------
+
+/// «Пов'язані документи»: links to other acts parsed from the live page
+/// (one paced request, fetched once per opened document). Rows open the
+/// referenced act in the reader.
+fn related_block(app: &mut App, ui: &mut egui::Ui) {
+    let (loading, error, items) = {
+        let r = app.reader.as_ref().unwrap();
+        (r.related_loading, r.related_error.clone(), r.related.clone())
+    };
+    if !loading && items.is_empty() && error.is_none() {
+        // First render of this document: kick off the fetch.
+        app.load_related();
+        return;
+    }
+
+    ui.add_space(14.0);
+    ui.separator();
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.heading(
+            egui::RichText::new("Пов'язані документи")
+                .strong()
+                .size(17.0),
+        );
+        if !items.is_empty() {
+            ui.label(egui::RichText::new(format!("{}", items.len())).weak().small());
+        }
+        if loading {
+            ui.spinner();
+            ui.label(
+                egui::RichText::new("завантажую з порталу ...")
+                    .small()
+                    .color(crate::themes::weak()),
+            );
+        }
+    });
+    if let Some(e) = &error {
+        ui.label(
+            egui::RichText::new(format!("не вдалося отримати: {e}"))
+                .small()
+                .color(err()),
+        );
+        if ui
+            .button(egui::RichText::new("оновити").small())
+            .on_hover_text("повторити запит до порталу")
+            .clicked()
+        {
+            app.retry_related();
+        }
+        return;
+    }
+    if items.is_empty() && !loading {
+        ui.label(
+            egui::RichText::new("посилань на інші акти не знайдено")
+                .small()
+                .color(crate::themes::weak()),
+        );
+        return;
+    }
+    for rel in &items {
+        let label = if rel.title.trim().is_empty() {
+            rel.nreg.clone()
+        } else {
+            rel.title.clone()
+        };
+        let resp = ui
+            .horizontal(|ui| {
+                ui.label(egui::RichText::new("•").color(gold()));
+                ui.selectable_label(false, &label)
+            })
+            .response;
+        if resp.clicked() {
+            // Prefer the full offline row (status/dates) when indexed.
+            let hit = rada_db::open(&app.db_path)
+                .ok()
+                .and_then(|conn| rada_db::search::by_nreg(&conn, &rel.nreg).ok().flatten());
+            match hit {
+                Some(h) => app.open_reader(h),
+                None => app.open_reader_by_nreg(&rel.nreg, &rel.title, 0, "", "", ""),
+            }
+            return;
+        }
+    }
 }
 
 // ---------------------------------------------------------------------

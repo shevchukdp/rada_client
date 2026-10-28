@@ -15,6 +15,7 @@
 pub mod api;
 pub mod github;
 pub mod models;
+pub mod related;
 
 pub use api::RadaClient;
 pub use github::GitHub;

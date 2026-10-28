@@ -46,6 +46,11 @@ official open-data API:
   - **Offline text cache** — every live document read is stored per edition
     (`docs_text`, schema v3); when the network fails the reader serves the
     cached copy with a «кешовано» chip. CLI: `cache` / `cache --purge [nreg]`.
+  - **Related documents («Пов'язані документи»)** — the reader parses the live
+    portal page for links to other acts referenced by the open one (one paced
+    request), shows their offline titles, and opens any of them on click; the
+    web UI has the same list behind a «Пов'язані документи» button
+    (`GET /api/related/{nreg}`).
   - **Plain-text mode** — «Форматований/Простий» toggle (GUI) and «Простий»
     (web) switch off structural styling of titles/sections/articles.
   - **Printing** — «Друк» in the reader (and «🖨 Друк» in the web UI) opens a

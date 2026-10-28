@@ -173,6 +173,8 @@ fn route(
     };
     let result = if rest.starts_with("doc/") {
         doc_handler(method, rest, q, st)
+    } else if rest == "related" || rest.starts_with("related/") {
+        related_handler(method, rest, st)
     } else if rest.starts_with("export/") {
         export_handler(method, rest, q, st, req)
     } else if rest == "annotations" || rest.starts_with("annotations/") {
@@ -324,6 +326,42 @@ fn resolve_handler(st: &State, q: &[(String, String)]) -> Resp {
     match st.client.resolve_name(text) {
         Some(nreg) => json_ok(&json!({ "nreg": nreg })),
         None => json_err(404, "no unambiguous match (the server returned a candidate list)"),
+    }
+}
+
+/// `GET /api/related/{nreg}` — links to other acts parsed from the live
+/// document page (one paced request). Offline titles replace page anchors.
+fn related_handler(method: &Method, rest: &str, st: &State) -> Resp {
+    if method != &Method::Get {
+        return json_err(405, "method not allowed");
+    }
+    let Some(nreg) = rest.strip_prefix("related/") else {
+        return json_err(400, "expected /api/related/{nreg}");
+    };
+    let nreg = nreg.trim_end_matches('/');
+    if nreg.is_empty() {
+        return json_err(400, "expected /api/related/{nreg}");
+    }
+    match st.client.related(nreg) {
+        Ok(list) => {
+            // Prefer offline index titles over the page's anchor text.
+            let conn = open_db(st).ok();
+            let items: Vec<Value> = list
+                .into_iter()
+                .map(|mut d| {
+                    if let Some(conn) = &conn {
+                        if let Some(t) = rada_db::title_by_nreg(conn, &d.nreg) {
+                            if !t.trim().is_empty() {
+                                d.title = t;
+                            }
+                        }
+                    }
+                    json!({ "nreg": d.nreg, "title": d.title })
+                })
+                .collect();
+            json_ok(&json!({ "items": items }))
+        }
+        Err(e) => json_err(502, &format!("related error: {e}")),
     }
 }
 
@@ -1971,6 +2009,20 @@ mod tests {
     }
 
     // ---- «Обране» (favorites): /api/annotations/all|export|import ----------
+
+    /// Routing + validation of GET /api/related/{nreg} without touching the
+    /// paced network client (the happy path is covered by the core extractor
+    /// tests + the ignored live test).
+    #[test]
+    fn related_route_shape() {
+        let st = favorites_state("related");
+        let (code, _) = call(&st, Method::Post, "/api/related/2341-14", "");
+        assert_eq!(code, 405);
+        let (code, v) = call(&st, Method::Get, "/api/related/", "");
+        assert_eq!(code, 400, "{v}");
+        let (code, v) = call(&st, Method::Get, "/api/related", "");
+        assert_eq!(code, 400, "{v}");
+    }
 
     /// Fresh indexed db for one favorites test: migrated schema + one titled
     /// document (`2341-14`), so title joins are observable. Unique dir per

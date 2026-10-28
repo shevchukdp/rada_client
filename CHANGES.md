@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.2: пов'язані документи / related documents
+
+- **UKR:** 1) **«Пов'язані документи» у читалці**: під текстом акту з'являється список посилань на інші документи, які він згадує (розбирається жива сторінка zakon.rada.gov.ua; один виміряний запит на документ). Назви беруться з офлайн-індексу, якщо документ є в базі; клік по рядку відкриває акт у читалці. При помилці мережі — кнопка «оновити». 2) **Веб**: кнопка «Пов'язані документи» в панелі документу (`GET /api/related/{nreg}`) із тим самим списком і переходами. 3) Тести: 110/110 (+1 ігнорований live-тест перевіряє розбір на реальному Кримінальному кодексі — 50 посилань).
+- **ENG:** 1) **Related documents in the reader**: below the act text a list of links to other acts it references (parsed from the live zakon.rada.gov.ua page; one paced request per document). Titles come from the offline index when the act is in the database; clicking a row opens it in the reader. On a network error there is an «оновити» retry. 2) **Web**: a «Пов'язані документи» button in the document pane (`GET /api/related/{nreg}`) with the same list and navigation. 3) Tests: 110/110 (+one ignored live test validates the parser on the real Criminal Code — 50 links).
+
+---
+
+## 2026-10-28
+
 ### 0.10.1: повна побудова індексу у веб та посилання на розширений пошук / 0.10.1: full-dump index build in web & portal advanced-search link
 
 - **UKR:** 1) **Веб «Дані» → «Повна побудова індексу»**: кнопка «Побудувати з офіційного дампу» запускає фонову задачу `POST /api/jobs/init`, що завантажує офіційний дамп `doc.txt` (≈51 МБ) і перебудовує локальний індекс у межах однієї транзакції (помилка — відкат, наявний індекс і анотації цілі). Хід виконання видно у панелі задач; побудова блокує бекап/відновлення/снимок на час роботи (і навпаки). 2) **Посилання на розширений пошук**: у «Пошуку» — кнопка «Розширений пошук на порталі», що відкриває zakon.rada.gov.ua у браузері (з поточним запитом, закодованим в UTF-8). 3) Тести: 105/105.

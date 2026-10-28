@@ -289,6 +289,14 @@ impl RadaClient {
         self.get(&url)
     }
 
+    /// «Пов'язані документи»: parse the document page for links to other acts
+    /// (`/laws/show/…` and `go/…` hrefs), skipping `nreg` itself.
+    /// One paced request; pure parsing lives in [`crate::related`].
+    pub fn related(&self, nreg: &str) -> Result<Vec<crate::related::RelatedDoc>, ApiError> {
+        let html = self.show_html(nreg)?;
+        Ok(crate::related::extract_related(&html, nreg))
+    }
+
     /// Clean plain text of the current edition: `/laws/show/{nreg}.txt`.
     /// Verified: 200, UTF-8, no HTML.
     pub fn show_text(&self, nreg: &str) -> Result<String, ApiError> {

@@ -319,6 +319,14 @@
   }
   #find-input { min-width: 180px; }
   #annotations { list-style: none; padding: 0; margin: 10px 0; }
+  #related-list { list-style: none; padding: 0; margin: 6px 0 10px; }
+  #related-list li {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  #related-list li:hover { background: rgba(128, 128, 128, 0.12); }
+  #related-list li .nreg { color: var(--muted); font-size: 12px; margin-left: 6px; }
   #annotations li {
     display: flex; gap: 8px; align-items: center; padding: 6px 10px;
     border: 1px solid var(--border); border-radius: 7px; margin: 5px 0;
@@ -603,6 +611,11 @@
       <button id="btn-raw" type="button" title="Простий текст без стилів заголовків/статей">Простий</button>
       <a id="site-link" class="hint" target="_blank">на zakon.rada.gov.ua ↗</a>
     </div>
+    <div class="row" id="related-row" hidden>
+      <button id="btn-related" type="button" title="Отримати список посилань на інші акти з сторінки документу (живий API)">Пов'язані документи</button>
+      <span id="related-status" class="hint"></span>
+    </div>
+    <ul id="related-list" hidden></ul>
     <ul id="annotations"></ul>
   </div>
 </main>
@@ -859,6 +872,10 @@ async function openDoc(nreg) {
   $("card-details").hidden = true;
   $("card-retry-row").hidden = true;
   $("text-retry-row").hidden = true;
+  $("related-row").hidden = true;
+  $("related-list").hidden = true;
+  $("related-list").innerHTML = "";
+  $("related-status").textContent = "";
   setLive("картка · pacing ≈5 с/запит…");
   const enc = encNreg(nreg);
   $("site-link").href = "https://zakon.rada.gov.ua/go/" + enc;
@@ -896,12 +913,54 @@ async function loadCard() {
     sel.disabled = false;
     loadAnnotations(nreg);
     loadText("");
+    $("related-row").hidden = false;
   } catch (e) {
     if (nreg !== state.curNreg) return;
     $("doc-head").textContent = "Помилка картки: " + e.message;
     $("card-retry-row").hidden = false;
     setLive("");
     rememberRecent(nreg, "");
+  }
+}
+
+/// «Пов'язані документи»: fetch links to other acts from the live page and
+/// render them as clickable rows (one paced request per click).
+$("btn-related").onclick = () => loadRelated();
+async function loadRelated() {
+  const nreg = state.curNreg;
+  if (!nreg) return;
+  const list = $("related-list");
+  const status = $("related-status");
+  list.hidden = false;
+  list.innerHTML = "";
+  status.textContent = "завантаження (живий API, ≈5 с)…";
+  try {
+    const d = await api("/api/related/" + encNreg(nreg));
+    if (nreg !== state.curNreg) return;
+    if (!d.items.length) {
+      status.textContent = "";
+      const li = document.createElement("li");
+      li.className = "hint";
+      li.textContent = "посилань на інші акти не знайдено";
+      list.appendChild(li);
+      return;
+    }
+    status.textContent = "Знайдено: " + d.items.length;
+    for (const r of d.items) {
+      const li = document.createElement("li");
+      const t = document.createElement("span");
+      t.textContent = r.title || r.nreg;
+      const n = document.createElement("span");
+      n.className = "nreg";
+      n.textContent = r.nreg;
+      li.appendChild(t);
+      li.appendChild(n);
+      li.onclick = () => openDoc(r.nreg);
+      list.appendChild(li);
+    }
+  } catch (e) {
+    if (nreg !== state.curNreg) return;
+    status.textContent = "Помилка: " + e.message;
   }
 }
 
