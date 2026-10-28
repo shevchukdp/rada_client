@@ -93,6 +93,13 @@ enum Cmd {
         /// Print facet counts (status / type / publisher) for the query.
         #[arg(long)]
         facets: bool,
+        /// Write the result table (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain table gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less. `--facets` still prints to stdout: the file receives
+        /// only the results.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Show the live card of a document (human-readable summary;
     /// `--json` prints the full JSON card).
@@ -366,7 +373,8 @@ fn run() -> Result<()> {
             sort,
             json,
             facets,
-        } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, sort, json, facets),
+            out,
+        } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, sort, json, facets, out.as_deref()),
         Cmd::Card { nreg, json, out } => cmd_card(&nreg, json, out.as_deref(), cli.pace),
         Cmd::Text { nreg, edition, out } => {
             cmd_text(&cli.db, &nreg, edition.as_deref(), out.as_deref(), cli.pace)
@@ -660,6 +668,14 @@ fn dict_fresh_lines(counts: &[(&str, i64)]) -> Vec<String> {
         .collect()
 }
 
+/// Offline FTS5 title search with filters. Default output is the hit table
+/// on stdout (`--json` the compact `{"total":…,"hits":[…]}` body). With
+/// `--out` the exact stdout body goes to the file (parent dirs created)
+/// and nothing prints to stdout: the plain table is written UTF-8 with a
+/// BOM (Excel-friendly, like arrivals/resolve/related), the `--json` body
+/// BOM-less. `--facets` is an analysis report, not the result list: it
+/// still prints to stdout even with `--out` (embedded in the JSON body
+/// when `--json` is given).
 fn cmd_search(
     db: &PathBuf,
     term: Vec<String>,
@@ -674,6 +690,7 @@ fn cmd_search(
     sort: String,
     json: bool,
     facets: bool,
+    out: Option<&Path>,
 ) -> Result<()> {
     let conn = rada_db::open(db)?;
     let q = rada_db::search::SearchQuery {
@@ -715,44 +732,90 @@ fn cmd_search(
         None
     };
     if json {
-        let mut out = serde_json::json!({ "total": total, "hits": hits });
+        let mut value = serde_json::json!({ "total": total, "hits": hits });
         if let Some(f) = &facet_counts {
-            out["facets"] = serde_json::json!({
+            value["facets"] = serde_json::json!({
                 "status": f.status,
                 "typ": f.typ,
                 "org": f.org,
             });
         }
-        println!("{out}");
-    } else {
-        for h in &hits {
+        let body = value.to_string();
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("[search] записано JSON → {}", p.display());
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let body = search_table(&hits);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // arrivals; the bytes are exactly the stdout table, so an
+            // empty result (no rows) carries no trailing newline either.
+            let text = if body.is_empty() {
+                "\u{FEFF}".to_string()
+            } else {
+                format!("\u{FEFF}{body}\n")
+            };
+            write_out_file(p, text.as_bytes())?;
+            eprintln!("{}", search_out_note(hits.len(), p));
+        }
+        None => {
+            // Empty result: the per-row renderer printed nothing, stay byte-identical.
+            if !body.is_empty() {
+                println!("{body}");
+            }
+        }
+    }
+    if let Some(f) = &facet_counts {
+        println!("Фасети:");
+        let stan = rada_db::dict::all_labels(&conn, "stan");
+        let typs = rada_db::dict::all_labels(&conn, "typs");
+        let organs = rada_db::dict::all_labels(&conn, "organs");
+        for line in facet_lines(&f.status, &stan) {
+            println!("  Статус   {line}");
+        }
+        for line in facet_lines(&f.typ, &typs) {
+            println!("  Тип      {line}");
+        }
+        for line in facet_lines(&f.org, &organs) {
+            println!("  Видавник {line}");
+        }
+    }
+    Ok(())
+}
+
+/// The plain-table body of `search` (shared by stdout and `--out`): one
+/// `{nreg}  {nazva}  [{status}]  №{num} от {date}  (ред. {edition})` row
+/// per hit joined with newlines (search-style formatting, title truncated
+/// to 70 chars, dates through [`fmt_date`]). The renderer prints no total
+/// or header line, so an empty result renders as an empty string.
+fn search_table(hits: &[rada_db::SearchHit]) -> String {
+    hits.iter()
+        .map(|h| {
             let status = rada_core::models::StatusId(h.status).label();
-            println!(
+            format!(
                 "{:<16} {}  [{status}]  №{} от {}  (ред. {})",
                 h.nreg,
                 truncate(&h.nazva, 70),
                 h.org_num,
                 fmt_date(&h.org_date),
                 fmt_date(&h.poddat),
-            );
-        }
-        if let Some(f) = &facet_counts {
-            println!("Фасети:");
-            let stan = rada_db::dict::all_labels(&conn, "stan");
-            let typs = rada_db::dict::all_labels(&conn, "typs");
-            let organs = rada_db::dict::all_labels(&conn, "organs");
-            for line in facet_lines(&f.status, &stan) {
-                println!("  Статус   {line}");
-            }
-            for line in facet_lines(&f.typ, &typs) {
-                println!("  Тип      {line}");
-            }
-            for line in facet_lines(&f.org, &organs) {
-                println!("  Видавник {line}");
-            }
-        }
-    }
-    Ok(())
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The stderr note printed after `search --out` has written the plain
+/// table (`n` hits) to `file`.
+fn search_out_note(n: usize, file: &Path) -> String {
+    format!("[search] записано {n} результатів → {}", file.display())
 }
 
 /// Live card of one document: human-readable summary by default, the full
@@ -1986,8 +2049,8 @@ mod tests {
     use super::{
         annot_out_note, annot_text_file_note, arrivals_date_key, arrivals_out_note,
         backfill_summary, card_out_note, dict_fresh_lines, dict_matches, facet_lines, filter_since,
-        new_nregs, normalize_fmt, out_note, related_out_note, resolve_out_note, since_note,
-        stats_lines, today_yyyymmdd, StatsReport,
+        new_nregs, normalize_fmt, out_note, related_out_note, resolve_out_note, search_out_note,
+        since_note, stats_lines, today_yyyymmdd, StatsReport,
     };
 
     #[test]
@@ -2129,6 +2192,18 @@ mod tests {
         assert!(line.starts_with("[related] записано "));
         assert!(line.contains("9"));
         assert!(line.contains("посилань"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn search_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//s.txt");
+        let line = search_out_note(12, file);
+        assert!(line.starts_with("[search] записано "));
+        assert!(line.contains("12"));
+        assert!(line.contains("результатів"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
     }

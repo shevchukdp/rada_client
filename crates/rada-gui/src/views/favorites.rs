@@ -92,6 +92,23 @@ fn kind_tag(kind: &str) -> (&'static str, egui::Color32) {
     }
 }
 
+/// Per-chip row counts for the kind filter row: index 0 = усі, 1 = коментарі,
+/// 2 = виділення, 3 = закладки (same buckets as [`matches_filter`]).
+pub fn kind_counts(rows: &[FavRow]) -> [usize; 4] {
+    let mut c = [0usize; 4];
+    for (a, _) in rows {
+        c[0] += 1;
+        if matches_filter(&a.kind, 1) {
+            c[1] += 1;
+        } else if matches_filter(&a.kind, 2) {
+            c[2] += 1;
+        } else if matches_filter(&a.kind, 3) {
+            c[3] += 1;
+        }
+    }
+    c
+}
+
 fn matches_filter(kind: &str, filter: usize) -> bool {
     match filter {
         1 => kind == "comment",
@@ -115,10 +132,6 @@ pub fn row_matches(a: &rada_db::Annotation, title: &str, needle: &str, kind: usi
     a.text.to_lowercase().contains(&q) || title.to_lowercase().contains(&q)
 }
 
-/// Filter rows with [`row_matches`], then group them by `nreg`: groups
-/// appear in first-appearance order of their rows, and rows keep their
-/// input order inside a group. `(nreg, title, rows)`; the group title is
-/// the first non-empty title seen among the group's rows.
 /// Toggle the group rows of one `nreg` in the favorites grouped view
 /// (add when absent, remove when present; no duplicates).
 pub fn toggle_collapse(list: &mut Vec<String>, nreg: &str) {
@@ -150,6 +163,10 @@ pub fn sort_rows(rows: &mut [FavRow], sort_sel: usize) {
     }
 }
 
+/// Filter rows with [`row_matches`], then group them by `nreg`: groups
+/// appear in first-appearance order of their rows, and rows keep their
+/// input order inside a group. `(nreg, title, rows)`; the group title is
+/// the first non-empty title seen among the group's rows.
 pub fn filter_and_group(
     rows: &[FavRow],
     needle: &str,
@@ -284,10 +301,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 egui::TextEdit::singleline(&mut app.fav.filter)
                     .hint_text("фільтр тексту чи назви…"),
             );
+            let counts = kind_counts(&app.fav.items);
             for (i, lab) in KIND_FILTERS.iter().enumerate() {
                 let active = app.fav.kind_sel == i;
+                let label = format!("{lab} ({})", counts[i]);
                 if ui
-                    .add(egui::Button::new(egui::RichText::new(*lab).small()).selected(active))
+                    .add(egui::Button::new(egui::RichText::new(label).small()).selected(active))
                     .clicked()
                 {
                     app.fav.kind_sel = i;
@@ -789,6 +808,21 @@ mod tests {
         let mut a = ann(id, nreg, "comment", "т");
         a.created_at = created.to_string();
         a
+    }
+
+    #[test]
+    fn kind_counts_buckets_all_comment_highlight_bookmark() {
+        let rows: Vec<FavRow> = vec![
+            (ann(1, "a-1", "comment", "к"), "А".to_string()),
+            (ann(2, "a-1", "comment", "к"), "А".to_string()),
+            (ann(3, "b-2", "highlight", "в"), "Б".to_string()),
+            (ann(4, "c-3", "bookmark", ""), "В".to_string()),
+            (ann(5, "c-3", "weird", "щ"), "В".to_string()),
+        ];
+        let c = kind_counts(&rows);
+        // «усі» counts every row; unknown kinds land only in «усі».
+        assert_eq!(c, [5, 2, 1, 1]);
+        assert_eq!(kind_counts(&[]), [0, 0, 0, 0]);
     }
 
     #[test]

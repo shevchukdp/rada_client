@@ -81,7 +81,8 @@ official open-data API:
     ~110 хв».
   - **Grouped favorites** — the Обране page groups annotations per document
     (gold «Title (count)» header with an «відкрити» button), with a text/title
-    filter box, kind chips, a «групувати» toggle, sort chips
+    filter box, kind chips **with live counts** («усі (9) · коментарі (2) …»),
+    a «групувати» toggle, sort chips
     («новіші / старіші / за назвою») and **collapsible groups** (click a
     header to hide its rows; «розгорнути всі» restores them).
   - **Keyboard shortcuts** — Ctrl+F focuses find/query; Alt+←/→ **or**
@@ -183,6 +184,8 @@ official open-data API:
   flash; the act opens on zakon.rada.gov.ua in a new tab),
   **recent query chips** («недавні запити:» from browser storage, click to
   re-run, «очистити»),
+  and a **Favorites page with desktop parity** (sort chips «новіші / старіші /
+  за назвою» + collapsible per-document groups, choices in localStorage),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -238,6 +241,7 @@ Launch arguments:
 .\rada-client.exe search "податковий кодекс"
 .\rada-client.exe search "" --status 5 --org 1 --date_from 20240101 --limit 20 --json
 .\rada-client.exe search "кодекс" --sort nazva_asc   # date_desc|date_asc|nazva_asc|nazva_desc|podd_desc|relevance
+.\rada-client.exe search "кодекс" --out hits.txt     # table to file (BOM); --json gives BOM-less JSON; --facets stays on stdout
 .\rada-client.exe search "освіта" --facets           # + per-option counts: Статус/Тип/Видавник (top-6, dict labels)
 
 # 3) Live lookups (respect the 5–7 s API pacing).

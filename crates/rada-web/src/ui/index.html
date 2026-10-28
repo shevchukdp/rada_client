@@ -444,6 +444,24 @@
   #fav-filters .chip.active {
     background: var(--accent); color: var(--accent-text); border-color: var(--accent);
   }
+  /* Sort / grouping chips under the kind filters (the GUI favorites parity):
+     same chip language as the kind row above, one sort chip takes accent. */
+  #fav-sort .chip {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #fav-sort .chip:hover { color: var(--text); border-color: var(--accent); }
+  #fav-sort .chip.active {
+    background: var(--accent); color: var(--accent-text); border-color: var(--accent);
+  }
+  /* Group headers in the grouped favorites view: muted clickable hint lines
+     above each document's rows (click collapses/expands the group, the same
+     language as the arrivals .arr-date-hint headers). */
+  #fav-list .fav-group-head {
+    color: var(--muted); font-size: 12px; font-weight: 600; letter-spacing: .4px;
+    margin: 12px 0 4px; cursor: pointer; user-select: none;
+  }
+  #fav-list .fav-group-head:hover { color: var(--accent); }
   #fav-list .fav-item {
     display: flex; gap: 8px; align-items: center; padding: 8px 12px;
     border: 1px solid var(--border); border-radius: 8px; margin: 6px 0; font-size: 14px;
@@ -616,6 +634,18 @@
       <button class="chip" type="button" data-kind="comment">коментарі</button>
       <button class="chip" type="button" data-kind="highlight">виділення</button>
       <button class="chip" type="button" data-kind="bookmark">закладки</button>
+    </div>
+    <div class="row" id="fav-sort">
+      <button class="chip active" type="button" id="fav-sort-new" data-sort="new"
+        title="спочатку найсвіжіші анотації">новіші</button>
+      <button class="chip" type="button" id="fav-sort-old" data-sort="old"
+        title="спочатку найдавніші анотації">старіші</button>
+      <button class="chip" type="button" id="fav-sort-title" data-sort="title"
+        title="за алфавітом назви документа">за назвою</button>
+      <button class="chip active" type="button" id="fav-group"
+        title="групувати анотації за документом">групувати</button>
+      <button id="fav-uncollapse" type="button" hidden
+        title="розгорнути всі згорнуті групи">розгорнути всі</button>
     </div>
     <div id="fav-list" class="hint"></div>
   </section>
@@ -2340,6 +2370,13 @@ function renderRecent() {
 let favItems = [];      // last /api/annotations/all payload
 let favKind = "";       // active filter chip ("" = усі)
 let favLoaded = false;  // fetched once on the first tab opening
+// Sort + grouping controls (the GUI favorites parity): row order persisted
+// in "rada-fav-sort" ("new"|"old"|"title"), grouped rendering in
+// "rada-fav-group" ("1"/"0"), collapsed document groups in a session-wide
+// Set (the same arrCollapsed pattern as the arrivals feed).
+let favSort = "new";
+let favGroupMode = true;
+const favCollapsed = new Set();
 
 async function loadFavorites() {
   const box = $("fav-list");
@@ -2357,10 +2394,91 @@ async function loadFavorites() {
   }
 }
 
+// Pure sort for the favorites rows — always returns a NEW array, never
+// touches `items`. «новіші» = created_at desc, «старіші» = asc, «за назвою»
+// = document title (fallback nreg) lowercased A→Я with created_at desc
+// inside equal titles.
+function favSorted(items, mode) {
+  const arr = (items || []).slice();
+  const when = (a) => String((a && a.created_at) || "");
+  const name = (a) => String((a && (a.title || a.nreg)) || "").toLowerCase();
+  arr.sort((x, y) => {
+    if (mode === "old") return when(x) < when(y) ? -1 : when(x) > when(y) ? 1 : 0;
+    if (mode === "title") {
+      const nx = name(x), ny = name(y);
+      if (nx !== ny) return nx < ny ? -1 : 1;
+      return when(y) < when(x) ? -1 : when(y) > when(x) ? 1 : 0;
+    }
+    return when(y) < when(x) ? -1 : when(y) > when(x) ? 1 : 0;
+  });
+  return arr;
+}
+
+// One favorites row: tag · when · title+text (+ bookmark preview) and the
+// edit / jump / delete controls. Shared by the flat and grouped render.
+function favRow(a) {
+  const row = document.createElement("div");
+  row.className = "fav-item " + a.kind;
+  const tag = document.createElement("span");
+  tag.className = "tag";
+  tag.textContent = a.kind;
+  const when = document.createElement("span");
+  when.className = "when";
+  when.textContent = a.created_at || "";
+  const col = document.createElement("div");
+  col.className = "col";
+  const title = document.createElement("a");
+  title.className = "title";
+  title.textContent = a.title || a.nreg;
+  title.title = a.nreg;
+  title.onclick = () => { switchTab("search"); openDoc(a.nreg); };
+  const txt = document.createElement("div");
+  txt.className = "txt";
+  txt.textContent = a.text || "(закладка)";
+  col.appendChild(title);
+  col.appendChild(txt);
+  // Context snippet from the offline cache for bare bookmarks.
+  if (!a.text && a.preview) {
+    const prev = document.createElement("div");
+    prev.className = "txt";
+    prev.style.color = "var(--muted)";
+    prev.style.fontStyle = "italic";
+    prev.textContent = a.preview;
+    col.appendChild(prev);
+  }
+  const ed = makeAnnEdit(a, txt, loadFavorites);
+  // «→ текст» — open the reader and run the annotation text through the
+  // find bar (bookmarks without text have nothing to find → hidden).
+  const jump = document.createElement("button");
+  jump.className = "jump";
+  jump.type = "button";
+  jump.textContent = "→ текст";
+  jump.title = "Відкрити документ і знайти текст";
+  jump.hidden = !a.text;
+  jump.onclick = () => favJump(a);
+  const del = document.createElement("button");
+  del.className = "del";
+  del.type = "button";
+  del.textContent = "×";
+  del.title = "Видалити анотацію";
+  del.onclick = async () => {
+    if (!window.confirm("Видалити цю анотацію?")) return;
+    try {
+      await api("/api/annotations/" + a.id, { method: "DELETE" });
+      loadFavorites();
+    } catch (e) { alert("Помилка: " + e.message); }
+  };
+  row.appendChild(tag); row.appendChild(when); row.appendChild(col);
+  row.appendChild(ed.ta); row.appendChild(ed.save); row.appendChild(ed.cancel);
+  row.appendChild(ed.editBtn); row.appendChild(jump); row.appendChild(del);
+  return row;
+}
+
 function renderFavorites() {
   const box = $("fav-list");
   box.innerHTML = "";
-  const items = favKind ? favItems.filter(a => a.kind === favKind) : favItems;
+  const sorted = favSorted(favItems, favSort);
+  const items = favKind ? sorted.filter(a => a.kind === favKind) : sorted;
   $("fav-count").textContent = favItems.length
     ? "Збережено: " + favItems.length + " " +
       plural(favItems.length, "анотація", "анотації", "анотацій")
@@ -2369,65 +2487,50 @@ function renderFavorites() {
     box.textContent = favItems.length
       ? "Немає анотацій цього типу."
       : "Поки що нічого не збережено — додавайте закладки, виділення та коментарі в читалці.";
+    $("fav-uncollapse").hidden = true;
     return;
   }
-  for (const a of items) {
-    const row = document.createElement("div");
-    row.className = "fav-item " + a.kind;
-    const tag = document.createElement("span");
-    tag.className = "tag";
-    tag.textContent = a.kind;
-    const when = document.createElement("span");
-    when.className = "when";
-    when.textContent = a.created_at || "";
-    const col = document.createElement("div");
-    col.className = "col";
-    const title = document.createElement("a");
-    title.className = "title";
-    title.textContent = a.title || a.nreg;
-    title.title = a.nreg;
-    title.onclick = () => { switchTab("search"); openDoc(a.nreg); };
-    const txt = document.createElement("div");
-    txt.className = "txt";
-    txt.textContent = a.text || "(закладка)";
-    col.appendChild(title);
-    col.appendChild(txt);
-    // Context snippet from the offline cache for bare bookmarks.
-    if (!a.text && a.preview) {
-      const prev = document.createElement("div");
-      prev.className = "txt";
-      prev.style.color = "var(--muted)";
-      prev.style.fontStyle = "italic";
-      prev.textContent = a.preview;
-      col.appendChild(prev);
-    }
-    const ed = makeAnnEdit(a, txt, loadFavorites);
-    // «→ текст» — open the reader and run the annotation text through the
-    // find bar (bookmarks without text have nothing to find → hidden).
-    const jump = document.createElement("button");
-    jump.className = "jump";
-    jump.type = "button";
-    jump.textContent = "→ текст";
-    jump.title = "Відкрити документ і знайти текст";
-    jump.hidden = !a.text;
-    jump.onclick = () => favJump(a);
-    const del = document.createElement("button");
-    del.className = "del";
-    del.type = "button";
-    del.textContent = "×";
-    del.title = "Видалити анотацію";
-    del.onclick = async () => {
-      if (!window.confirm("Видалити цю анотацію?")) return;
-      try {
-        await api("/api/annotations/" + a.id, { method: "DELETE" });
-        loadFavorites();
-      } catch (e) { alert("Помилка: " + e.message); }
-    };
-    row.appendChild(tag); row.appendChild(when); row.appendChild(col);
-    row.appendChild(ed.ta); row.appendChild(ed.save); row.appendChild(ed.cancel);
-    row.appendChild(ed.editBtn); row.appendChild(jump); row.appendChild(del);
-    box.appendChild(row);
+  if (!favGroupMode) {
+    $("fav-uncollapse").hidden = true;
+    for (const a of items) box.appendChild(favRow(a));
+    return;
   }
+  // Grouped view (the GUI favorites parity): one header per document (nreg)
+  // ordered by the first item's position in the sorted stream; rows keep
+  // the sort order inside the group. A collapsed group renders only its
+  // header with the « — згорнуто» suffix (favCollapsed, session-wide).
+  const order = [];
+  const groups = new Map();
+  for (const a of items) {
+    const key = a.nreg || "";
+    if (!groups.has(key)) { groups.set(key, []); order.push(key); }
+    groups.get(key).push(a);
+  }
+  let anyCollapsed = false;
+  for (const key of order) {
+    const group = groups.get(key);
+    const head = document.createElement("div");
+    head.className = "fav-group-head";
+    head.textContent = (group[0].title || key) + " (" + group.length + ")";
+    if (favCollapsed.has(key)) {
+      head.textContent += " — згорнуто";
+      anyCollapsed = true;
+    }
+    head.title = "згорнути / розгорнути групу";
+    head.onclick = () => toggleFavGroup(key);
+    box.appendChild(head);
+    if (favCollapsed.has(key)) continue;
+    for (const a of group) box.appendChild(favRow(a));
+  }
+  $("fav-uncollapse").hidden = !anyCollapsed;
+}
+
+// Header click: flip the collapsed state of one document group and repaint
+// the list (same pattern as toggleArrGroup on the arrivals feed).
+function toggleFavGroup(key) {
+  if (favCollapsed.has(key)) favCollapsed.delete(key);
+  else favCollapsed.add(key);
+  renderFavorites();
 }
 
 /// Open the annotation's document in the reader tab and find its text. The
@@ -2470,6 +2573,40 @@ document.querySelectorAll("#fav-filters .chip").forEach(b =>
       c.classList.toggle("active", c === b));
     renderFavorites();
   }));
+
+// Sort / grouping controls (the GUI favorites parity): one active sort chip,
+// both choices persisted in localStorage (tolerating privacy-mode errors);
+// the collapsed-group Set is session-only like the arrivals feed.
+function syncFavSortChips() {
+  document.querySelectorAll("#fav-sort .chip[data-sort]").forEach(c =>
+    c.classList.toggle("active", c.dataset.sort === favSort));
+}
+document.querySelectorAll("#fav-sort .chip[data-sort]").forEach(b =>
+  b.addEventListener("click", () => {
+    favSort = b.dataset.sort || "new";
+    try { localStorage.setItem("rada-fav-sort", favSort); } catch (_) {}
+    syncFavSortChips();
+    renderFavorites();
+  }));
+$("fav-group").onclick = () => {
+  favGroupMode = !favGroupMode;
+  try { localStorage.setItem("rada-fav-group", favGroupMode ? "1" : "0"); } catch (_) {}
+  $("fav-group").classList.toggle("active", favGroupMode);
+  renderFavorites();
+};
+$("fav-uncollapse").onclick = () => {
+  favCollapsed.clear();
+  renderFavorites();
+};
+try {
+  const s = localStorage.getItem("rada-fav-sort");
+  if (s === "old" || s === "title") favSort = s;
+} catch (_) {}
+try {
+  favGroupMode = localStorage.getItem("rada-fav-group") !== "0";
+} catch (_) {}
+syncFavSortChips();
+$("fav-group").classList.toggle("active", favGroupMode);
 
 // ---- wiring ---------------------------------------------------------------
 document.querySelectorAll("header .tabs button").forEach(b =>

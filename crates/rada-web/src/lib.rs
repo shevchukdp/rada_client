@@ -2529,6 +2529,42 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_favorites_sort_chips() {
+        // Sort chips row (the GUI favorites parity): новіші | старіші |
+        // за назвою, one active, persisted in "rada-fav-sort" and applied
+        // through the pure favSorted helper before filtering/grouping.
+        assert!(ui::INDEX_HTML.contains("id=\"fav-sort\""));
+        assert!(ui::INDEX_HTML.contains("id=\"fav-sort-new\""));
+        assert!(ui::INDEX_HTML.contains("id=\"fav-sort-old\""));
+        assert!(ui::INDEX_HTML.contains("id=\"fav-sort-title\""));
+        assert!(ui::INDEX_HTML.contains("data-sort=\"new\""));
+        assert!(ui::INDEX_HTML.contains("data-sort=\"old\""));
+        assert!(ui::INDEX_HTML.contains("data-sort=\"title\""));
+        assert!(ui::INDEX_HTML.contains("новіші"));
+        assert!(ui::INDEX_HTML.contains("старіші"));
+        assert!(ui::INDEX_HTML.contains("за назвою"));
+        assert!(ui::INDEX_HTML.contains("function favSorted"));
+        assert!(ui::INDEX_HTML.contains("favSorted(favItems, favSort)"));
+        assert!(ui::INDEX_HTML.contains("\"rada-fav-sort\""));
+    }
+
+    #[test]
+    fn ui_page_has_favorites_grouping() {
+        // Grouped mode: «групувати» chip persisted in "rada-fav-group",
+        // per-document headers with click-to-collapse (« — згорнуто») and
+        // the «розгорнути всі» button shown only while something is folded.
+        assert!(ui::INDEX_HTML.contains("id=\"fav-group\""));
+        assert!(ui::INDEX_HTML.contains("групувати"));
+        assert!(ui::INDEX_HTML.contains("\"rada-fav-group\""));
+        assert!(ui::INDEX_HTML.contains("fav-group-head"));
+        assert!(ui::INDEX_HTML.contains("згорнуто"));
+        assert!(ui::INDEX_HTML.contains("id=\"fav-uncollapse\""));
+        assert!(ui::INDEX_HTML.contains("розгорнути всі"));
+        assert!(ui::INDEX_HTML.contains("favCollapsed"));
+        assert!(ui::INDEX_HTML.contains("function toggleFavGroup"));
+    }
+
+    #[test]
     fn fmt_yyyymmdd_passthrough() {
         assert_eq!(fmt_yyyymmdd(20261015), "15.10.2026");
         assert_eq!(fmt_yyyymmdd(42), "42");

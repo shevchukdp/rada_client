@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.25: сортування та групи в Обраному веб, видача пошуку у файл та лічильники на чипах / web favorites sort & groups, search to file & chip counters
+
+- **UKR:** 1) **Обране у веб — як у програмі**: чипи «новіші / старіші / за назвою» (вибір пам'ятається браузером) і «групувати» — заголовки документів із кліком для згортання («— згорнуто») та «розгорнути всі». 2) **CLI `search --out FILE`**: таблиця результатів у файл (з BOM), `--json` — без BOM; фасети лишаються у stdout; без `--out` — без змін. 3) **Лічильники на чипах Обраного**: «усі (9) · коментарі (2) · виділення (2) · закладки (1)» — оновлюються миттєво. 4) Тести: 204/204.
+- **ENG:** 1) **Web Favorites now match the desktop page**: «новіші / старіші / за назвою» sort chips (the choice is remembered by the browser) and a «групувати» toggle — clickable per-document headers collapse groups («— згорнуто»), «розгорнути всі» restores. 2) **CLI `search --out FILE`**: the results table written to a file (with BOM), BOM-less with `--json`; facets keep printing to stdout; without `--out` behavior is unchanged. 3) **Favorites chip counters**: «усі (9) · коментарі (2) · виділення (2) · закладки (1)», updated instantly. 4) Tests: 204/204.
+
+---
+
+## 2026-10-28
+
 ### 0.10.24: швидкі періоди дати, кнопки на рядках видачі у веб та свіжі фіди за днями / date presets, web hit buttons & dated arrivals filter
 
 - **UKR:** 1) **Швидкі періоди в пошуку**: чипи «7 днів / місяць / рік» біля полів дати ставлять «Дата з» від найсвіжіших завантажених даних без відкриття календаря. 2) **Кнопки на результатах у веб**: у кожному рядку видачі — «копія» (реєстраційний номер у буфер, «скопійовано» на мить) і «сайт» (акт на zakon.rada.gov.ua в новій вкладці). 3) **CLI `arrivals --since N`**: лише документи за останні N днів (дата береться з `edYYYYMMDD` посилання, інакше з тексту публікації; без дати — залишаються); працює з `--json` та `--out`. 4) Тести: 200/200.
