@@ -20,6 +20,25 @@ pub struct ArrivalsState {
     pub new_nregs: Vec<String>,
     /// Show only the `new_nregs` documents.
     pub only_new: bool,
+    /// Unix seconds of the last successful load (live or snapshot), for the
+    /// «оновлено: …» relative time.
+    pub fetched_at: Option<u64>,
+}
+
+/// Relative age for the arrivals toolbar: «щойно», «N хв тому», «N год тому»,
+/// «N дн тому» (hour granularity after a day; monotonic-safe: `now < then`
+/// counts as «щойно»).
+pub fn fmt_since(now: u64, then: u64) -> String {
+    let d = now.saturating_sub(then);
+    if d < 60 {
+        "щойно".to_string()
+    } else if d < 3600 {
+        format!("{} хв тому", d / 60)
+    } else if d < 86_400 {
+        format!("{} год тому", d / 3600)
+    } else {
+        format!("{} дн тому", d / 86_400)
+    }
 }
 
 /// Nregs of `docs` that are not in `seen` (order preserved).
@@ -69,6 +88,7 @@ impl Default for ArrivalsState {
             filter: String::new(),
             new_nregs: Vec::new(),
             only_new: false,
+            fetched_at: None,
         }
     }
 }
@@ -104,6 +124,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 ui.label(
                     egui::RichText::new(format!("{} документів", app.arrivals.docs.len())).small(),
                 );
+                if let Some(t) = app.arrivals.fetched_at {
+                    let now = std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_secs())
+                        .unwrap_or(t);
+                    ui.label(
+                        egui::RichText::new(format!("оновлено: {}", fmt_since(now, t)))
+                            .small()
+                            .weak(),
+                    );
+                }
                 if !app.arrivals.new_nregs.is_empty() {
                     ui.label(
                         egui::RichText::new(format!("нових: {}", app.arrivals.new_nregs.len()))
@@ -249,6 +280,20 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fmt_since_relative_buckets() {
+        assert_eq!(fmt_since(1000, 1000), "щойно");
+        assert_eq!(fmt_since(1059, 1000), "щойно", "under a minute");
+        assert_eq!(fmt_since(1060, 1000), "1 хв тому");
+        assert_eq!(fmt_since(1000 + 3599, 1000), "59 хв тому");
+        assert_eq!(fmt_since(1000 + 3600, 1000), "1 год тому");
+        assert_eq!(fmt_since(1000 + 86_399, 1000), "23 год тому");
+        assert_eq!(fmt_since(1000 + 86_400, 1000), "1 дн тому");
+        assert_eq!(fmt_since(1000 + 3 * 86_400 + 700, 1000), "3 дн тому");
+        // clock skew never panics nor goes negative
+        assert_eq!(fmt_since(900, 1000), "щойно");
+    }
 
     fn doc(nreg: &str) -> rada_core::models::UpdatedDoc {
         rada_core::models::UpdatedDoc {

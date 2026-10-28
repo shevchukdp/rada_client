@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.28: фільтр в Обраному веб, кеш-пошук у файл та час свіжості фіда / web favorites filter, cache search to file & feed freshness time
+
+- **UKR:** 1) **Фільтр в Обраному веб**: поле «фільтр тексту, назви чи номера…» миттєво звужує список (текст анотації, назва та nreg), поруч — «показано X з Y», як у стрічці оновлень. 2) **CLI `cache --search TERM --out FILE`**: повнотекстовий звіт по кешу у файл (з BOM; порожній результат — лише BOM), `--json` — об'єкт без BOM; stdout мовчить. 3) **Час оновлення фіда у програмі**: поряд із лічильником «N документів» — «оновлено: щойно / N хв тому / N год тому / N дн тому». 4) Тести: 216/216.
+- **ENG:** 1) **Text filter in web Favorites**: a «фільтр тексту, назви чи номера…» box narrows the list instantly (annotation text, title and nreg) with a «показано X з Y» counter beside it, mirroring the arrivals feed. 2) **CLI `cache --search TERM --out FILE`**: the offline full-text report written to a file (with BOM; an empty result leaves only the BOM), `--json` writes a BOM-less object; stdout stays silent. 3) **Feed freshness in the desktop app**: next to the «N документів» counter appears «оновлено: щойно / N хв тому / N год тому / N дн тому». 4) Tests: 216/216.
+
+---
+
+## 2026-10-28
+
 ### 0.10.27: підсвічування запиту у видачі, запам'ятьовані фільтри та анотації у файл / query highlighting, remembered filters & annotations to file
 
 - **UKR:** 1) **Підсвічування слів запиту у веб-пошуку**: збіги в назвах результатів набувають фону пошуку в тексті («giu» + цілі слова, кирилиця враховується); короткі службові слова ігноруються. 2) **Фільтри пам'ятаються**: стан, тип і видавець останнього пошуку відновлюються при наступному запуску (разом із сортуванням). 3) **CLI `annot list --out FILE`**: таблиця анотацій у файл (з BOM; порожній результат — лише BOM), `--json` — масив без BOM; stdout мовчить. 4) Тести: 212/212.

@@ -1770,12 +1770,19 @@ impl App {
                             } else {
                                 None
                             };
+                            self.arrivals.fetched_at = Some(
+                                std::time::SystemTime::now()
+                                    .duration_since(std::time::UNIX_EPOCH)
+                                    .map(|d| d.as_secs())
+                                    .unwrap_or(0),
+                            );
                             self.arrivals.error = None;
                         }
                         Err(e) => {
                             self.arrivals.docs.clear();
                             self.arrivals.from_cache = false;
                             self.arrivals.saved_at = None;
+                            self.arrivals.fetched_at = None;
                             self.arrivals.error = Some(e);
                         }
                     }

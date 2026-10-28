@@ -136,7 +136,8 @@ official open-data API:
     **painted gold in the document text**, and a "» текст" button that
     scrolls to the passage.
   - **Оновлення** — the live recently-updated feed (`r.tsv`), rows open the
-    reader.
+    reader, with a «оновлено: щойно / N хв тому / N год тому / N дн тому»
+    freshness label beside the document counter.
   - **Головна** — index status (documents, size, dictionaries),
     one-click **live sync**, **snapshot download** with progress, **full
     index build** from the official `doc.txt` dump (or a local dump file),
@@ -189,7 +190,8 @@ official open-data API:
   **recent query chips** («недавні запити:» from browser storage, click to
   re-run, «очистити»),
   and a **Favorites page with desktop parity** (sort chips «новіші / старіші /
-  за назвою» + collapsible per-document groups, choices in localStorage),
+  за назвою», a text/title/nreg filter with «показано X з Y», and collapsible
+  per-document groups, choices in localStorage),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -259,6 +261,7 @@ Launch arguments:
 .\rada-client.exe cache --purge 2755-17 # drop one document's cached text
 .\rada-client.exe backfill --query "податковий кодекс" --limit 5   # pre-cache top hits' texts for offline reading (--dry-run lists without network)
 .\rada-client.exe cache --search "освіту" --limit 10   # offline full-text over cached bodies
+.\rada-client.exe cache --search "освіту" --out hits.txt  # report to file (BOM); --json → BOM-less JSON
 .\rada-client.exe arrivals --save            # live updated-docs feed, diffed vs the saved snapshot
 .\rada-client.exe arrivals --since 7         # only docs dated in the last 7 days (undated ones kept)
 .\rada-client.exe resolve "податковий кодекс"   # name → nreg (offline index first, live only as fallback)

@@ -2565,6 +2565,37 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_favorites_text_filter() {
+        // Text filter over the favorites rows (the GUI favorites parity):
+        // a search box with the GUI hint placeholder in the kind-chip row
+        // and a pure substring helper over the annotation text, the
+        // document title field and nreg (all lowercased, empty ⇒ match all).
+        assert!(ui::INDEX_HTML.contains("id=\"fav-filter\""));
+        assert!(ui::INDEX_HTML.contains(
+            "placeholder=\"фільтр тексту, назви чи номера…\""
+        ));
+        assert!(ui::INDEX_HTML.contains("function favRowMatches(item, needle)"));
+        assert!(ui::INDEX_HTML.contains("(item.text || \"\").toLowerCase().includes(f)"));
+        assert!(ui::INDEX_HTML.contains("(item.title || \"\").toLowerCase().includes(f)"));
+        assert!(ui::INDEX_HTML.contains("(item.nreg || \"\").toLowerCase().includes(f)"));
+    }
+
+    #[test]
+    fn ui_page_favorites_filter_count_line() {
+        // The text filter composes with the kind chip inside the renderer
+        // (both must pass) and shows a muted «показано X з Y» line (the
+        // arrivals #arr-shown pattern) only while it hides rows; the input
+        // repaints the cached favItems without refetching.
+        assert!(ui::INDEX_HTML.contains("id=\"fav-shown\" class=\"hint\""));
+        assert!(ui::INDEX_HTML.contains("показано "));
+        assert!(ui::INDEX_HTML.contains("shown.textContent = \"показано \""));
+        assert!(ui::INDEX_HTML.contains(".filter(a => favRowMatches(a, needle))"));
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"fav-filter\").addEventListener(\"input\", () => renderFavorites());"
+        ));
+    }
+
+    #[test]
     fn fmt_yyyymmdd_passthrough() {
         assert_eq!(fmt_yyyymmdd(20261015), "15.10.2026");
         assert_eq!(fmt_yyyymmdd(42), "42");

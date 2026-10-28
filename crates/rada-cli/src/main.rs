@@ -135,6 +135,18 @@ enum Cmd {
         /// Max results for `--search` (default 30).
         #[arg(long)]
         limit: Option<usize>,
+        /// With `--search`: emit the JSON body
+        /// (`{"term":…,"hits":[{nreg,title,hits,snippet},…]}`) instead of
+        /// the table.
+        #[arg(long)]
+        json: bool,
+        /// With `--search`: write the exact stdout table (or the `--json`
+        /// body) to this file instead of stdout (parent dirs created).
+        /// Plain table gets a UTF-8 BOM (Excel-friendly); with `--json` the
+        /// file is written BOM-less. Zero hits write the BOM alone; the
+        /// «збігів … немає» message stays on stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
         /// Restrict to one document.
         nreg: Option<String>,
     },
@@ -394,8 +406,8 @@ fn run() -> Result<()> {
         Cmd::Text { nreg, edition, out } => {
             cmd_text(&cli.db, &nreg, edition.as_deref(), out.as_deref(), cli.pace)
         }
-        Cmd::Cache { purge, search, limit, nreg } => {
-            cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref())
+        Cmd::Cache { purge, search, limit, nreg, json, out } => {
+            cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref(), json, out.as_deref())
         }
         Cmd::Backfill { query, limit, dry_run, json } => {
             cmd_backfill(&cli.db, &query, limit, dry_run, json, cli.pace)
@@ -1139,7 +1151,25 @@ fn cmd_export(
     Ok(())
 }
 
-fn cmd_cache(db: &PathBuf, purge: bool, search: Option<&str>, limit: Option<usize>, nreg: Option<&str>) -> Result<()> {
+/// Offline text cache: `--purge` deletes cached bodies (all or one `nreg`),
+/// `--search TERM` scans the cached current texts offline (ranked by
+/// occurrence count), and the bare form prints cache statistics. With
+/// `--search --out` the exact stdout body goes to the file (parent dirs
+/// created) and nothing prints to stdout: the plain table is written UTF-8
+/// with a BOM (Excel-friendly, like search/arrivals/resolve/related), the
+/// `--json` body BOM-less; zero hits write the BOM alone (n=0 note). The
+/// «у кешованому тексті збігів … немає» line is stdout-only (the
+/// `search --facets` rule): it never enters the file. `--out` and `--json`
+/// apply to `--search` only.
+fn cmd_cache(
+    db: &PathBuf,
+    purge: bool,
+    search: Option<&str>,
+    limit: Option<usize>,
+    nreg: Option<&str>,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<()> {
     let conn = rada_db::open(db)?;
     if purge {
         let n = rada_db::textcache::purge(&conn, nreg)?;
@@ -1148,14 +1178,63 @@ fn cmd_cache(db: &PathBuf, purge: bool, search: Option<&str>, limit: Option<usiz
     }
     if let Some(term) = search {
         let hits = rada_db::textcache::search_bodies(&conn, term, limit.unwrap_or(30).max(1))?;
-        if hits.is_empty() {
-            println!("у кешованому тексті збігів для {term:?} немає");
+        // Titles come from the offline index (the historical stdout shape);
+        // an nreg missing from `docs` renders the empty title, as `unwrap_or_default`.
+        let rows: Vec<(rada_db::textcache::CacheHit, String)> = hits
+            .into_iter()
+            .map(|h| {
+                let title = rada_db::title_by_nreg(&conn, &h.nreg).unwrap_or_default();
+                (h, title)
+            })
+            .collect();
+        if json {
+            let value = serde_json::json!({
+                "term": term,
+                "hits": rows
+                    .iter()
+                    .map(|(h, title)| serde_json::json!({
+                        "nreg": h.nreg,
+                        "title": title,
+                        "hits": h.hits,
+                        "snippet": h.snippet,
+                    }))
+                    .collect::<Vec<_>>(),
+            });
+            let body = serde_json::to_string_pretty(&value).map_err(anyhow::Error::from)?;
+            match out {
+                Some(p) => {
+                    // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                    write_out_file(p, format!("{body}\n").as_bytes())?;
+                    eprintln!("[cache] записано JSON → {}", p.display());
+                }
+                None => println!("{body}"),
+            }
             return Ok(());
         }
-        println!("{} документів(а) з «{term}»:", hits.len());
-        for h in &hits {
-            let title = rada_db::title_by_nreg(&conn, &h.nreg).unwrap_or_default();
-            println!("  {}  ×{}  {title}\n      {}", h.nreg, h.hits, h.snippet);
+        let lines = cache_search_lines(term, &rows);
+        match out {
+            Some(p) => {
+                // UTF-8 BOM prefix: the same Excel-friendly convention as
+                // search/arrivals/resolve/related; the bytes are exactly the
+                // stdout table, so an empty result (zero hits) carries the
+                // BOM alone and no trailing newline.
+                let text = if lines.is_empty() {
+                    "\u{FEFF}".to_string()
+                } else {
+                    format!("\u{FEFF}{}\n", lines.join("\n"))
+                };
+                write_out_file(p, text.as_bytes())?;
+                eprintln!("{}", cache_search_out_note(rows.len(), p));
+            }
+            None => {
+                if lines.is_empty() {
+                    // stdout-only zero-hit message, byte-identical to history.
+                    println!("у кешованому тексті збігів для {term:?} немає");
+                }
+                for line in lines {
+                    println!("{line}");
+                }
+            }
         }
         return Ok(());
     }
@@ -1175,6 +1254,35 @@ fn cmd_cache(db: &PathBuf, purge: bool, search: Option<&str>, limit: Option<usiz
         bytes as f64 / 1_048_576.0
     );
     Ok(())
+}
+
+/// The plain-table body of `cache --search` (shared by stdout and `--out`
+/// so the two cannot drift): «{n} документів(а) з «{term}»:» header, then
+/// two lines per hit — `  {nreg}  ×{hits}  {title}` and the indented
+/// `      {snippet}` context window. `CacheHit` carries no title, so the
+/// caller resolves it from the local index first and passes `(hit, title)`
+/// pairs. Zero hits render no lines: the `--out` file then carries the BOM
+/// alone and the stdout-only «збігів … немає» message never enters it.
+fn cache_search_lines(
+    term: &str,
+    hits: &[(rada_db::textcache::CacheHit, String)],
+) -> Vec<String> {
+    if hits.is_empty() {
+        return Vec::new();
+    }
+    let mut lines = Vec::with_capacity(1 + 2 * hits.len());
+    lines.push(format!("{} документів(а) з «{term}»:", hits.len()));
+    for (h, title) in hits {
+        lines.push(format!("  {}  ×{}  {title}", h.nreg, h.hits));
+        lines.push(format!("      {}", h.snippet));
+    }
+    lines
+}
+
+/// The stderr note printed after `cache --search --out` has written the
+/// plain table (`n` matched documents) to `file`.
+fn cache_search_out_note(n: usize, file: &Path) -> String {
+    format!("[cache] записано {n} збігів → {}", file.display())
 }
 
 /// Final summary line of `backfill` (one line, pure): counts of the run plus
@@ -2182,10 +2290,10 @@ fn fmt_date(d: &str) -> String {
 mod tests {
     use super::{
         annot_list_out_note, annot_out_note, annot_text_file_note, arrivals_date_key,
-        arrivals_out_note, backfill_summary, card_out_note, dict_fresh_lines, dict_matches,
-        dict_out_note, facet_lines, filter_since, new_nregs, normalize_fmt, out_note,
-        related_out_note, resolve_out_note, search_out_note, since_note, stats_lines,
-        today_yyyymmdd, StatsReport,
+        arrivals_out_note, backfill_summary, cache_search_out_note, card_out_note,
+        dict_fresh_lines, dict_matches, dict_out_note, facet_lines, filter_since, new_nregs,
+        normalize_fmt, out_note, related_out_note, resolve_out_note, search_out_note, since_note,
+        stats_lines, today_yyyymmdd, StatsReport,
     };
 
     #[test]
@@ -2351,6 +2459,18 @@ mod tests {
         assert!(line.starts_with("[search] записано "));
         assert!(line.contains("12"));
         assert!(line.contains("результатів"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn cache_search_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//c.txt");
+        let line = cache_search_out_note(8, file);
+        assert!(line.starts_with("[cache] записано "));
+        assert!(line.contains("8"));
+        assert!(line.contains("збігів"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
     }

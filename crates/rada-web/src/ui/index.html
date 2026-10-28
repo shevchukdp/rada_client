@@ -632,6 +632,8 @@
       <span id="fav-status" class="hint"></span>
     </div>
     <div class="row" id="fav-filters">
+      <input id="fav-filter" type="search" placeholder="фільтр тексту, назви чи номера…" autocomplete="off">
+      <span id="fav-shown" class="hint" hidden></span>
       <button class="chip active" type="button" data-kind="">усі</button>
       <button class="chip" type="button" data-kind="comment">коментарі</button>
       <button class="chip" type="button" data-kind="highlight">виділення</button>
@@ -2499,6 +2501,17 @@ function favSorted(items, mode) {
   return arr;
 }
 
+// GUI text-filter parity (rada-gui favorites): case-insensitive substring
+// over the annotation text + document title + nreg; an empty (or
+// whitespace-only) needle matches all.
+function favRowMatches(item, needle) {
+  const f = (needle || "").trim().toLowerCase();
+  if (!f) return true;
+  return (item.text || "").toLowerCase().includes(f)
+    || (item.title || "").toLowerCase().includes(f)
+    || (item.nreg || "").toLowerCase().includes(f);
+}
+
 // One favorites row: tag · when · title+text (+ bookmark preview) and the
 // edit / jump / delete controls. Shared by the flat and grouped render.
 function favRow(a) {
@@ -2563,14 +2576,29 @@ function renderFavorites() {
   const box = $("fav-list");
   box.innerHTML = "";
   const sorted = favSorted(favItems, favSort);
-  const items = favKind ? sorted.filter(a => a.kind === favKind) : sorted;
+  const needle = $("fav-filter").value;
+  const items = sorted
+    .filter(a => !favKind || a.kind === favKind)
+    .filter(a => favRowMatches(a, needle));
   $("fav-count").textContent = favItems.length
     ? "Збережено: " + favItems.length + " " +
       plural(favItems.length, "анотація", "анотації", "анотацій")
     : "";
+  // Muted «показано X з Y» line while the text filter hides rows (the
+  // arrivals #arr-shown parity); hidden while the box is empty or all
+  // annotations are already shown.
+  const shown = $("fav-shown");
+  if (needle.trim() === "" || items.length === favItems.length) {
+    shown.hidden = true;
+  } else {
+    shown.hidden = false;
+    shown.textContent = "показано " + items.length + " з " + favItems.length;
+  }
   if (!items.length) {
     box.textContent = favItems.length
-      ? "Немає анотацій цього типу."
+      ? (needle.trim() !== ""
+        ? "Немає анотацій, що відповідають фільтру."
+        : "Немає анотацій цього типу.")
       : "Поки що нічого не збережено — додавайте закладки, виділення та коментарі в читалці.";
     $("fav-uncollapse").hidden = true;
     return;
@@ -2658,6 +2686,9 @@ document.querySelectorAll("#fav-filters .chip").forEach(b =>
       c.classList.toggle("active", c === b));
     renderFavorites();
   }));
+// The text filter never refetches: the input handler repaints the cached
+// favItems array through the shared renderer (favRowMatches + count line).
+$("fav-filter").addEventListener("input", () => renderFavorites());
 
 // Sort / grouping controls (the GUI favorites parity): one active sort chip,
 // both choices persisted in localStorage (tolerating privacy-mode errors);
