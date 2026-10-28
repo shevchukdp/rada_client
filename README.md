@@ -61,7 +61,8 @@ official open-data API:
     the reader copies the whole act to the clipboard.
   - **New-arrival badges** — the arrivals feed is diffed against what you have
     seen: fresh docs are gold, with a «нових» counter and a «лише нові» filter
-    (the seen list persists across sessions).
+    (the seen list persists across sessions); the text filter is remembered
+    too.
   - **Search facets** — after each search, chip rows «Статус/Тип/Видавник» show
     per-option result counts («Чинний (36)」); a click sets that filter and
     re-runs the search, a second click clears it.
@@ -207,6 +208,7 @@ Launch arguments:
 .\rada-client.exe search "податковий кодекс"
 .\rada-client.exe search "" --status 5 --org 1 --date_from 20240101 --limit 20 --json
 .\rada-client.exe search "кодекс" --sort nazva_asc   # date_desc|date_asc|nazva_asc|nazva_desc|podd_desc|relevance
+.\rada-client.exe search "освіта" --facets           # + per-option counts: Статус/Тип/Видавник (top-6, dict labels)
 
 # 3) Live lookups (respect the 5–7 s API pacing).
 .\rada-client.exe card 2755-17          # JSON card with all editions

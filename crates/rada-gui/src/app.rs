@@ -223,6 +223,8 @@ impl App {
         if startup.query.is_none() && startup.nreg.is_none() && startup.cache_query.is_none() {
             app.search.query = app.settings.last_query.clone();
         }
+        // The arrivals text filter survives restarts.
+        app.arrivals.filter = app.settings.arr_filter.clone();
         app.theme_sig = String::new();
         app.refresh_theme(&cc.egui_ctx);
         app.refresh_index_state();

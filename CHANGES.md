@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.11: фільтр оновлень у пам'яті та фасети в CLI / remembered arrivals filter & CLI facets
+
+- **UKR:** 1) **Фільтр Оновлень зберігається**: введений текст-фільтр стрічки (назва/номер/публікація) запам'ятовується між запусками (settings.ini), кнопка «×» чистить і його. 2) **CLI `search --facets`**: після таблиці результатів друкуються «Фасети:» — Статус/Тип/Видавник з назвами словників і кількістю (top-6), з пом'якшеною помилкою замість падіння; `--json --facets` додає ключ `facets`. 3) Тести: 146/146.
+- **ENG:** 1) **The arrivals filter is remembered**: the feed's text filter (title/number/publication) persists across launches (settings.ini); «×» clears it for good. 2) **CLI `search --facets`**: after the hit table the command prints «Фасети:» — Status/Type/Publisher with dictionary labels and counts (top-6), degrading to a muted error instead of failing; `--json --facets` adds a `facets` key. 3) Tests: 146/146.
+
+---
+
+## 2026-10-28
+
 ### 0.10.10: Обране групується та клавіші читалки / grouped favorites & reader page keys
 
 - **UKR:** 1) **Обране за документами**: анотації згруповані за актом — золотий заголовок «Назва (кількість)» з кнопкою «відкрити», рядки всередині групи; поруч — поле фільтра (текст або назва), чипи «усі/коментарі/виділення/закладки» і вимикач «групувати». 2) **Клавіші читалки**: Alt+PageUp / Alt+PageDown гортають документи списку результатів (разом з наявними Alt+←/→), кнопки ‹ › підказують скорочення. 3) Тести: 145/145.

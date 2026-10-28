@@ -83,6 +83,9 @@ enum Cmd {
         /// Emit JSON (default: table).
         #[arg(long)]
         json: bool,
+        /// Print facet counts (status / type / publisher) for the query.
+        #[arg(long)]
+        facets: bool,
     },
     /// Show the live JSON card of a document.
     Card { nreg: String },
@@ -256,7 +259,8 @@ fn run() -> Result<()> {
             offset,
             sort,
             json,
-        } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, sort, json),
+            facets,
+        } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, sort, json, facets),
         Cmd::Card { nreg } => cmd_card(&nreg, cli.pace),
         Cmd::Text { nreg, edition } => cmd_text(&cli.db, &nreg, edition.as_deref(), cli.pace),
         Cmd::Cache { purge, search, limit, nreg } => {
@@ -383,6 +387,7 @@ fn cmd_search(
     offset: usize,
     sort: String,
     json: bool,
+    facets: bool,
 ) -> Result<()> {
     let conn = rada_db::open(db)?;
     let q = rada_db::search::SearchQuery {
@@ -410,11 +415,29 @@ fn cmd_search(
         offset + hits.len(),
         t.elapsed()
     );
+    // Facets use the same SearchQuery as the hits; a failure is reported
+    // muted and never fails the command.
+    let facet_counts = if facets {
+        match rada_db::facets(&conn, &q) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                eprintln!("[facets] помилка: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
     if json {
-        println!(
-            "{}",
-            serde_json::json!({ "total": total, "hits": hits })
-        );
+        let mut out = serde_json::json!({ "total": total, "hits": hits });
+        if let Some(f) = &facet_counts {
+            out["facets"] = serde_json::json!({
+                "status": f.status,
+                "typ": f.typ,
+                "org": f.org,
+            });
+        }
+        println!("{out}");
     } else {
         for h in &hits {
             let status = rada_core::models::StatusId(h.status).label();
@@ -426,6 +449,21 @@ fn cmd_search(
                 fmt_date(&h.org_date),
                 fmt_date(&h.poddat),
             );
+        }
+        if let Some(f) = &facet_counts {
+            println!("Фасети:");
+            let stan = rada_db::dict::all_labels(&conn, "stan");
+            let typs = rada_db::dict::all_labels(&conn, "typs");
+            let organs = rada_db::dict::all_labels(&conn, "organs");
+            for line in facet_lines(&f.status, &stan) {
+                println!("  Статус   {line}");
+            }
+            for line in facet_lines(&f.typ, &typs) {
+                println!("  Тип      {line}");
+            }
+            for line in facet_lines(&f.org, &organs) {
+                println!("  Видавник {line}");
+            }
         }
     }
     Ok(())
@@ -871,6 +909,27 @@ fn truncate(s: &str, max: usize) -> String {
     }
 }
 
+/// Top-6 `label  (count)` strings for one facet column, input order
+/// (count desc, then id asc) preserved. `id 0` renders as «немає»; ids
+/// missing from `dict` fall back to `id {n}`.
+fn facet_lines(counts: &[(i64, usize)], dict: &[(i64, String)]) -> Vec<String> {
+    counts
+        .iter()
+        .take(6)
+        .map(|(id, count)| {
+            let label = if *id == 0 {
+                "немає".to_string()
+            } else {
+                dict.iter()
+                    .find(|(did, _)| did == id)
+                    .map(|(_, l)| l.clone())
+                    .unwrap_or_else(|| format!("id {id}"))
+            };
+            format!("{label}  ({count})")
+        })
+        .collect()
+}
+
 /// `YYYYMMDD` → `DD.MM.YYYY`; passthrough when not 8 digits.
 fn fmt_date(d: &str) -> String {
     if d.len() == 8 && d.chars().all(|c| c.is_ascii_digit()) {
@@ -887,7 +946,32 @@ fn fmt_date(d: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{new_nregs, normalize_fmt};
+    use super::{facet_lines, new_nregs, normalize_fmt};
+
+    #[test]
+    fn facet_lines_resolves_labels_and_caps_at_six() {
+        let dict = vec![
+            (5, "Чинний".to_string()),
+            (1, "Втратив чинність".to_string()),
+        ];
+        // known label, id 0 («немає»), unknown id (`id N`); count-desc order preserved
+        assert_eq!(
+            facet_lines(&[(5, 30), (0, 12), (42, 3)], &dict),
+            vec![
+                "Чинний  (30)".to_string(),
+                "немає  (12)".to_string(),
+                "id 42  (3)".to_string(),
+            ]
+        );
+        // cap at the top 6, order preserved
+        let counts: Vec<(i64, usize)> = (1..=9).map(|i| (i, 100 - i as usize)).collect();
+        let lines = facet_lines(&counts, &[]);
+        assert_eq!(lines.len(), 6);
+        assert_eq!(lines[0], "id 1  (99)".to_string());
+        assert_eq!(lines[5], "id 6  (94)".to_string());
+        // empty input ⇒ no lines
+        assert!(facet_lines(&[], &dict).is_empty());
+    }
 
     #[test]
     fn normalize_fmt_accepts_known_formats() {

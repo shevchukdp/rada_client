@@ -28,6 +28,9 @@ pub struct Settings {
     /// Arrivals-feed nregs the user has already seen (the «нові» badges and
     /// the «лише нові» filter work off this set). Cap 500.
     pub arr_seen: Vec<String>,
+    /// Arrivals page text filter (persisted so a domain filter survives
+    /// restarts).
+    pub arr_filter: String,
 }
 
 impl Settings {
@@ -141,6 +144,7 @@ fn parse(text: &str) -> Settings {
                         s.arr_seen.push(n);
                     }
                 }
+                "arrfilter" => s.arr_filter = v.trim().to_string(),
                 "recent" => {
                     if let Some((n, t)) = v.split_once('\t') {
                         s.recents.push((n.to_string(), t.to_string()));
@@ -164,7 +168,7 @@ fn parse(text: &str) -> Settings {
 fn render(s: &Settings) -> String {
     let clean = |v: &str| v.replace(['\r', '\n', '\t'], " ");
     let mut out = format!(
-        "last_nreg={}\nlast_title={}\nlast_query={}\ntheme={}\nzoom={}\nraw={}\nexport_dir={}\npace={}\n",
+        "last_nreg={}\nlast_title={}\nlast_query={}\ntheme={}\nzoom={}\nraw={}\nexport_dir={}\npace={}\narrfilter={}\n",
         clean(&s.last_nreg),
         clean(&s.last_title),
         clean(&s.last_query),
@@ -173,6 +177,7 @@ fn render(s: &Settings) -> String {
         if s.raw { 1 } else { 0 },
         clean(&s.export_dir),
         s.pace,
+        clean(&s.arr_filter),
     );
     for (n, t) in &s.recents {
         out.push_str(&format!("recent={}\t{}\n", clean(n), clean(t)));
@@ -207,6 +212,7 @@ mod tests {
             pace: 7,
             recent_q: vec!["податковий кодекс".into(), "лік".into()],
             arr_seen: vec!["1556-18".into(), "16-15".into()],
+            arr_filter: "податков".into(),
         };
         let p = std::env::temp_dir().join("rada-settings-test.ini");
         save_to(&p, &s).unwrap();

@@ -115,14 +115,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         });
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Фільтр:").small());
-            let n = app.arrivals.filter.clone();
-            ui.add_sized(
+            let fr = ui.add_sized(
                 [280.0, 24.0],
                 egui::TextEdit::singleline(&mut app.arrivals.filter)
                     .hint_text("назва, номер чи публікація"),
             );
-            if n != app.arrivals.filter && !app.arrivals.filter.is_empty() {
-                // typing narrows without a reload — nothing else to do.
+            // Persist when the edit commits (focus lost) — not per keystroke.
+            if fr.lost_focus() && app.settings.arr_filter != app.arrivals.filter {
+                app.settings.arr_filter = app.arrivals.filter.clone();
+                crate::settings::save(&app.settings);
             }
             if !app.arrivals.filter.is_empty()
                 && ui
@@ -130,6 +131,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     .clicked()
             {
                 app.arrivals.filter.clear();
+                if !app.settings.arr_filter.is_empty() {
+                    app.settings.arr_filter.clear();
+                    crate::settings::save(&app.settings);
+                }
             }
         });
         ui.add_space(4.0);
