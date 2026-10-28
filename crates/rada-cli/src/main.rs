@@ -212,6 +212,14 @@ enum Cmd {
         /// kind; with `--json` emits `{"fresh": {kind: n, …}}`.
         #[arg(long)]
         fresh: bool,
+        /// Write the plain listing (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain table gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less. `--fresh` still prints its report to stdout: the file
+        /// receives only the normal kind listing (written after any
+        /// live refresh).
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Resolve a human name to an nreg: offline-first via the local index
     /// (exact nreg / title search), then the live `find/a` endpoint only when
@@ -399,6 +407,7 @@ fn run() -> Result<()> {
             json,
             from_file,
             fresh,
+            out,
         } => cmd_dict(
             &cli.db,
             cli.pace,
@@ -407,6 +416,7 @@ fn run() -> Result<()> {
             json,
             from_file.as_deref(),
             fresh,
+            out.as_deref(),
         ),
         Cmd::Resolve { text, limit, json, out } => {
             cmd_resolve(&cli.db, &text.join(" "), limit, json, out.as_deref(), cli.pace)
@@ -502,6 +512,14 @@ fn cmd_sync(db: &PathBuf, pace: u64) -> Result<()> {
     Ok(())
 }
 
+/// Reference dictionaries (stan / typs / organs): lookup modes are
+/// offline-first, a plain `dict` refreshes all three live. With `--out`
+/// the exact stdout body of the normal listing goes to the file (parent
+/// dirs created) and nothing prints to stdout: the plain table is written
+/// UTF-8 with a BOM (Excel-friendly, like arrivals/resolve/related), the
+/// `--json` body BOM-less; one `[dict] {kind}: записано …` note per kind
+/// goes to stderr. `--fresh` keeps its report on stdout even with `--out`
+/// (the `search --facets` rule): the file receives only the kind listing.
 fn cmd_dict(
     db: &PathBuf,
     pace: u64,
@@ -510,6 +528,7 @@ fn cmd_dict(
     json: bool,
     from_file: Option<&Path>,
     fresh: bool,
+    out: Option<&Path>,
 ) -> Result<()> {
     // Offline seed works on exactly one kind, so --kind is mandatory there.
     if from_file.is_some() && kind.is_none() {
@@ -547,8 +566,10 @@ fn cmd_dict(
             eprintln!("[dict] {k}: {n} entries");
         }
     }
-    // `--fresh`: pure row-count report over what the steps above produced;
-    // the normal listing / JSON path never runs.
+    // `--fresh`: pure row-count report over what the steps above produced.
+    // The report is stdout-only even with `--out` (the `search --facets`
+    // rule); only with `--out` does execution continue into the normal
+    // listing below, which then goes to the file.
     if fresh {
         let counts: Vec<(&str, i64)> = kinds
             .iter()
@@ -559,18 +580,23 @@ fn cmd_dict(
             for (k, n) in &counts {
                 fresh_map.insert((*k).to_string(), serde_json::json!(n));
             }
-            let out = serde_json::Value::Object(
+            let report = serde_json::Value::Object(
                 [("fresh".to_string(), serde_json::Value::Object(fresh_map))]
                     .into_iter()
                     .collect(),
             );
-            println!("{}", serde_json::to_string_pretty(&out).map_err(anyhow::Error::from)?);
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&report).map_err(anyhow::Error::from)?
+            );
         } else {
             for line in dict_fresh_lines(&counts) {
                 println!("{line}");
             }
         }
-        return Ok(());
+        if out.is_none() {
+            return Ok(());
+        }
     }
     // Read the freshly loaded rows back from the index and apply the optional
     // `--search` filter; zero matches is a normal (exit-0) empty filter result.
@@ -601,28 +627,40 @@ fn cmd_dict(
                 })
             })
             .collect();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({ "dicts": dicts }))
-                .map_err(anyhow::Error::from)?
-        );
+        let body = serde_json::to_string_pretty(&serde_json::json!({ "dicts": dicts }))
+            .map_err(anyhow::Error::from)?;
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("[dict] записано JSON → {}", p.display());
+            }
+            None => println!("{body}"),
+        }
         return Ok(());
     }
-    let multi = kind.is_none();
-    if search.is_some() && groups.iter().all(|(_, rows)| rows.is_empty()) {
-        println!("нічого не знайдено");
-        return Ok(());
-    }
-    for (k, rows) in &groups {
-        if rows.is_empty() {
-            continue;
+    let lines = dict_plain_lines(&groups, kind.is_none(), search.is_some());
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // arrivals/resolve/related; the bytes are exactly the stdout
+            // listing, so an empty body (no rows printed) carries no
+            // trailing newline either.
+            let text = if lines.is_empty() {
+                "\u{FEFF}".to_string()
+            } else {
+                format!("\u{FEFF}{}\n", lines.join("\n"))
+            };
+            write_out_file(p, text.as_bytes())?;
+            // one note per requested kind, in the requested order
+            for (k, rows) in &groups {
+                eprintln!("{}", dict_out_note(k, rows.len(), p));
+            }
         }
-        if multi {
-            // group header only in all-dicts mode, only before non-empty groups
-            println!("{k} ({}):", dict_caption(k));
-        }
-        for (id, label) in rows {
-            println!("  {id}  {label}");
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
         }
     }
     Ok(())
@@ -666,6 +704,43 @@ fn dict_fresh_lines(counts: &[(&str, i64)]) -> Vec<String> {
             }
         })
         .collect()
+}
+
+/// The plain-listing body of `dict` (shared by stdout and `--out`), one
+/// string per printed line: a `{k} (caption):` header before every
+/// non-empty group in all-dicts mode, then `  {id}  {label}` rows; empty
+/// groups print nothing. When `--search` filtered every group to zero
+/// rows (`searched`), the single «нічого не знайдено» line replaces the
+/// (empty) listing, exactly as the historical stdout did.
+fn dict_plain_lines(
+    groups: &[(String, Vec<(i64, String)>)],
+    multi: bool,
+    searched: bool,
+) -> Vec<String> {
+    if searched && groups.iter().all(|(_, rows)| rows.is_empty()) {
+        return vec!["нічого не знайдено".to_string()];
+    }
+    let mut lines = Vec::new();
+    for (k, rows) in groups {
+        if rows.is_empty() {
+            continue;
+        }
+        if multi {
+            // group header only in all-dicts mode, only before non-empty groups
+            lines.push(format!("{k} ({}):", dict_caption(k)));
+        }
+        for (id, label) in rows {
+            lines.push(format!("  {id}  {label}"));
+        }
+    }
+    lines
+}
+
+/// The stderr note printed after `dict --out` has written the plain table
+/// to `file`: one line per requested kind with that kind's filtered row
+/// count (`[dict] stan: записано 10 записів → out\d.txt`).
+fn dict_out_note(kind: &str, n: usize, file: &Path) -> String {
+    format!("[dict] {kind}: записано {n} записів → {}", file.display())
 }
 
 /// Offline FTS5 title search with filters. Default output is the hit table
@@ -2048,9 +2123,9 @@ fn fmt_date(d: &str) -> String {
 mod tests {
     use super::{
         annot_out_note, annot_text_file_note, arrivals_date_key, arrivals_out_note,
-        backfill_summary, card_out_note, dict_fresh_lines, dict_matches, facet_lines, filter_since,
-        new_nregs, normalize_fmt, out_note, related_out_note, resolve_out_note, search_out_note,
-        since_note, stats_lines, today_yyyymmdd, StatsReport,
+        backfill_summary, card_out_note, dict_fresh_lines, dict_matches, dict_out_note,
+        facet_lines, filter_since, new_nregs, normalize_fmt, out_note, related_out_note,
+        resolve_out_note, search_out_note, since_note, stats_lines, today_yyyymmdd, StatsReport,
     };
 
     #[test]
@@ -2204,6 +2279,18 @@ mod tests {
         assert!(line.starts_with("[search] записано "));
         assert!(line.contains("12"));
         assert!(line.contains("результатів"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn dict_out_note_formats_kind_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//d.txt");
+        let line = dict_out_note("stan", 10, file);
+        assert!(line.starts_with("[dict] stan: записано "));
+        assert!(line.contains("10"));
+        assert!(line.contains("записів"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
     }

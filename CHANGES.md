@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.26: навігація по видачі у веб-читалці, словники у файл та пошук за номером в Обраному / reader result navigation, dictionaries to file & favorites nreg filter
+
+- **UKR:** 1) **«попередній / наступний» у веб-читалці**: документи крокуються списком останньої видачі (і кеш-пошуку) з лічильником «3 / 20»; Alt+ліворуч/праворуч — те саме з клавіатури; кнопки вимикаються на краях. 2) **CLI `dict --out FILE`**: таблиця словників у файл (з BOM), `--json` — без BOM; без `--kind` — усі три словники з окремим рядком-нотаткою на кожен; звіт `--fresh` лишається у stdout. 3) **Фільтр Обраного шукає й за номером**: введіть `1556` — і залишаються анотації документа з цим nreg (текст, назва та nreg — три поверхні пошуку). 4) Тести: 208/208.
+- **ENG:** 1) **«попередній / наступний» in the web reader**: documents step through the last results list (cache search included) with a «3 / 20» counter; Alt+Left/Right does the same; buttons disable at the ends. 2) **CLI `dict --out FILE`**: the dictionary table written to a file (with BOM), BOM-less with `--json`; without `--kind` all three dictionaries land in one file with a per-kind note; the `--fresh` report stays on stdout. 3) **The Favorites filter now also matches nreg**: type `1556` and only annotations of that document remain — text, title and nreg are the three search surfaces. 4) Tests: 208/208.
+
+---
+
+## 2026-10-28
+
 ### 0.10.25: сортування та групи в Обраному веб, видача пошуку у файл та лічильники на чипах / web favorites sort & groups, search to file & chip counters
 
 - **UKR:** 1) **Обране у веб — як у програмі**: чипи «новіші / старіші / за назвою» (вибір пам'ятається браузером) і «групувати» — заголовки документів із кліком для згортання («— згорнуто») та «розгорнути всі». 2) **CLI `search --out FILE`**: таблиця результатів у файл (з BOM), `--json` — без BOM; фасети лишаються у stdout; без `--out` — без змін. 3) **Лічильники на чипах Обраного**: «усі (9) · коментарі (2) · виділення (2) · закладки (1)» — оновлюються миттєво. 4) Тести: 204/204.

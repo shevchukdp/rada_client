@@ -685,6 +685,13 @@
 
   <div id="doc-pane" hidden>
     <div id="doc-head"></div>
+    <div class="row" id="doc-nav-row">
+      <button id="nav-prev" type="button" disabled
+        title="Попередній документ зі списку результатів">попередній</button>
+      <span id="nav-pos" class="hint"></span>
+      <button id="nav-next" type="button" disabled
+        title="Наступний документ зі списку результатів">наступний</button>
+    </div>
     <div class="row" id="card-retry-row" hidden>
       <button id="retry-card" type="button" title="Запитати картку ще раз">ще раз</button>
       <span class="hint">не вдалося отримати картку (живий API)</span>
@@ -784,6 +791,11 @@ let arrivalsDocs = [];      // fetched feed items; the text filter re-renders fr
 let arrNewSet = new Set();  // nregs unseen at the last successful load («НОВЕ» badges)
 let arrOnlyNew = false;     // «лише нові» toggle: renderArrivals shows only arrNewSet docs
 const arrCollapsed = new Set(); // date-group keys collapsed via their header row
+// Reader prev/next context (the desktop GUI reader's «N / M» stepping): the
+// nregs of the last rendered results page in display order, and the position
+// of the opened document inside it (-1 when opened from elsewhere).
+let navList = [];
+let navPos = -1;
 
 function api(path, opts) {
   return fetch(path, opts).then(async (r) => {
@@ -1137,6 +1149,7 @@ async function doSearch(offset) {
   const meta = $("results-meta");
   meta.textContent = "Завантаження…";
   $("results").innerHTML = "";
+  fillNavList([]); // stale hits must not keep navigating while the fetch runs
   $("sort-bar").hidden = true;
   resetFacetLabels(); // never show counts from the previous result set
   renderActiveFilters(); // the chips mirror exactly the filters this query goes out with
@@ -1191,6 +1204,7 @@ async function doSearch(offset) {
       div.appendChild(a); div.appendChild(sub); div.appendChild(actions);
       list.appendChild(div);
     }
+    fillNavList(d.hits.map((h) => h.nreg)); // reader prev/next over this page
     $("page-info").textContent = "сторінка " + (Math.floor(offset / state.limit) + 1);
   } catch (e) {
     meta.textContent = "Помилка: " + e.message;
@@ -1226,6 +1240,7 @@ async function doCacheSearch() {
   }
   meta.textContent = "шукаю в кешованому тексті (офлайн)…";
   $("results").innerHTML = "";
+  fillNavList([]); // the cache run starts without a prev/next context
   $("sort-bar").hidden = true;
   $("cache-mode").hidden = true; // repainted below only on success
   try {
@@ -1253,6 +1268,7 @@ async function doCacheSearch() {
       div.appendChild(a); div.appendChild(sub); div.appendChild(snip);
       list.appendChild(div);
     }
+    fillNavList(d.items.map((it) => it.nreg)); // cache hits navigate the same way
   } catch (e) {
     meta.textContent = "Помилка: " + e.message;
     $("cache-mode").hidden = true; // a failed cache search is not cache mode
@@ -1300,8 +1316,40 @@ function clickSort(col) {
   doSearch(0);
 }
 
+/// Set the reader's prev/next context to `nregs` (the rendered display
+/// order) and reset the position; shared by the search and the cache-search
+/// renderers so both result lists navigate like the GUI reader's «N / M».
+function fillNavList(nregs) {
+  navList = (nregs || []).slice();
+  navPos = -1;
+  updateNavUi();
+}
+
+/// Reflect the current context in the reader toolbar: the «3 / 20» hint
+/// (only while the doc sits inside a multi-hit list) and the enabled state
+/// of the two step buttons (both off without a usable list).
+function updateNavUi() {
+  const total = navList.length;
+  const inList = navPos >= 0 && navPos < total;
+  $("nav-pos").textContent = inList && total > 1 ? (navPos + 1) + " / " + total : "";
+  $("nav-prev").disabled = navPos <= 0;
+  $("nav-next").disabled = navPos < 0 || navPos >= total - 1;
+}
+
+/// Step through `navList` via the full openDoc flow (toc/compare/related
+/// resets included); false when there is nothing to step to.
+function readerNavStep(delta) {
+  if ($("doc-pane").hidden) return false;
+  const j = navPos + delta;
+  if (navPos < 0 || j < 0 || j >= navList.length) return false;
+  openDoc(navList[j]);
+  return true;
+}
+
 async function openDoc(nreg) {
   state.curNreg = nreg;
+  navPos = navList.indexOf(nreg); // -1 when opened outside any result list
+  updateNavUi();
   history.replaceState(null, "", "?doc=" + encodeURIComponent(nreg));
   state.curText = "";
   state.annots = [];
@@ -2651,6 +2699,8 @@ $("load-text").onclick = () => loadText($("editions").value || "");
 $("btn-compare-editions").onclick = () => openComparePanel();
 $("cmp-run").onclick = () => runEditionCompare();
 $("cmp-close").onclick = () => { $("edition-compare").hidden = true; };
+$("nav-prev").onclick = () => readerNavStep(-1);
+$("nav-next").onclick = () => readerNavStep(1);
 $("btn-bookmark").onclick = () => addAnn("bookmark", "", null, null);
 $("btn-highlight").onclick = () => {
   const selText = window.getSelection().toString();
@@ -2845,6 +2895,16 @@ document.addEventListener("keydown", (ev) => {
       ev.preventDefault();
       $("q").focus();
       $("q").select();
+    }
+    return;
+  }
+  // Alt+arrows step through the results list the reader was opened from
+  // (the desktop GUI reader's «N / M» parity); an input/textarea/select
+  // target keeps its keystrokes. Plain arrows below still drive navDoc.
+  if (!mod && ev.altKey && !ev.shiftKey &&
+      (ev.key === "ArrowLeft" || ev.key === "ArrowRight")) {
+    if (!isTypingTarget(ev) && readerNavStep(ev.key === "ArrowRight" ? 1 : -1)) {
+      ev.preventDefault();
     }
     return;
   }

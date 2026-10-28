@@ -119,8 +119,8 @@ fn matches_filter(kind: &str, filter: usize) -> bool {
 }
 
 /// Does one row pass the text + kind filters? Case-insensitive substring
-/// over the annotation text *and* the document title (plain `to_lowercase`,
-/// as the rest of the app filters Ukrainian text with).
+/// over the annotation text, the document title *and* the document nreg
+/// (plain `to_lowercase`, as the rest of the app filters Ukrainian text with).
 pub fn row_matches(a: &rada_db::Annotation, title: &str, needle: &str, kind: usize) -> bool {
     if !matches_filter(&a.kind, kind) {
         return false;
@@ -129,7 +129,9 @@ pub fn row_matches(a: &rada_db::Annotation, title: &str, needle: &str, kind: usi
     if q.is_empty() {
         return true;
     }
-    a.text.to_lowercase().contains(&q) || title.to_lowercase().contains(&q)
+    a.text.to_lowercase().contains(&q)
+        || title.to_lowercase().contains(&q)
+        || a.nreg.to_lowercase().contains(&q)
 }
 
 /// Toggle the group rows of one `nreg` in the favorites grouped view
@@ -696,6 +698,19 @@ mod tests {
     fn no_match_gives_no_groups() {
         assert!(filter_and_group(&rows(), "нічого подібного", 0).is_empty());
         assert!(filter_and_group(&[], "", 0).is_empty());
+    }
+
+    #[test]
+    fn filter_also_matches_document_nreg() {
+        // The nreg is now a third search surface next to text and title.
+        let g = filter_and_group(&rows(), "1556", 0);
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].0, "1556-18");
+        assert_eq!(g[0].2.len(), 2, "both annotations of that doc");
+        // Case-insensitive and trimmed, like the other surfaces.
+        assert!(row_matches(&ann(1, "88-9", "comment", "т"), "X", " 88-9 ", 0));
+        // Kind filter still wins over a matching nreg.
+        assert!(!row_matches(&ann(1, "88-9", "comment", "т"), "X", "88-9", 3));
     }
 
     // ---- preflight_import: mirrors rada_db::annotations::import_json ------

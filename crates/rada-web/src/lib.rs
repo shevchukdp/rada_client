@@ -3142,4 +3142,38 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("target=\"_blank\""));
         assert!(ui::INDEX_HTML.contains("actions.append(cp, site);"));
     }
+
+    #[test]
+    fn ui_page_has_reader_nav_buttons() {
+        // Reader prev/next through the last results list (the GUI reader's
+        // «‹ N / M ›» stepping): two step buttons plus the position hint in
+        // the toolbar, the shared fill helper fed by both the search and the
+        // cache renderers, and openDoc binding the position (so a doc opened
+        // from elsewhere leaves navPos = -1).
+        assert!(ui::INDEX_HTML.contains("id=\"nav-prev\""));
+        assert!(ui::INDEX_HTML.contains("id=\"nav-next\""));
+        assert!(ui::INDEX_HTML.contains("id=\"nav-pos\""));
+        assert!(ui::INDEX_HTML.contains(">попередній</button>"));
+        assert!(ui::INDEX_HTML.contains(">наступний</button>"));
+        assert!(ui::INDEX_HTML.contains("let navList = [];"));
+        assert!(ui::INDEX_HTML.contains("let navPos = -1;"));
+        assert!(ui::INDEX_HTML.contains("function fillNavList(nregs)"));
+        assert!(ui::INDEX_HTML.contains("fillNavList(d.hits.map((h) => h.nreg));"));
+        assert!(ui::INDEX_HTML.contains("fillNavList(d.items.map((it) => it.nreg));"));
+        assert!(ui::INDEX_HTML.contains("navPos = navList.indexOf(nreg);"));
+        assert!(ui::INDEX_HTML.contains("openDoc(navList[j]);"));
+    }
+
+    #[test]
+    fn ui_page_has_reader_nav_keyboard() {
+        // Alt+arrows step the reader through navList (matching the GUI's
+        // Alt+Left/Right): the alt guard sits inside the shared keydown
+        // listener, the typing-target guard keeps inputs/textarea/select
+        // untouched, and both step buttons reuse the same readerNavStep.
+        assert!(ui::INDEX_HTML.contains("ev.altKey"));
+        assert!(ui::INDEX_HTML.contains("if (!isTypingTarget(ev) && readerNavStep(ev.key === \"ArrowRight\" ? 1 : -1))"));
+        assert!(ui::INDEX_HTML.contains("ev.key === \"ArrowLeft\" || ev.key === \"ArrowRight\""));
+        assert!(ui::INDEX_HTML.contains("$(\"nav-prev\").onclick = () => readerNavStep(-1);"));
+        assert!(ui::INDEX_HTML.contains("$(\"nav-next\").onclick = () => readerNavStep(1);"));
+    }
 }

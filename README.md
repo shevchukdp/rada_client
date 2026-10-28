@@ -80,7 +80,7 @@ official open-data API:
     estimated reading time (≈400 wpm), e.g. «43 733 слів · 340 212 симв. ·
     ~110 хв».
   - **Grouped favorites** — the Обране page groups annotations per document
-    (gold «Title (count)» header with an «відкрити» button), with a text/title
+    (gold «Title (count)» header with an «відкрити» button), with a text/title/nreg
     filter box, kind chips **with live counts** («усі (9) · коментарі (2) …»),
     a «групувати» toggle, sort chips
     («новіші / старіші / за назвою») and **collapsible groups** (click a
@@ -182,6 +182,8 @@ official open-data API:
   edition plus «різниця: ±N слів»),
   **per-hit «копія»/«сайт» buttons** (nreg to clipboard with a «скопійовано»
   flash; the act opens on zakon.rada.gov.ua in a new tab),
+  **reader prev/next stepping** («попередній / наступний» through the last
+  results list with a «3 / 20» counter, Alt+Left/Right),
   **recent query chips** («недавні запити:» from browser storage, click to
   re-run, «очистити»),
   and a **Favorites page with desktop parity** (sort chips «новіші / старіші /
@@ -264,6 +266,7 @@ Launch arguments:
 .\rada-client.exe dict --kind typs
 .\rada-client.exe dict --search "чинн"   # offline label filter («локально» — no refetch)
 .\rada-client.exe dict --fresh           # quick freshness report («N записів» / «порожньо», no refetch)
+.\rada-client.exe dict --kind stan --out stan.txt  # dictionary table to file (BOM); --json → BOM-less JSON
 .\rada-client.exe dict --from-file stan.txt --kind stan   # seed a dictionary from a local dump (id\tlabel, cp1251)
 
 # 4) Keep the index current.
