@@ -21,6 +21,9 @@
 //!               machine-readable output, `--out` to write the report);
 //! - `export`    offline export of a cached document body as md / txt / html
 //!               (text cache only — never touches the network);
+//! - `toc`       offline outline (зміст) of a cached document: «Розділ/Глава»
+//!               and «Стаття» headings from the text cache (`--json` for
+//!               machine-readable output, `--out` to write the table);
 //! - `web`       local web UI (search, reader, annotations, export).
 
 use std::path::{Path, PathBuf};
@@ -317,6 +320,23 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Offline outline (зміст) of a CACHED document: «Розділ/Глава …» and
+    /// «Стаття …» headings parsed from the local text cache only — the
+    /// command never touches the network. Read the document once
+    /// (`text <nreg>`) while online to fill the cache.
+    Toc {
+        nreg: String,
+        /// Emit JSON (`{"nreg":…,"entries":[{level,text},…]}`) instead of
+        /// the indented table.
+        #[arg(long)]
+        json: bool,
+        /// Write to this file instead of stdout (parent dirs created).
+        /// Plain table gets a UTF-8 BOM (Excel-friendly); with `--json` the
+        /// file is written BOM-less. Zero headings write the BOM alone;
+        /// the header line stays on stdout (the house `search --out` rule).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Start the local web UI (search, reader, annotations, export).
     Web {
         /// Address to bind.
@@ -502,6 +522,9 @@ fn run() -> Result<()> {
         Cmd::Annot { what } => cmd_annot(&cli.db, what),
         Cmd::Export { nreg, fmt, out } => {
             cmd_export(&cli.db, &nreg, &fmt, out.as_deref())
+        }
+        Cmd::Toc { nreg, json, out } => {
+            cmd_toc(&cli.db, &nreg, json, out.as_deref())
         }
         Cmd::Web { host, port, open } => cmd_web(&cli.db, &host, port, open, cli.pace),
     }
@@ -1360,6 +1383,147 @@ fn export_html(title: &str, nreg: &str, body: &str) -> String {
 /// (`[export] {nreg} ({fmt}) → {file}`).
 fn export_out_note(fmt: &str, nreg: &str, file: &Path) -> String {
     format!("[export] {nreg} ({fmt}) → {}", file.display())
+}
+
+/// One outline heading recognized in a cached body: `level` 1 for
+/// «Розділ/Глава …», 2 for «Стаття …»; `text` is the trimmed line.
+struct TocEntry {
+    level: u8,
+    text: String,
+}
+
+/// Headings are short structural lines: a candidate longer than this (in
+/// characters, Cyrillic-safe) is a body paragraph that merely starts with
+/// the keyword, not a heading.
+const TOC_MAX_LINE_CHARS: usize = 120;
+
+/// Outline heading level of `line` (already trimmed): the leading
+/// alphabetic run — the first word — is lowercased and matched against the
+/// structural keywords, mirroring the GUI reader's classification
+/// (`reader.rs` `kw`/`PKind`: «Стаття» tested before «Розділ/Глава», any
+/// case), with a word-boundary twist («Розділяй …» is not a heading).
+/// `Some(1)` for «Розділ/Глава …», `Some(2)` for «Стаття …», `None` for
+/// prose.
+fn toc_keyword(line: &str) -> Option<u8> {
+    let end = line
+        .find(|c: char| !c.is_alphabetic())
+        .unwrap_or(line.len());
+    let word = line[..end].to_lowercase();
+    // GUI parity: an «Стаття …» line stays an article even when it mentions
+    // a «розділ» later on.
+    if word == "стаття" {
+        Some(2)
+    } else if word == "розділ" || word == "глава" {
+        Some(1)
+    } else {
+        None
+    }
+}
+
+/// Pure outline parser behind `toc`: one [`TocEntry`] per line of `body`
+/// whose trimmed form starts with a structural keyword as a whole first
+/// word and is not absurdly long ([`TOC_MAX_LINE_CHARS`], longer lines are
+/// body paragraphs); document order preserved. An act without sections
+/// yields an empty outline (a valid result, not an error).
+fn toc_entries(body: &str) -> Vec<TocEntry> {
+    let mut out = Vec::new();
+    for raw in body.lines() {
+        let line = raw.trim();
+        if line.is_empty() || line.chars().count() > TOC_MAX_LINE_CHARS {
+            continue;
+        }
+        if let Some(level) = toc_keyword(line) {
+            out.push(TocEntry {
+                level,
+                text: line.to_string(),
+            });
+        }
+    }
+    out
+}
+
+/// The plain-table body of `toc` (shared by stdout and `--out` so the two
+/// cannot drift): «{n} розділів(и) та статей:» header, then one line per
+/// entry — level 1 flush left, level 2 indented two spaces. The header
+/// always renders (the stdout zero-heading line); the `--out` file carries
+/// the BOM alone when the outline is empty (the house `search --out` rule).
+fn toc_lines(entries: &[TocEntry]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(entries.len() + 1);
+    lines.push(format!("{} розділів(и) та статей:", entries.len()));
+    for e in entries {
+        if e.level >= 2 {
+            lines.push(format!("  {}", e.text));
+        } else {
+            lines.push(e.text.clone());
+        }
+    }
+    lines
+}
+
+/// The stderr note printed after `toc --out` has written the outline
+/// (`n` headings) to `file`.
+fn toc_out_note(n: usize, file: &Path) -> String {
+    format!("[toc] записано {n} заголовків → {}", file.display())
+}
+
+/// Offline outline of a CACHED document: the body is read from the local
+/// text cache under the current-edition key (`""`) — the command never
+/// builds a paced client and never touches the network. An uncached `nreg`
+/// is a hard error pointing at `text` (the cache warmer), exactly like
+/// `export`. With `--out` the rendered table is written UTF-8 WITH a BOM
+/// (human table, parent dirs created), stdout stays silent and one
+/// `[toc] записано {n} заголовків → {file}` note goes to stderr; zero
+/// headings write the BOM alone (n=0 note). Without `--out` the same bytes
+/// minus the BOM go to stdout; `--json` emits the pretty
+/// `{"nreg":…,"entries":[{level,text},…]}` body, BOM-less in both modes.
+fn cmd_toc(db: &PathBuf, nreg: &str, json: bool, out: Option<&Path>) -> Result<()> {
+    let conn = rada_db::open(db)?;
+    let body = rada_db::textcache::get(&conn, nreg, "")?.ok_or_else(|| {
+        anyhow::anyhow!("документ {nreg} не кешовано — спершу прочитайте його (text {nreg})")
+    })?;
+    let entries = toc_entries(&body);
+    if json {
+        let value = serde_json::json!({
+            "nreg": nreg,
+            "entries": entries
+                .iter()
+                .map(|e| serde_json::json!({ "level": e.level, "text": e.text }))
+                .collect::<Vec<_>>(),
+        });
+        let body = serde_json::to_string_pretty(&value).map_err(anyhow::Error::from)?;
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", toc_out_note(entries.len(), p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = toc_lines(&entries);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/resolve/related; the bytes are exactly the
+            // stdout table, so a zero-heading outline carries the BOM alone
+            // (the header line is the stdout-only zero message, the house
+            // rule).
+            let text = if entries.is_empty() {
+                "\u{FEFF}".to_string()
+            } else {
+                format!("\u{FEFF}{}\n", lines.join("\n"))
+            };
+            write_out_file(p, text.as_bytes())?;
+            eprintln!("{}", toc_out_note(entries.len(), p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Offline text cache: `--purge` deletes cached bodies (all or one `nreg`),
@@ -2607,7 +2771,8 @@ mod tests {
         dict_matches, dict_out_note, export_html, grep_body, grep_render,
         export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
         normalize_fmt, out_note, related_out_note, resolve_out_note, search_out_note, since_note,
-        stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, StatsInfo,
+        stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
+        toc_out_note, StatsInfo, TocEntry,
     };
 
     #[test]
@@ -3283,5 +3448,95 @@ mod tests {
         assert!(note.contains("рядків"));
         assert!(note.contains('→'));
         assert!(note.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn toc_entries_recognizes_sections_and_skips_prose() {
+        // a «Стаття …» line beyond the 120-char cap: a body paragraph, not
+        // a heading
+        let long = format!("Стаття 99. {}", "дуже довгий текст ".repeat(12));
+        assert!(long.chars().count() > 120, "the probe line exceeds the cap");
+        let body = [
+            "РОЗДІЛ I. Загальні положення",
+            "глава 2. Інше",
+            "стаття 1. Визначення",
+            "  Стаття 2.   Із відступами   ",
+            long.as_str(),
+            "Звичайний абзац про податки та збори.",
+            "Розділяй берег — це проза, не заголовок",
+            "Посилання на статтю 5 іншого акта.",
+            "",
+            "   \t ",
+        ]
+        .join("\n");
+        let entries = toc_entries(&body);
+        // recognized: keyword as the whole first word, any case; trimmed
+        // text stored; the over-long «Стаття» line and every prose line
+        // (including the «Розділяй …» word-boundary trap) are skipped
+        assert_eq!(
+            entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
+            vec![
+                "РОЗДІЛ I. Загальні положення",
+                "глава 2. Інше",
+                "стаття 1. Визначення",
+                "Стаття 2.   Із відступами",
+            ]
+        );
+    }
+
+    #[test]
+    fn toc_entries_indent_levels_and_order() {
+        let body = "Розділ I. Загальні засади\nСтаття 1. Перша\nСтаття 2. Друга\n\
+                    Глава 3. Особлива частина\nСтаття 3. Третя";
+        let entries = toc_entries(body);
+        // document order preserved, levels from the GUI classification
+        // («Розділ/Глава» → 1, «Стаття» → 2)
+        assert_eq!(
+            entries.iter().map(|e| e.level).collect::<Vec<_>>(),
+            vec![1, 2, 2, 1, 2]
+        );
+        assert_eq!(entries[0].text, "Розділ I. Загальні засади");
+        assert_eq!(entries[4].text, "Стаття 3. Третя");
+        // the shared table body: header + level 1 flush left, level 2 indented
+        let direct = vec![
+            TocEntry { level: 1, text: "Розділ I".into() },
+            TocEntry { level: 2, text: "Стаття 1".into() },
+        ];
+        assert_eq!(
+            toc_lines(&direct),
+            vec![
+                "2 розділів(и) та статей:".to_string(),
+                "Розділ I".to_string(),
+                "  Стаття 1".to_string(),
+            ]
+        );
+        // an act without sections: empty body → empty outline (valid, n=0)
+        assert!(toc_entries("").is_empty());
+        assert!(toc_entries("\n  \n\t\n").is_empty());
+        assert_eq!(
+            toc_lines(&toc_entries("проза без заголовків")),
+            vec!["0 розділів(и) та статей:".to_string()]
+        );
+    }
+
+    #[test]
+    fn toc_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//t.txt");
+        let line = toc_out_note(45, file);
+        assert_eq!(
+            line,
+            format!("[toc] записано 45 заголовків → {}", file.display())
+        );
+        assert!(line.starts_with("[toc] записано "));
+        assert!(line.contains("45"));
+        assert!(line.contains("заголовків"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the house zero-heading rule: the note still formats with n = 0
+        assert_eq!(
+            toc_out_note(0, file),
+            format!("[toc] записано 0 заголовків → {}", file.display())
+        );
     }
 }

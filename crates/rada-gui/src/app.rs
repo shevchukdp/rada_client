@@ -175,6 +175,8 @@ pub struct App {
     pub toasts: Vec<Toast>,
     /// «Про програму» dialog visibility.
     pub show_about: bool,
+    /// «Гарячі клавіші» sheet visibility (topbar «клавіші»).
+    pub show_help: bool,
     /// Last opened doc / last query, persisted for "Continue".
     pub settings: crate::settings::Settings,
     /// Signature of the visuals currently applied (theme id + OS theme),
@@ -228,6 +230,7 @@ impl App {
             cache_stats: None,
             toasts: Vec::new(),
             show_about: false,
+            show_help: false,
             settings,
             theme_sig: String::new(),
             focus_req: None,

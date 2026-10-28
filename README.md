@@ -110,7 +110,8 @@ official open-data API:
     or the query field (search); **Esc** clears the find query; **Alt+←/→**
     pages through the results list from inside the reader; **Shift+Enter** steps
     to the previous find match; **Ctrl+Plus / Ctrl+Minus / Ctrl+0** zoom the
-    reader text (±10%, persisted).
+    reader text (±10%, persisted); a topbar **«клавіші» button** opens the whole
+    list (same source as the About dialog's shortcut table).
   - **Favorites (Обране)** — every saved annotation across all documents on one
     page: kind filters, one-click open, delete; bare bookmarks show an italic
     context snippet from the offline text cache (GUI and web).
@@ -177,7 +178,8 @@ official open-data API:
   validated 8-digit YYYYMMDD, never blocking),
   **dict facets** (the status/type/publisher dropdowns show per-option result
   counts after each search), **theme-colored printing** (the print view keeps
-  the current theme's accent on white paper),
+  the current theme's accent on white paper, under a formal masthead — title,
+  «реєстр. № …», edition date, URL and print date),
   **deep links** (`?q=&sort=&status=…` reproduces a search on load,
   `?doc=<nreg>` opens a document directly; the URL also carries a
   copy-friendly `#doc=<nreg>` / `#q=<term>` fragment kept in sync without
@@ -288,6 +290,7 @@ Launch arguments:
 .\rada-client.exe resolve "податковий кодекс"   # name → nreg (offline index first, live only as fallback)
 .\rada-client.exe resolve "кодекс" --limit 5 --out var.txt   # candidate table to file (BOM); --json too
 .\rada-client.exe export 2755-17 --out zakon.md  # offline export of the CACHED body: md|txt|html (--fmt alias), BOM file or stdout; never touches the network
+.\rada-client.exe toc 2755-17                # offline outline of the CACHED body: Розділи/Глави + indented Статті; --json / --out too
 .\rada-client.exe dict                   # load dictionaries (stan/typs/organs)
 .\rada-client.exe dict --kind typs
 .\rada-client.exe dict --search "чинн"   # offline label filter («локально» — no refetch)

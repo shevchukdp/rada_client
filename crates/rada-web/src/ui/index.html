@@ -2224,6 +2224,33 @@ function citationText(title, nreg, edition) {
     edPart + "URL: " + siteUrlFor(nreg)).trimEnd();
 }
 
+/// Today as 8-digit YYYYMMDD (rendered through fmtArrDate, like every other
+/// date in the UI).
+function todayYyyymmdd() {
+  const d = new Date();
+  const p = (n) => (n < 10 ? "0" : "") + n;
+  return "" + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate());
+}
+
+/// Official print masthead — the single source of the printable page header:
+/// line 1 the act title (bold, larger), line 2 «реєстр. № nreg» plus the
+/// « · редакція від dd.mm.yyyy» suffix when a dated edition is selected,
+/// line 3 a muted smaller «URL: <portal page> · надруковано: dd.mm.yyyy».
+/// Every interpolated value goes through escHtml.
+function printHeaderHtml(title, nreg, edition, todayDdMmYyyy) {
+  const ed = String(edition || "").trim();
+  const edPart = ed ? " · редакція від " + escHtml(fmtArrDate(ed)) : "";
+  return "<div class=\"print-header\" style=\"margin:0 0 14pt 0;\">" +
+    "<div style=\"font-weight:700;font-size:15pt;line-height:1.25;\">" +
+      escHtml(title || "") + "</div>" +
+    "<div style=\"font-size:11.5pt;margin-top:3pt;\">реєстр. № " +
+      escHtml(nreg || "") + edPart + "</div>" +
+    "<div style=\"color:#595959;font-size:9pt;margin-top:3pt;\">URL: " +
+      escHtml(siteUrlFor(nreg || "")) + " · надруковано: " +
+      escHtml(todayDdMmYyyy || "") + "</div>" +
+    "</div>";
+}
+
 /// Group `items` by arrDateKey into [dateKey, items] pairs sorted newest
 /// first (8-digit keys sort lexicographically = chronologically); the
 /// unknown («») group always goes last and items keep their relative order
@@ -3001,10 +3028,44 @@ $("btn-print").onclick = () => {
   if (!state.curNreg) { return; }
   // Pass the current theme so the print view restyles headings in it.
   const th = encodeURIComponent(localStorage.getItem("rada-theme") || "");
-  window.open("/api/export/" + encNreg(state.curNreg) +
+  openPrintView("/api/export/" + encNreg(state.curNreg) +
     "?print=1&theme=" + th +
-    ($("editions").value ? "&edition=" + encodeURIComponent($("editions").value) : ""), "_blank");
+    ($("editions").value ? "&edition=" + encodeURIComponent($("editions").value) : ""));
 };
+
+// Print assembler: fetch the themed print view, inject the official
+// masthead (printHeaderHtml — the single source) before the document body
+// and write the result into a new tab; the server's auto-print script runs
+// there. If the fetch yields nothing the new tab just navigates to the
+// server-rendered print view, so printing never dead-ends.
+async function openPrintView(url) {
+  const w = window.open("", "_blank");
+  if (!w) { return; }
+  let html = "";
+  try {
+    const r = await fetch(url);
+    if (r.ok) html = await r.text();
+  } catch (_) { html = ""; }
+  if (!html) { w.location.href = url; return; }
+  const header = printHeaderHtml(
+    state.curCard ? state.curCard.nazva : "",
+    state.curNreg,
+    $("editions").value,
+    fmtArrDate(todayYyyymmdd())
+  );
+  w.document.open();
+  w.document.write(insertPrintHeader(html, header));
+  w.document.close();
+}
+
+// The masthead goes right after the opening <body…> tag (before the body
+// content); html without a body tag gets it prepended.
+function insertPrintHeader(html, header) {
+  const m = /<body[^>]*>/i.exec(html);
+  if (!m) return header + html;
+  return html.slice(0, m.index + m[0].length) + header +
+    html.slice(m.index + m[0].length);
+}
 
 // Plain-text mode: flatten structural styles (persisted in localStorage).
 function applyRawBtn(on) {

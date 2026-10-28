@@ -30,6 +30,7 @@ pub fn topbar(app: &mut App, ctx: &egui::Context) {
     let mut go: Option<Page> = None;
     let mut theme_pick: Option<String> = None;
     let mut pace_delta: Option<i64> = None;
+    let mut help_toggle = false;
     egui::TopBottomPanel::top("topbar")
         .exact_height(46.0)
         .show(ctx, |ui| {
@@ -79,6 +80,13 @@ pub fn topbar(app: &mut App, ctx: &egui::Context) {
                             .small(),
                     );
                     ui.separator();
+                    if ui
+                        .button(egui::RichText::new("клавіші").small())
+                        .on_hover_text("список гарячих клавіш")
+                        .clicked()
+                    {
+                        help_toggle = true;
+                    }
                     theme_picker(ui, app_ref.settings.theme_id(), &mut theme_pick);
                     page_button(ui, app_ref, "Оновлення", Page::Arrivals, &mut go);
                     page_button(ui, app_ref, "Читалка", Page::Reader, &mut go);
@@ -101,9 +109,78 @@ pub fn topbar(app: &mut App, ctx: &egui::Context) {
     if let Some(d) = pace_delta {
         app.set_pace_secs((app.pace_secs as i64 + d).clamp(1, 60) as u64);
     }
+    if help_toggle {
+        app.show_help = !app.show_help;
+    }
+    if app.show_help {
+        help_window(app, ctx);
+    }
     if app.show_about {
         about_window(app, ctx);
     }
+}
+
+/// Every global keyboard shortcut the app actually implements, as
+/// (keys, what it does) — the single source of truth rendered by both the
+/// topbar «клавіші» window and the About dialog (web «клавіші» parity).
+/// Keys stay ASCII (the bundled egui font has no arrow glyphs).
+pub fn help_lines() -> Vec<(&'static str, &'static str)> {
+    vec![
+        (
+            "Ctrl+F",
+            "поле «Знайти в тексті» (читалка) або поле запиту (пошук)",
+        ),
+        ("Enter", "виконати пошук / відкрити документ за номером"),
+        (
+            "Enter / Shift+Enter",
+            "наступний / попередній збіг (у полі «Знайти в тексті»)",
+        ),
+        ("Esc", "зняти підсвічування пошуку (у полі читалки)"),
+        (
+            "Alt+Left / Alt+Right",
+            "попередній / наступний документ списку в читалці",
+        ),
+        (
+            "Alt+PageUp / Alt+PageDown",
+            "те саме, що й Alt+стрілки (зручніше правою рукою)",
+        ),
+        (
+            "Ctrl+Plus / Ctrl+Minus",
+            "більший / дрібніший текст читалки (крок 10%)",
+        ),
+        ("Ctrl+0", "скинути масштаб тексту читалки до 100%"),
+    ]
+}
+
+/// «Клавіші»: the keyboard shortcut sheet opened from the topbar.
+fn help_window(app: &mut App, ctx: &egui::Context) {
+    let mut open = app.show_help;
+    let mut close_req = false;
+    egui::Window::new("Гарячі клавіші")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::RIGHT_TOP, [-12.0, 46.0])
+        .show(ctx, |ui| {
+            egui::Grid::new("help_grid")
+                .num_columns(2)
+                .spacing([12.0, 3.0])
+                .show(ui, |ui| {
+                    for (keys, what) in help_lines() {
+                        ui.label(egui::RichText::new(keys).monospace().small());
+                        ui.label(egui::RichText::new(what).small());
+                        ui.end_row();
+                    }
+                });
+            ui.separator();
+            if ui.button("Закрити").clicked() {
+                close_req = true;
+            }
+        });
+    if close_req {
+        open = false;
+    }
+    app.show_help = open;
 }
 
 /// «Про програму»: version, index facts, live counters, data sources, links.
@@ -198,23 +275,11 @@ fn about_window(app: &mut App, ctx: &egui::Context) {
                     .num_columns(2)
                     .spacing([12.0, 3.0])
                     .show(ui, |ui| {
-                        let key = |ui: &mut egui::Ui, k: &str, what: &str| {
-                            ui.label(egui::RichText::new(k).monospace().small());
+                        for (keys, what) in help_lines() {
+                            ui.label(egui::RichText::new(keys).monospace().small());
                             ui.label(egui::RichText::new(what).small());
                             ui.end_row();
-                        };
-                        key(ui, "Ctrl+F", "поле «Знайти в тексті» (читалка) або поле запиту (пошук)");
-                        key(ui, "Enter", "виконати пошук / перейти до документа за номером");
-                        key(
-                            ui,
-                            "Alt+Left / Alt+Right",
-                            "попередній / наступний документ списку в читалці",
-                        );
-                        key(
-                            ui,
-                            "Alt+PageUp / Alt+PageDown",
-                            "те саме, що й Alt+стрілки (зручніше правою рукою)",
-                        );
+                        }
                     });
             });
             ui.separator();
@@ -349,5 +414,39 @@ pub fn toasts(app: &mut App, ctx: &egui::Context) {
     app.toasts.retain(|t| t.born.elapsed() < Duration::from_secs(4));
     if !app.toasts.is_empty() {
         ctx.request_repaint_after(Duration::from_millis(500));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::help_lines;
+
+    #[test]
+    fn help_lines_cover_the_real_shortcuts() {
+        let lines = help_lines();
+        assert!(!lines.is_empty());
+        let keys: Vec<&str> = lines.iter().map(|(k, _)| *k).collect();
+        // every global handler in App::update has a row here
+        for expected in [
+            "Ctrl+F",
+            "Enter",
+            "Enter / Shift+Enter",
+            "Esc",
+            "Alt+Left / Alt+Right",
+            "Alt+PageUp / Alt+PageDown",
+            "Ctrl+Plus / Ctrl+Minus",
+            "Ctrl+0",
+        ] {
+            assert!(keys.contains(&expected), "missing row for {expected:?}");
+        }
+        // no empty descriptions, no non-ASCII in the key column
+        // (the bundled egui font has no arrow/emoji glyphs)
+        for (k, what) in &lines {
+            assert!(!k.trim().is_empty() && !what.trim().is_empty());
+            assert!(
+                k.is_ascii(),
+                "key column must stay ASCII, got {k:?}"
+            );
+        }
     }
 }

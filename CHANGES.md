@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.34: «клавіші» у програмі, зміст документа з CLI та шапка друку у веб / desktop shortcuts sheet, document outline & print masthead
+
+- **UKR:** 1) **Кнопка «клавіші» у верхній панелі програми** відкриває віконце зі всіма справжніми гарячими клавішами (Ctrl+F, Enter/Shift+Enter, Esc, Alt+стрілки/PageUp-Down, Ctrl+Plus/Minus/0); той самий список тепер і в діалозі «Про програму». 2) **CLI `toc <nreg>`**: зміст **кешованого** документа офлайн — Розділи/Глави ліворуч, Статті з відступом; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM); мережі не чіпає. 3) **Шапка друку у веб**: надрукована сторінка тепер має офіційну шапку — назва, «реєстр. № …», «редакція від дд.мм.рррр» (якщо обрано) та «URL: … · надруковано: дд.мм.рррр». 4) Тести: 247/247.
+- **ENG:** 1) **A «клавіші» button in the desktop topbar** opens a sheet listing every real shortcut (Ctrl+F, Enter/Shift+Enter, Esc, Alt+arrows/PageUp-Down, Ctrl+Plus/Minus/0); the About dialog now shows the same list. 2) **CLI `toc <nreg>`**: the outline of the **cached** document, fully offline — Розділи/Глави flush left, Статті indented; with `--json` and `--out FILE` (BOM table / BOM-less JSON); never touches the network. 3) **A print masthead in the web UI**: the printed page gains the act title, «реєстр. № …», «редакція від дд.мм.рррр» (when an edition is chosen) and «URL: … · надруковано: дд.мм.рррр». 4) Tests: 247/247.
+
+---
+
+## 2026-10-28
+
 ### 0.10.33: «клавіші» у веб, пошук по анотаціях з CLI та «цилата» у читалці / shortcuts popover, annotation search & reader citation
 
 - **UKR:** 1) **Кнопка «клавіші» у веб**: списочок усіх справжніх гарячих клавіш (Ctrl+F, Alt+←/→, ←/→ у списку, Enter/Shift+Enter, Esc) — закривається клавішею Esc або кліком поза ним. 2) **CLI `annot search TERM`**: пошук по всіх анотаціях одразу по трьох полях — текст, вид і номер документа; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM), рядки тієї ж форми, що й `annot list`. 3) **«Цилата» у читалці програми**: кнопка копіює повне посилання — ««Назва» // Офіційний вебпортал парламенту України. Редакція від дд.мм.рррр, URL: …» — у тому самому форматі, що й у вебі. 4) Тести: 241/241.

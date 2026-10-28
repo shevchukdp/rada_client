@@ -2894,6 +2894,67 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_print_header_helper() {
+        // The printable page masthead is one pure helper: bold act title
+        // line, «реєстр. № nreg» (+ « · редакція від dd.mm.yyyy» for a dated
+        // edition) and a muted «URL: <portal page> · надруковано: …» line;
+        // every interpolated value goes through escHtml.
+        let h = ui::INDEX_HTML;
+        assert!(
+            h.contains("function printHeaderHtml(title, nreg, edition, todayDdMmYyyy)"),
+            "printHeaderHtml helper missing"
+        );
+        let f = &h[h.find("function printHeaderHtml(").unwrap()..];
+        let f = &f[..f.find("\n}").unwrap()];
+        assert!(f.contains("реєстр. № "), "{f}");
+        assert!(f.contains("редакція від "), "{f}");
+        assert!(f.contains("URL: "), "{f}");
+        assert!(f.contains("надруковано: "), "{f}");
+        assert!(f.contains("escHtml(title"), "{f}");
+        assert!(f.contains("escHtml(nreg"), "{f}");
+        assert!(f.contains("escHtml(siteUrlFor"), "{f}");
+        assert!(f.contains("escHtml(todayDdMmYyyy"), "{f}");
+        assert!(f.contains("escHtml(fmtArrDate(ed))"), "{f}");
+        // The print date comes from the existing formatter style: today as
+        // 8-digit YYYYMMDD rendered through fmtArrDate.
+        assert!(h.contains("function todayYyyymmdd()"), "today formatter missing");
+        assert!(
+            h.contains("d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate())"),
+            "today built from getFullYear/getMonth/getDate"
+        );
+    }
+
+    #[test]
+    fn ui_page_has_print_header_wired() {
+        // The print assembler injects the masthead into the printable page:
+        // the «Друк» button opens a new tab, fetches the themed print view,
+        // calls printHeaderHtml with the current card title, nreg, selected
+        // edition and the today-formatted date, and writes the header in
+        // right after the opening <body> tag (before the body content).
+        let h = ui::INDEX_HTML;
+        assert!(
+            h.contains("openPrintView(\"/api/export/\""),
+            "print button must assemble the printable page"
+        );
+        assert!(h.contains("async function openPrintView(url)"), "assembler missing");
+        let s = &h[h.find("async function openPrintView(").unwrap()..];
+        let s = &s[..s.find("\n}").unwrap()];
+        assert!(s.contains("printHeaderHtml("), "{s}");
+        assert!(s.contains("state.curCard ? state.curCard.nazva : \"\""), "{s}");
+        assert!(s.contains("state.curNreg,"), "{s}");
+        assert!(s.contains("(\"editions\").value"), "{s}");
+        assert!(s.contains("fmtArrDate(todayYyyymmdd())"), "{s}");
+        assert!(s.contains("w.document.write(insertPrintHeader(html, header))"), "{s}");
+        // The header lands before the body content (right after the opening
+        // <body…> tag; html without a body tag gets it prepended).
+        let ins = &h[h.find("function insertPrintHeader(").unwrap()..];
+        let ins = &ins[..ins.find("\n}").unwrap()];
+        assert!(ins.contains("<body[^>]*>"), "{ins}");
+        assert!(ins.contains("html.slice(0, m.index + m[0].length) + header"), "{ins}");
+        assert!(ins.contains("return header + html"), "{ins}");
+    }
+
+    #[test]
     fn ui_page_has_deep_links() {
         // URL <-> state: search params are restored on load and written back
         // on every search; opening a document puts ?doc=<nreg> into the URL.
