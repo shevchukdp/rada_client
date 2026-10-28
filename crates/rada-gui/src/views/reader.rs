@@ -655,6 +655,15 @@ fn edition_pick(
     picked
 }
 
+/// Apply a reader-zoom step to the persisted zoom value (0 = default 100%).
+/// `delta` is ±10 (the toolbar buttons and Ctrl+Plus/Minus steps); stepping
+/// starts from 100 when unset and clamps to 60..=250. `zoom_step(z, 0)`
+/// normalises the unset value to 100.
+pub fn zoom_step(z: u32, delta: i32) -> u32 {
+    let cur = if z == 0 { 100 } else { z };
+    (cur as i64 + delta as i64).clamp(60, 250) as u32
+}
+
 // ---------------------------------------------------------------------
 // text body
 // ---------------------------------------------------------------------
@@ -768,8 +777,7 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
             .on_hover_text("дрібніший текст")
             .clicked()
         {
-            let cur = if z == 0 { 100 } else { z };
-            app.settings.zoom = cur.saturating_sub(10).max(60);
+            app.settings.zoom = zoom_step(z, -10);
             crate::settings::save(&app.settings);
         }
         if ui.button(egui::RichText::new(zlabel).small()).clicked() {
@@ -781,8 +789,7 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
             .on_hover_text("більший текст")
             .clicked()
         {
-            let cur = if z == 0 { 100 } else { z };
-            app.settings.zoom = (cur + 10).min(250);
+            app.settings.zoom = zoom_step(z, 10);
             crate::settings::save(&app.settings);
         }
         if ui
@@ -1788,6 +1795,24 @@ mod tests {
         assert_eq!(group_thousands(1234567), "1 234 567");
         // 1..400 words → ~1 хв.
         assert!(reading_stats(&"слов ".repeat(120)).ends_with("~1 хв"));
+    }
+
+    #[test]
+    fn zoom_step_clamps_and_normalises_default() {
+        // Unset (0) means 100%: one step lands on 90/110.
+        assert_eq!(zoom_step(0, -10), 90);
+        assert_eq!(zoom_step(0, 10), 110);
+        // A set value steps from itself.
+        assert_eq!(zoom_step(130, -10), 120);
+        assert_eq!(zoom_step(130, 10), 140);
+        // Clamped at both ends.
+        assert_eq!(zoom_step(60, -10), 60);
+        assert_eq!(zoom_step(65, -10), 60);
+        assert_eq!(zoom_step(250, 10), 250);
+        assert_eq!(zoom_step(245, 10), 250);
+        // A zero delta normalises the unset value to 100.
+        assert_eq!(zoom_step(0, 0), 100);
+        assert_eq!(zoom_step(180, 0), 180);
     }
 
     #[test]

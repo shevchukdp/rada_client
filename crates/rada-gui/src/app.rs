@@ -303,6 +303,23 @@ impl App {
         }
     }
 
+    /// Keyboard reader-zoom control (Ctrl+Plus / Ctrl+Minus / Ctrl+0).
+    /// `delta` is ±10; 0 resets to the default (stored as 0 = 100%).
+    pub fn zoom_reader(&mut self, delta: i32) {
+        self.settings.zoom = if delta == 0 {
+            0
+        } else {
+            views::reader::zoom_step(self.settings.zoom, delta)
+        };
+        crate::settings::save(&self.settings);
+        let shown = if self.settings.zoom == 0 {
+            100
+        } else {
+            self.settings.zoom
+        };
+        self.toast(format!("читалка: {shown}%"), ok());
+    }
+
     pub fn spawn<F>(&self, f: F)
     where
         F: FnOnce(Sender<Msg>) + Send + 'static,
@@ -1928,6 +1945,21 @@ impl eframe::App for App {
             if alt_next {
                 self.nav_step(1);
             }
+        }
+        // Ctrl+Plus / Ctrl+Minus / Ctrl+0: reader text zoom (persisted).
+        let z_up = ctx.input_mut(|i| {
+            let a = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Equals);
+            let b = i.consume_key(egui::Modifiers::COMMAND, egui::Key::Plus);
+            a || b
+        });
+        let z_down = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Minus));
+        let z_reset = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::Num0));
+        if z_up {
+            self.zoom_reader(10);
+        } else if z_down {
+            self.zoom_reader(-10);
+        } else if z_reset {
+            self.zoom_reader(0);
         }
 
         // toast lifetime

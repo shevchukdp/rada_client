@@ -3244,4 +3244,36 @@ mod tests {
         ));
         assert!(ui::INDEX_HTML.contains("else a.textContent = h.nazva || h.nreg;"));
     }
+
+    #[test]
+    fn ui_page_has_arrivals_auto_refresh() {
+        // «автооновлення» chip on the arrivals controls row: the choice is
+        // persisted in "rada-arr-auto" ("1"/"0", privacy-mode errors
+        // tolerated); ONE setInterval is created at load and each tick
+        // re-runs the manual loadArrivals path (so the «НОВЕ» badge diff is
+        // untouched) only while the chip is active, the arrivals pane is the
+        // visible tab and the page is not hidden, with a busy flag against
+        // overlapping fetches.
+        assert!(ui::INDEX_HTML.contains("id=\"arr-auto\""));
+        assert!(ui::INDEX_HTML.contains("\u{0430}\u{0432}\u{0442}\u{043e}\u{043e}\u{043d}\u{043e}\u{0432}\u{043b}\u{0435}\u{043d}\u{043d}\u{044f}"));
+        assert!(ui::INDEX_HTML.contains("\"rada-arr-auto\""));
+        assert!(ui::INDEX_HTML.contains("setInterval(arrAutoTick, ARR_AUTO_MS);"));
+        assert!(ui::INDEX_HTML.contains("try { await loadArrivals(); } finally { arrAutoBusy = false; }"));
+        assert!(ui::INDEX_HTML.contains(
+            "if (!arrAuto || document.hidden || $(\"tab-arrivals\").hidden || arrAutoBusy) return;"
+        ));
+    }
+
+    #[test]
+    fn ui_page_has_arrivals_auto_hint() {
+        // Muted «щохвилини» hint beside the chip: the click handler flips the
+        // persisted state through the shared setter, which syncs the chip
+        // .active look, aria-pressed and the hint visibility together, so
+        // the hint reads exactly while the interval condition can fire.
+        assert!(ui::INDEX_HTML.contains("id=\"arr-auto-hint\" class=\"hint\""));
+        assert!(ui::INDEX_HTML.contains("\u{0449}\u{043e}\u{0445}\u{0432}\u{0438}\u{043b}\u{0438}\u{043d}\u{0438}"));
+        assert!(ui::INDEX_HTML.contains("$(\"arr-auto\").onclick = () => setArrAuto(!arrAuto);"));
+        assert!(ui::INDEX_HTML.contains("$(\"arr-auto\").classList.toggle(\"active\", on);"));
+        assert!(ui::INDEX_HTML.contains("$(\"arr-auto-hint\").hidden = !on;"));
+    }
 }

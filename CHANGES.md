@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.29: автооновлення стрічки у веб, офлайн-експорт документа та масштаб читалки з клавіатури / feed auto-refresh, offline document export & keyboard zoom
+
+- **UKR:** 1) **«Автооновлення» в Оновленнях веб**: чип увімкнено — фід освіжається щохвилини, доки вкладка відкрита (у фоновій вкладці не вантажиться); вибір пам'ятає браузер. 2) **CLI `export <nreg>`**: офлайн-експорт **кешованого** тіла документа у `md` (типово) / `txt` / `html` — з заголовком і номером; `--out FILE` пише з BOM, без нього — у stdout; мережі не чіпає взагалі; «документ не кешовано» — підказка прочитати його спершу. 3) **Масштаб читалки з клавіатури**: Ctrl++ / Ctrl+- / Ctrl+0 (крок 10%, 60–250%, зберігається), з підказкою «читалка: N%». 4) Тести: 222/222.
+- **ENG:** 1) **«Автооновлення» chip in the web arrivals feed**: once enabled the feed refreshes every minute while the tab is open (backgrounded tabs stay quiet); the choice is remembered by the browser. 2) **CLI `export <nreg>`**: offline export of the **cached** document body as `md` (default) / `txt` / `html` with a title and nreg header; `--out FILE` writes with a BOM, otherwise stdout; it never touches the network, and an uncached document suggests reading it first. 3) **Reader zoom from the keyboard**: Ctrl++ / Ctrl+- / Ctrl+0 (10% steps, clamped 60–250%, persisted) with a «читалка: N%» toast. 4) Tests: 222/222.
+
+---
+
+## 2026-10-28
+
 ### 0.10.28: фільтр в Обраному веб, кеш-пошук у файл та час свіжості фіда / web favorites filter, cache search to file & feed freshness time
 
 - **UKR:** 1) **Фільтр в Обраному веб**: поле «фільтр тексту, назви чи номера…» миттєво звужує список (текст анотації, назва та nreg), поруч — «показано X з Y», як у стрічці оновлень. 2) **CLI `cache --search TERM --out FILE`**: повнотекстовий звіт по кешу у файл (з BOM; порожній результат — лише BOM), `--json` — об'єкт без BOM; stdout мовчить. 3) **Час оновлення фіда у програмі**: поряд із лічильником «N документів» — «оновлено: щойно / N хв тому / N год тому / N дн тому». 4) Тести: 216/216.

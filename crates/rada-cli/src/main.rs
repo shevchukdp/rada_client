@@ -17,7 +17,8 @@
 //! - `status`    index statistics;
 //! - `stats`     offline report on the local index (file, dicts, text cache,
 //!               arrivals snapshot; `--json` for machine-readable output);
-//! - `export`    save a document (card + text) as txt / md / html;
+//! - `export`    offline export of a cached document body as md / txt / html
+//!               (text cache only — never touches the network);
 //! - `web`       local web UI (search, reader, annotations, export).
 
 use std::path::{Path, PathBuf};
@@ -279,17 +280,18 @@ enum Cmd {
         #[command(subcommand)]
         what: AnnCmd,
     },
-    /// Export a document (card + text) as txt / md / html.
-    /// Text prefers the offline cache; the card is fetched live.
+    /// Offline export of a CACHED document body as md / txt / html: the
+    /// text comes from the local text cache only — the command never
+    /// touches the network. Export the current edition; read the document
+    /// once (`text <nreg>`) while online to fill the cache.
     Export {
         nreg: String,
-        /// Output format: txt | md | html.
-        #[arg(long, default_value = "txt")]
+        /// Output format: md (default) | txt | html (case-insensitive).
+        #[arg(long = "format", alias = "fmt", default_value = "md")]
         fmt: String,
-        /// Specific edition date YYYYMMDD (default: current).
-        #[arg(long)]
-        edition: Option<String>,
         /// Write to this file instead of stdout (parent dirs created).
+        /// Human document: always written UTF-8 WITH a BOM; stdout output
+        /// is the same bytes without the BOM.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -446,8 +448,8 @@ fn run() -> Result<()> {
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
         Cmd::Status => cmd_status(&cli.db),
         Cmd::Annot { what } => cmd_annot(&cli.db, what),
-        Cmd::Export { nreg, fmt, edition, out } => {
-            cmd_export(&cli.db, &nreg, &fmt, edition.as_deref(), out.as_deref(), cli.pace)
+        Cmd::Export { nreg, fmt, out } => {
+            cmd_export(&cli.db, &nreg, &fmt, out.as_deref())
         }
         Cmd::Web { host, port, open } => cmd_web(&cli.db, &host, port, open, cli.pace),
     }
@@ -1069,86 +1071,128 @@ fn out_note(chars: usize, file: &Path) -> String {
     format!("[text] записано {chars} симв. → {}", file.display())
 }
 
-/// Validate the `--fmt` value; returns the canonical format string.
+/// Validate the `--format` value; returns the canonical format string.
 fn normalize_fmt(fmt: &str) -> Result<&'static str> {
     match fmt.trim().to_ascii_lowercase().as_str() {
         "txt" => Ok("txt"),
         "md" => Ok("md"),
         "html" => Ok("html"),
         _ => Err(anyhow::anyhow!(
-            "unknown export format {fmt:?} (expected txt | md | html)"
+            "невідомий формат {fmt} (md|txt|html)"
         )),
     }
 }
 
-fn cmd_export(
-    db: &PathBuf,
-    nreg: &str,
-    fmt: &str,
-    edition: Option<&str>,
-    out: Option<&Path>,
-    pace: u64,
-) -> Result<()> {
+/// Offline export of a CACHED document body: the text is read from the
+/// local text cache under the current-edition key (`""`) and the title
+/// from the offline index — the command never builds a paced client and
+/// never touches the network. An uncached `nreg` is a hard error pointing
+/// at `text` (the cache warmer). With `--out` the rendered document is
+/// written UTF-8 WITH a BOM (human document, parent dirs created), stdout
+/// stays silent and one stderr note names the file; without `--out` the
+/// exact same bytes minus the BOM go to stdout.
+fn cmd_export(db: &PathBuf, nreg: &str, fmt: &str, out: Option<&Path>) -> Result<()> {
     let fmt = normalize_fmt(fmt)?;
-    let key = edition.unwrap_or("");
-    let c = client(pace);
-
-    // Card: live only (there is no offline card cache).
-    let card = c.card(nreg);
-
-    // Text: prefer the offline cache, fall back to a live fetch and refresh it.
-    let cached = rada_db::open(db)
-        .ok()
-        .and_then(|conn| rada_db::textcache::get(&conn, nreg, key).ok().flatten());
-    let text = match cached {
-        Some(text) => text,
-        None => {
-            let fetched = match edition {
-                Some(ed) => c.show_edition_text(nreg, ed),
-                None => c.show_text(nreg),
-            };
-            match fetched {
-                Ok(text) => {
-                    if let Ok(conn) = rada_db::open(db) {
-                        let _ = rada_db::textcache::put(&conn, nreg, key, &text);
-                    }
-                    text
-                }
-                Err(e) => {
-                    return Err(anyhow::anyhow!(
-                        "text {nreg}: {e} (no cached copy — run `rada-client text {nreg}` once online)"
-                    ));
-                }
-            }
-        }
+    let conn = rada_db::open(db)?;
+    let body = rada_db::textcache::get(&conn, nreg, "")?.ok_or_else(|| {
+        anyhow::anyhow!("документ {nreg} не кешовано — спершу прочитайте його (text {nreg})")
+    })?;
+    // Offline title lookup; an nreg missing from `docs` exports under its own nreg.
+    let title = rada_db::title_by_nreg(&conn, nreg).unwrap_or_else(|| nreg.to_string());
+    let doc = match fmt {
+        "md" => export_markdown(&title, nreg, &body),
+        "txt" => export_plain(&title, nreg, &body),
+        _ => export_html(&title, nreg, &body),
     };
-
-    let (body, _) = match card {
-        Ok(card) => rada_web::render_export(nreg, &card, &text, fmt),
-        Err(e) => {
-            // Offline-friendly fallback: plain text from the cache, name unknown.
-            eprintln!("[export] card {nreg} failed ({e}); exporting txt from offline cache (name unknown)");
-            (
-                format!("# {nreg} — назва невідома (офлайн-кеш)\n\n{text}\n"),
-                "txt".to_string(),
-            )
-        }
-    };
-
     match out {
         Some(p) => {
-            if let Some(parent) = p.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("create dir {}", parent.display()))?;
-                }
-            }
-            std::fs::write(p, &body).with_context(|| format!("write {}", p.display()))?;
-            println!("wrote {} ({} bytes)", p.display(), body.as_bytes().len());
+            // human document: UTF-8 with a BOM, like the plain tables
+            write_out_file(p, format!("\u{FEFF}{doc}").as_bytes())?;
+            eprintln!("{}", export_out_note(fmt, nreg, p));
         }
-        None => print!("{body}"),
+        None => print!("{doc}"),
     }
     Ok(())
+}
+
+/// Markdown rendering of an exported document: `# {title}` header, a
+/// `> {nreg} — rada-client {version}` quote line, a blank line, then the
+/// cached body with a trailing newline.
+fn export_markdown(title: &str, nreg: &str, body: &str) -> String {
+    format!(
+        "# {title}\n> {nreg} — rada-client {}\n\n{body}\n",
+        env!("CARGO_PKG_VERSION")
+    )
+}
+
+/// Plain-text rendering of an exported document: `{title} ({nreg})` line,
+/// a 60-character `=` rule, a blank line, then the cached body with a
+/// trailing newline.
+fn export_plain(title: &str, nreg: &str, body: &str) -> String {
+    format!(
+        "{title} ({nreg})\n{}\n\n{body}\n",
+        "=".repeat(60)
+    )
+}
+
+/// Escape the HTML-significant characters (`& < > "`) so cached bodies
+/// and index titles can never break out of their element.
+fn html_escape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '&' => out.push_str("&amp;"),
+            '<' => out.push_str("&lt;"),
+            '>' => out.push_str("&gt;"),
+            '"' => out.push_str("&quot;"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
+/// Minimal standalone HTML page for an exported document: doctype, UTF-8
+/// meta, escaped `<title>`/`<h1>`, a `<p class="meta">` line with the
+/// escaped nreg and app version, then the body split on blank-line
+/// boundaries into escaped `<p>` paragraphs (multi-line paragraphs keep
+/// their internal newlines).
+fn export_html(title: &str, nreg: &str, body: &str) -> String {
+    let t = html_escape(title);
+    let mut out = String::new();
+    out.push_str("<!doctype html>\n");
+    out.push_str("<meta charset=\"utf-8\">\n");
+    out.push_str(&format!("<title>{t}</title>\n"));
+    out.push_str(&format!("<h1>{t}</h1>\n"));
+    out.push_str(&format!(
+        "<p class=\"meta\">{} · rada-client {}</p>\n",
+        html_escape(nreg),
+        env!("CARGO_PKG_VERSION")
+    ));
+    let mut lines: Vec<&str> = Vec::new();
+    let mut paras: Vec<String> = Vec::new();
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            if !lines.is_empty() {
+                paras.push(lines.join("\n"));
+                lines.clear();
+            }
+        } else {
+            lines.push(line);
+        }
+    }
+    if !lines.is_empty() {
+        paras.push(lines.join("\n"));
+    }
+    for p in paras {
+        out.push_str(&format!("<p>{}</p>\n", html_escape(&p)));
+    }
+    out
+}
+
+/// The stderr note printed after `export --out` has written `file`
+/// (`[export] {nreg} ({fmt}) → {file}`).
+fn export_out_note(fmt: &str, nreg: &str, file: &Path) -> String {
+    format!("[export] {nreg} ({fmt}) → {}", file.display())
 }
 
 /// Offline text cache: `--purge` deletes cached bodies (all or one `nreg`),
@@ -2290,8 +2334,9 @@ fn fmt_date(d: &str) -> String {
 mod tests {
     use super::{
         annot_list_out_note, annot_out_note, annot_text_file_note, arrivals_date_key,
-        arrivals_out_note, backfill_summary, cache_search_out_note, card_out_note,
-        dict_fresh_lines, dict_matches, dict_out_note, facet_lines, filter_since, new_nregs,
+        arrivals_out_note, backfill_summary, cache_search_out_note, card_out_note, dict_fresh_lines,
+        dict_matches, dict_out_note, export_html,
+        export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
         normalize_fmt, out_note, related_out_note, resolve_out_note, search_out_note, since_note,
         stats_lines, today_yyyymmdd, StatsReport,
     };
@@ -2527,6 +2572,80 @@ mod tests {
         assert!(normalize_fmt("pdf").is_err());
         assert!(normalize_fmt("").is_err());
         assert!(normalize_fmt("markdown").is_err());
+    }
+
+    #[test]
+    fn export_markdown_plain_headers() {
+        // Markdown: exact header lines, blank line, body + trailing newline.
+        let md = export_markdown("Податковий кодекс", "2755-17", "Стаття 1.\nТекст");
+        let mut lines = md.lines();
+        assert_eq!(lines.next().unwrap(), "# Податковий кодекс");
+        assert_eq!(
+            lines.next().unwrap(),
+            format!(
+                "> 2755-17 — rada-client {}",
+                env!("CARGO_PKG_VERSION")
+            )
+        );
+        assert_eq!(lines.next().unwrap(), "");
+        assert_eq!(lines.next().unwrap(), "Стаття 1.");
+        assert_eq!(lines.next().unwrap(), "Текст");
+        assert_eq!(lines.next(), None);
+        assert!(md.ends_with('\n'), "body carries a trailing newline");
+        // Plain: title (nreg), 60 '=' rule, blank, body + trailing newline.
+        let txt = export_plain("Податковий кодекс", "2755-17", "Стаття 1.\nТекст");
+        let mut lines = txt.lines();
+        assert_eq!(lines.next().unwrap(), "Податковий кодекс (2755-17)");
+        assert_eq!(lines.next().unwrap(), "=".repeat(60));
+        assert_eq!(lines.next().unwrap(), "");
+        assert_eq!(lines.next().unwrap(), "Стаття 1.");
+        assert_eq!(lines.next().unwrap(), "Текст");
+        assert_eq!(lines.next(), None);
+        assert!(txt.ends_with('\n'), "body carries a trailing newline");
+    }
+
+    #[test]
+    fn export_html_escapes_and_wraps_paragraphs() {
+        let html = export_html(
+            "Акт <A> & \"B\"",
+            "1-1<b>",
+            "Перший & абзац.\nДругий рядок.\n\nДругий <абзац> \"лапки\".",
+        );
+        // standalone page skeleton
+        assert!(html.starts_with("<!doctype html>\n"), "{html}");
+        assert!(html.contains("<meta charset=\"utf-8\">"));
+        // title escaped in <title> and <h1>, raw angle brackets gone
+        let esc_title = "Акт &lt;A&gt; &amp; &quot;B&quot;";
+        assert!(html.contains(&format!("<title>{esc_title}</title>")));
+        assert!(html.contains(&format!("<h1>{esc_title}</h1>")));
+        // meta line carries the escaped nreg
+        assert!(html.contains("<p class=\"meta\">1-1&lt;b&gt;"));
+        assert!(html.contains(&format!(
+            "· rada-client {}</p>",
+            env!("CARGO_PKG_VERSION")
+        )));
+        // blank-line split: two escaped paragraphs, internal newline kept
+        assert!(html.contains("<p>Перший &amp; абзац.\nДругий рядок.</p>"));
+        assert!(html.contains("<p>Другий &lt;абзац&gt; &quot;лапки&quot;.</p>"));
+        assert!(!html.contains("<абзац>"), "body angle brackets are escaped");
+        // no paragraph for blank-line runs at the edges
+        let only_blank = export_html("T", "n", "\n \n\n");
+        assert!(!only_blank.contains("<p>"));
+    }
+
+    #[test]
+    fn export_out_note_formats_fmt_nreg_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//e.md");
+        let line = export_out_note("md", "2755-17", file);
+        assert_eq!(
+            line,
+            format!("[export] 2755-17 (md) → {}", file.display())
+        );
+        assert!(line.starts_with("[export] "));
+        assert!(line.contains("(md)"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
     }
 
     #[test]

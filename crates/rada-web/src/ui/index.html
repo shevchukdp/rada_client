@@ -284,6 +284,16 @@
   #arr-only-new.selected-look {
     background: var(--accent); color: var(--accent-text); border-color: var(--accent);
   }
+  /* «автооновлення» chip on the arrivals controls row: same chip language as
+     the favorites rows, the active chip takes the accent. */
+  #arr-auto {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #arr-auto:hover { color: var(--text); border-color: var(--accent); }
+  #arr-auto.active {
+    background: var(--accent); color: var(--accent-text); border-color: var(--accent);
+  }
   /* Date-group headers above the arrival rows: muted clickable hint lines
      (click collapses/expands the group; same accent hover as the chips). */
   .arr-date-hint {
@@ -618,6 +628,9 @@
       <span id="arr-new-count" class="hint" hidden></span>
       <button id="arr-only-new" type="button" aria-pressed="false" hidden
         title="показати лише документи, яких ви ще не бачили">лише нові</button>
+      <button id="arr-auto" class="chip" type="button" aria-pressed="false"
+        title="оновлювати живий фід щохвилини, доки відкрита ця сторінка">автооновлення</button>
+      <span id="arr-auto-hint" class="hint" hidden>щохвилини</span>
     </div>
     <div id="arrivals"></div>
   </section>
@@ -2233,6 +2246,41 @@ async function loadArrivals() {
     el.textContent = "Помилка: " + e.message;
   }
 }
+
+// ---- arrivals auto-refresh («автооновлення» chip) ---------------------------
+// ONE interval is created at load and fires every ARR_AUTO_MS; each tick
+// re-runs the exact manual loader (loadArrivals, so the «НОВЕ» badge diff
+// works unchanged) only while the chip is active, the arrivals pane is the
+// visible tab and the page is not hidden. arrAutoBusy stops overlapping
+// fetches when a paced ≈5 s load outlives the tick. The choice persists in
+// "rada-arr-auto" ("1"/"0", default "0"), tolerating privacy-mode errors
+// like the favorites chips.
+const ARR_AUTO_KEY = "rada-arr-auto";
+const ARR_AUTO_MS = 60000;
+let arrAuto = false;
+let arrAutoBusy = false;
+
+function setArrAuto(on) {
+  arrAuto = on;
+  try { localStorage.setItem(ARR_AUTO_KEY, on ? "1" : "0"); } catch (_) {}
+  $("arr-auto").classList.toggle("active", on);
+  $("arr-auto").setAttribute("aria-pressed", on ? "true" : "false");
+  $("arr-auto-hint").hidden = !on;
+}
+
+async function arrAutoTick() {
+  if (!arrAuto || document.hidden || $("tab-arrivals").hidden || arrAutoBusy) return;
+  arrAutoBusy = true;
+  try { await loadArrivals(); } finally { arrAutoBusy = false; }
+}
+
+setInterval(arrAutoTick, ARR_AUTO_MS);
+
+$("arr-auto").onclick = () => setArrAuto(!arrAuto);
+try { arrAuto = localStorage.getItem(ARR_AUTO_KEY) === "1"; } catch (_) {}
+$("arr-auto").classList.toggle("active", arrAuto);
+$("arr-auto").setAttribute("aria-pressed", arrAuto ? "true" : "false");
+$("arr-auto-hint").hidden = !arrAuto;
 
 async function loadStatusTab() {
   try {
