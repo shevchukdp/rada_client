@@ -3382,6 +3382,47 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_arrivals_freshness_label() {
+        // «оновлено: …» freshness label beside the arrivals counters (the
+        // GUI's parity): muted hint span, hidden by default until the first
+        // successful load; the shared loadArrivals stamps arrFetchedAt once,
+        // inside the try after the live API call succeeds (so a failed load
+        // never pretends the feed is fresh) and manual + auto-refresh ticks
+        // share that single success point.
+        assert!(ui::INDEX_HTML.contains("let arrFetchedAt = 0;"));
+        assert!(ui::INDEX_HTML.contains("id=\"arr-fresh\" class=\"hint\" hidden"));
+        assert!(ui::INDEX_HTML.contains("оновлено: "));
+        assert!(ui::INDEX_HTML.contains("function updateArrFresh()"));
+        let body = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function loadArrivals()")
+            .expect("loadArrivals")..];
+        let stamp = body.find("arrFetchedAt = Date.now();").expect("freshness stamp");
+        assert!(stamp > body
+            .find("const d = await api(\"/api/arrivals?limit=100\");")
+            .expect("api call"));
+        assert!(stamp < body.find("catch (e)").expect("catch"));
+    }
+
+    #[test]
+    fn ui_page_has_arrivals_freshness_since_helper() {
+        // Pure fmtSince builder with the GUI's exact wording: «щойно» under a
+        // minute, «N хв тому» under an hour, «N год тому» under a day, «N дн
+        // тому» beyond (integer floors). A lightweight 30 s tick repaints the
+        // label with the same visibility guard as arrAutoTick, so a hidden
+        // page or a hidden arrivals pane never touches the DOM.
+        assert!(ui::INDEX_HTML.contains("function fmtSince(nowMs, thenMs)"));
+        assert!(ui::INDEX_HTML.contains("щойно"));
+        assert!(ui::INDEX_HTML.contains(" хв тому"));
+        assert!(ui::INDEX_HTML.contains(" год тому"));
+        assert!(ui::INDEX_HTML.contains(" дн тому"));
+        assert!(ui::INDEX_HTML.contains("setInterval(arrFreshTick, 30000);"));
+        assert!(ui::INDEX_HTML.contains(
+            "function arrFreshTick() {\n  if (document.hidden || $(\"tab-arrivals\").hidden) return;"
+        ));
+        assert!(ui::INDEX_HTML.contains("  updateArrFresh();\n}\n\nsetInterval(arrFreshTick, 30000);"));
+    }
+
+    #[test]
     fn ui_page_has_citation_button() {
         // «цилата» chip in the reader toolbar beside the copy-text/print
         // buttons (the GUI reader's context-menu copy-citation parity): no

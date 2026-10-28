@@ -19,6 +19,11 @@
 //! - `stats`     offline report on the local index (file, documents,
 //!               annotations, dicts, text cache; `--json` for
 //!               machine-readable output, `--out` to write the report);
+//! - `verify`    offline database health check (SQLite integrity,
+//!               foreign keys, documents, FTS consistency, duplicate
+//!               nregs, text cache; `--json` for machine-readable
+//!               output, `--out` to write the report, exit 1 on
+//!               any failed check);
 //! - `export`    offline export of a cached document body as md / txt / html
 //!               (text cache only — never touches the network);
 //! - `toc`       offline outline (зміст) of a cached document: «Розділ/Глава»
@@ -202,6 +207,22 @@ enum Cmd {
     /// output). Pure offline: the command never touches the network.
     Stats {
         /// Emit JSON instead of the aligned report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Offline database health check (no network, no client): SQLite
+    /// integrity, foreign keys, document count, FTS consistency,
+    /// duplicate nregs and the text cache. One line per check plus a
+    /// verdict; exits 1 when any check fails (warnings alone stay
+    /// exit 0).
+    Verify {
+        /// Emit JSON instead of the aligned check lines.
         #[arg(long)]
         json: bool,
         /// Write the exact stdout report (or the `--json` body) to this file
@@ -497,6 +518,7 @@ fn run() -> Result<()> {
             cmd_backfill(&cli.db, &query, limit, dry_run, json, cli.pace)
         }
         Cmd::Stats { json, out } => cmd_stats(&cli.db, json, out.as_deref()),
+        Cmd::Verify { json, out } => cmd_verify(&cli.db, json, out.as_deref()),
         Cmd::Arrivals {
             save,
             json,
@@ -2004,6 +2026,260 @@ fn cmd_stats(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// Outcome of one `verify` check.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum VerifyStatus {
+    Ok,
+    Warn,
+    Fail,
+}
+
+impl VerifyStatus {
+    /// The plain CLI status prefix: `stats`/`cache` print plain text with
+    /// no decorative glyphs, so `verify` keeps the same convention.
+    fn as_str(&self) -> &'static str {
+        match self {
+            VerifyStatus::Ok => "ok",
+            VerifyStatus::Warn => "увага",
+            VerifyStatus::Fail => "помилка",
+        }
+    }
+}
+
+/// One `verify` check: the label, its status and the detail printed after
+/// the «: ».
+struct VerifyCheck {
+    name: String,
+    status: VerifyStatus,
+    detail: String,
+}
+
+/// `true` when no check failed (warnings are allowed): the single rule
+/// behind the verdict line in [`verify_lines`], the `--json` exit field
+/// and the exit code of `verify`.
+fn verify_healthy(checks: &[VerifyCheck]) -> bool {
+    !checks.iter().any(|c| c.status == VerifyStatus::Fail)
+}
+
+/// The report body of `verify` (shared by stdout and `--out` so the two
+/// cannot drift): one `{mark} {name}: {detail}` line per check with the
+/// plain `ok`/`увага`/`помилка` prefixes, then the verdict line — derived
+/// from the statuses inside this SAME builder: «вердикт: є проблеми» when
+/// any check failed, «вердикт: база здорова» otherwise.
+fn verify_lines(checks: &[VerifyCheck]) -> Vec<String> {
+    let mut lines: Vec<String> = checks
+        .iter()
+        .map(|c| format!("{} {}: {}", c.status.as_str(), c.name, c.detail))
+        .collect();
+    lines.push(format!(
+        "вердикт: {}",
+        if verify_healthy(checks) {
+            "база здорова"
+        } else {
+            "є проблеми"
+        }
+    ));
+    lines
+}
+
+/// The `--json` body of `verify` (shared by stdout and `--out`): the
+/// checks array plus the verdict and the exit severity (`0` healthy /
+/// `1` problems), built as a hand-rolled `serde_json::Value` like the
+/// other commands' JSON bodies.
+fn verify_json(checks: &[VerifyCheck]) -> String {
+    let items: Vec<serde_json::Value> = checks
+        .iter()
+        .map(|c| {
+            serde_json::json!({
+                "name": c.name,
+                "status": c.status.as_str(),
+                "detail": c.detail,
+            })
+        })
+        .collect();
+    let healthy = verify_healthy(checks);
+    let value = serde_json::json!({
+        "checks": items,
+        "verdict": if healthy { "база здорова" } else { "є проблеми" },
+        "exit": if healthy { 0 } else { 1 },
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `verify --out` has written `file`:
+/// `[verify] база здорова → {file}` / `[verify] є проблеми → {file}`.
+fn verify_out_note(ok: bool, file: &Path) -> String {
+    let verdict = if ok { "база здорова" } else { "є проблеми" };
+    format!("[verify] {verdict} → {}", file.display())
+}
+
+/// Offline database health check (`verify`): never builds a client, never
+/// touches the network. A missing index file is a hard error
+/// («індекс не знайдено: …», the `stats` rule — no partial report). Each
+/// check degrades gracefully to `fail`/`warn` instead of aborting; the run
+/// exits 1 as soon as any check failed (warnings alone stay exit 0). With
+/// `--out` the exact stdout body goes to the file (parent dirs created)
+/// and nothing prints to stdout: the plain report is written UTF-8 with a
+/// BOM (Excel-friendly, like search/arrivals/stats), the `--json` body
+/// BOM-less; one `[verify] {verdict} → {file}` note goes to stderr.
+fn cmd_verify(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    let mut checks: Vec<VerifyCheck> = Vec::new();
+
+    // a. `PRAGMA integrity_check`: the single «ok» row when the file is
+    // sound, one row per reported problem otherwise.
+    let integrity = (|| -> Result<Vec<String>> {
+        let mut stmt = conn.prepare("PRAGMA integrity_check")?;
+        let mut rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut problems = Vec::new();
+        while let Some(row) = rows.next().transpose()? {
+            problems.push(row);
+        }
+        Ok(problems)
+    })();
+    let (status, detail) = match integrity {
+        Ok(rows) if rows.len() == 1 && rows[0] == "ok" => {
+            (VerifyStatus::Ok, "ok".to_string())
+        }
+        Ok(rows) if rows.is_empty() => (VerifyStatus::Fail, "немає відповіді".to_string()),
+        Ok(rows) => (VerifyStatus::Fail, rows.join("; ")),
+        Err(e) => (VerifyStatus::Fail, format!("{e:#}")),
+    };
+    checks.push(VerifyCheck {
+        name: "цілість SQLite".into(),
+        status,
+        detail,
+    });
+
+    // b. `PRAGMA foreign_key_check`: one row per violated foreign key.
+    let fk = (|| -> Result<i64> {
+        let mut stmt = conn.prepare("PRAGMA foreign_key_check")?;
+        let rows = stmt.query_map([], |_r| Ok(()))?;
+        let mut violations = 0i64;
+        for row in rows {
+            row?;
+            violations += 1;
+        }
+        Ok(violations)
+    })();
+    let (status, detail) = match fk {
+        Ok(0) => (VerifyStatus::Ok, "ok".to_string()),
+        Ok(n) => (VerifyStatus::Fail, format!("{n} порушень")),
+        Err(e) => (VerifyStatus::Fail, format!("{e:#}")),
+    };
+    checks.push(VerifyCheck {
+        name: "зовнішні ключі".into(),
+        status,
+        detail,
+    });
+
+    // c. documents: an empty index is suspicious but not broken (warn).
+    let docs: Option<i64> = rada_db::doc_count(&conn).ok();
+    checks.push(match docs {
+        Some(0) => VerifyCheck {
+            name: "документи".into(),
+            status: VerifyStatus::Warn,
+            detail: "0 — індекс порожній".into(),
+        },
+        Some(n) => VerifyCheck {
+            name: "документи".into(),
+            status: VerifyStatus::Ok,
+            detail: n.to_string(),
+        },
+        None => VerifyCheck {
+            name: "документи".into(),
+            status: VerifyStatus::Fail,
+            detail: "таблиця docs недоступна".into(),
+        },
+    });
+
+    // d. FTS consistency: `docs_fts` (the external-content FTS5 table over
+    // `docs`) vs the `docs` row count; a failing FTS query means the index
+    // table itself is gone.
+    let fts: Option<i64> = conn
+        .query_row("SELECT COUNT(*) FROM docs_fts", [], |r| r.get(0))
+        .ok();
+    let (status, detail) = match (fts, docs) {
+        (Some(f), Some(d)) if f == d => (VerifyStatus::Ok, f.to_string()),
+        (Some(f), Some(d)) => (VerifyStatus::Warn, format!("docs={d}, docs_fts={f}")),
+        (Some(f), None) => (VerifyStatus::Warn, format!("docs_fts={f}, docs недоступна")),
+        (None, _) => (VerifyStatus::Fail, "відсутній".to_string()),
+    };
+    checks.push(VerifyCheck {
+        name: "повнотекстовий індекс".into(),
+        status,
+        detail,
+    });
+
+    // e. duplicate nregs: the schema guards nreg UNIQUE, a nonzero count
+    // means something bypassed it (warn, not fatal).
+    let dups: Option<i64> = conn
+        .query_row(
+            "SELECT COUNT(*) FROM (SELECT nreg FROM docs GROUP BY nreg HAVING COUNT(*) > 1)",
+            [],
+            |r| r.get(0),
+        )
+        .ok();
+    let (status, detail) = match dups {
+        Some(0) => (VerifyStatus::Ok, "немає".to_string()),
+        Some(n) => (VerifyStatus::Warn, n.to_string()),
+        None => (VerifyStatus::Fail, "таблиця docs недоступна".to_string()),
+    };
+    checks.push(VerifyCheck {
+        name: "дублікати nreg".into(),
+        status,
+        detail,
+    });
+
+    // f. text cache: informational only — an empty cache is normal.
+    let cache_rows = rada_db::textcache::stats(&conn)
+        .map(|(rows, _)| rows)
+        .unwrap_or(0);
+    checks.push(VerifyCheck {
+        name: "кеш текстів".into(),
+        status: VerifyStatus::Ok,
+        detail: cache_rows.to_string(),
+    });
+
+    let healthy = verify_healthy(&checks);
+    if json {
+        let body = verify_json(&checks);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", verify_out_note(healthy, p));
+            }
+            None => println!("{body}"),
+        }
+    } else {
+        let lines = verify_lines(&checks);
+        match out {
+            Some(p) => {
+                // UTF-8 BOM prefix: the same Excel-friendly convention as
+                // search/arrivals/stats; the bytes are exactly the stdout
+                // report (the checks always render, so never BOM-alone).
+                write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+                eprintln!("{}", verify_out_note(healthy, p));
+            }
+            None => {
+                for line in lines {
+                    println!("{line}");
+                }
+            }
+        }
+    }
+    // Any fail ⇒ exit 1 (every report line already went through the
+    // line-flushing stdout); warnings alone keep the run at exit 0.
+    if !healthy {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 /// Docs in `live` whose nreg is absent from `seen`: feed order preserved,
 /// duplicates collapsed, empty `seen` ⇒ everything is new.
 fn new_nregs(live: &[String], seen: &[String]) -> Vec<String> {
@@ -2864,7 +3140,8 @@ mod tests {
         export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
         normalize_fmt, out_note, related_out_note, resolve_out_note, search_out_note, since_note,
         stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
-        toc_out_note, StatsInfo, TocEntry,
+        toc_out_note, verify_lines, verify_out_note, StatsInfo, TocEntry, VerifyCheck,
+        VerifyStatus,
     };
 
     #[test]
@@ -3669,5 +3946,91 @@ mod tests {
             toc_out_note(0, file),
             format!("[toc] записано 0 заголовків → {}", file.display())
         );
+    }
+
+    #[test]
+    fn verify_lines_all_ok_renders_healthy_verdict() {
+        let ok = |name: &str, detail: &str| VerifyCheck {
+            name: name.into(),
+            status: VerifyStatus::Ok,
+            detail: detail.into(),
+        };
+        let checks = vec![
+            ok("цілість SQLite", "ok"),
+            ok("зовнішні ключі", "ok"),
+            ok("документи", "295340"),
+            ok("повнотекстовий індекс", "295340"),
+            ok("дублікати nreg", "немає"),
+            ok("кеш текстів", "12"),
+        ];
+        let lines = verify_lines(&checks);
+        assert_eq!(lines.len(), 7, "six checks plus the verdict line");
+        // every check line carries the plain ok prefix (house style: no
+        // decorative glyphs) in the «{mark} {name}: {detail}» shape
+        for line in &lines[..6] {
+            assert!(line.starts_with("ok "), "{line}");
+        }
+        assert_eq!(lines[2], "ok документи: 295340");
+        assert_eq!(lines[4], "ok дублікати nreg: немає");
+        // the verdict is derived inside the builder: no Fail → healthy
+        assert!(lines[6].contains("база здорова"), "{}", lines[6]);
+        assert!(lines[6].starts_with("вердикт: "), "{}", lines[6]);
+        // no checks at all: still just the healthy verdict line
+        assert_eq!(verify_lines(&[]), vec!["вердикт: база здорова".to_string()]);
+    }
+
+    #[test]
+    fn verify_lines_mixed_statuses_mark_problems() {
+        let check = |name: &str, status: VerifyStatus, detail: &str| VerifyCheck {
+            name: name.into(),
+            status,
+            detail: detail.into(),
+        };
+        let mixed = vec![
+            check("цілість SQLite", VerifyStatus::Ok, "ok"),
+            check("документи", VerifyStatus::Warn, "0 — індекс порожній"),
+            check("повнотекстовий індекс", VerifyStatus::Fail, "відсутній"),
+        ];
+        let lines = verify_lines(&mixed);
+        assert_eq!(lines.len(), 4);
+        assert_eq!(lines[0], "ok цілість SQLite: ok");
+        // statuses render as the plain «увага»/«помилка» prefixes
+        assert!(lines[1].starts_with("увага "), "{}", lines[1]);
+        assert!(lines[1].contains("0 — індекс порожній"));
+        assert!(lines[2].starts_with("помилка "), "{}", lines[2]);
+        assert!(lines[2].contains("відсутній"));
+        // one Fail anywhere → the problems verdict
+        assert!(lines[3].starts_with("вердикт: "), "{}", lines[3]);
+        assert!(lines[3].contains("є проблеми"), "{}", lines[3]);
+        // warnings alone stay healthy: no Fail → «база здорова»
+        let warned = vec![
+            check("цілість SQLite", VerifyStatus::Ok, "ok"),
+            check("документи", VerifyStatus::Warn, "0 — індекс порожній"),
+        ];
+        let lines = verify_lines(&warned);
+        assert!(lines[1].starts_with("увага "), "{}", lines[1]);
+        assert!(lines[2].contains("база здорова"), "{}", lines[2]);
+    }
+
+    #[test]
+    fn verify_out_note_formats_both_verdicts() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//v.txt");
+        let line = verify_out_note(true, file);
+        assert_eq!(
+            line,
+            format!("[verify] база здорова → {}", file.display())
+        );
+        assert!(line.starts_with("[verify] "));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        let line = verify_out_note(false, file);
+        assert_eq!(
+            line,
+            format!("[verify] є проблеми → {}", file.display())
+        );
+        assert!(line.starts_with("[verify] "));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
     }
 }

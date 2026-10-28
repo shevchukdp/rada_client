@@ -661,6 +661,7 @@
       <button id="arr-filter-clear" type="button" title="Очистити фільтр" hidden>×</button>
       <span id="arr-shown" class="hint" hidden></span>
       <span id="arr-new-count" class="hint" hidden></span>
+      <span id="arr-fresh" class="hint" hidden></span>
       <button id="arr-only-new" type="button" aria-pressed="false" hidden
         title="показати лише документи, яких ви ще не бачили">лише нові</button>
       <button id="arr-auto" class="chip" type="button" aria-pressed="false"
@@ -845,6 +846,7 @@ let arrivalsDocs = [];      // fetched feed items; the text filter re-renders fr
 let arrNewSet = new Set();  // nregs unseen at the last successful load («НОВЕ» badges)
 let arrOnlyNew = false;     // «лише нові» toggle: renderArrivals shows only arrNewSet docs
 const arrCollapsed = new Set(); // date-group keys collapsed via their header row
+let arrFetchedAt = 0;       // unix ms of the last successful loadArrivals (freshness label)
 // Reader prev/next context (the desktop GUI reader's «N / M» stepping): the
 // nregs of the last rendered results page in display order, and the position
 // of the opened document inside it (-1 when opened from elsewhere).
@@ -2244,6 +2246,19 @@ function fmtArrDate(v) {
   return s;
 }
 
+/// Feed freshness label, the GUI's wording: elapsed whole seconds since the
+/// last successful arrivals load — «щойно» under a minute, «N хв тому» under
+/// an hour, «N год тому» under a day, otherwise «N дн тому» (integer floor).
+function fmtSince(nowMs, thenMs) {
+  const s = Math.max(0, Math.floor((nowMs - thenMs) / 1000));
+  if (s < 60) return "щойно";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + " хв тому";
+  const h = Math.floor(m / 60);
+  if (h < 24) return h + " год тому";
+  return Math.floor(h / 24) + " дн тому";
+}
+
 /// Pure: Ukrainian citation of an act (the GUI reader's copy-citation parity):
 /// «title» // Офіційний вебпортал парламенту України. [Редакція від dd.mm.yyyy, ]
 /// URL: <portal page>. The edition label goes through fmtArrDate (8-digit
@@ -2381,7 +2396,27 @@ function applyArrFilter() {
   only.classList.toggle("selected-look", arrOnlyNew);
   only.setAttribute("aria-pressed", arrOnlyNew ? "true" : "false");
   renderArrivals(items);
+  updateArrFresh();
 }
+
+// «оновлено: …» label beside the counters: shows the time elapsed since the
+// last successful loadArrivals (hidden before the first one); repainted from
+// the shared render path above and from the 30 s tick below.
+function updateArrFresh() {
+  const el = $("arr-fresh");
+  if (!arrFetchedAt) { el.hidden = true; return; }
+  el.textContent = "оновлено: " + fmtSince(Date.now(), arrFetchedAt);
+  el.hidden = false;
+}
+
+// Coarse heartbeat for the label: same visibility guard as arrAutoTick, so a
+// background tab never repaints a hidden pane.
+function arrFreshTick() {
+  if (document.hidden || $("tab-arrivals").hidden) return;
+  updateArrFresh();
+}
+
+setInterval(arrFreshTick, 30000);
 
 async function loadArrivals() {
   const el = $("arrivals");
@@ -2389,11 +2424,12 @@ async function loadArrivals() {
   try {
     const d = await api("/api/arrivals?limit=100");
     arrivalsLoaded = true;
+    arrFetchedAt = Date.now(); // the one success point for the freshness label
     arrivalsDocs = d.items || [];
     // Diff against the persisted seen-set: fresh docs get the «НОВЕ» badges
     // for this session, then the whole feed becomes seen (persisted).
     arrNewSet = new Set(unseenNregs(arrivalsDocs, getArrSeen()));
-    if (!arrivalsDocs.length) { el.textContent = "Фід порожній."; return; }
+    if (!arrivalsDocs.length) { el.textContent = "Фід порожній."; updateArrFresh(); return; }
     applyArrFilter();
     markArrivalsSeen(arrivalsDocs.map((x) => x.nreg));
   } catch (e) {

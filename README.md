@@ -110,7 +110,9 @@ official open-data API:
     fetched data, dictionaries, live-request counter, API limits and links;
     the web footer shows the same version (`version` in `/api/status`).
   - **Keyboard shortcuts** — **Ctrl+F** focuses the find-in-text field (reader)
-    or the query field (search); **Esc** clears the find query; **Alt+←/→**
+    or the query field (search); **Ctrl+K** jumps to Пошук with the query
+    focused; **F5** re-fetches the reader text; **Esc** clears the find query;
+    **Alt+←/→**
     pages through the results list from inside the reader; **Shift+Enter** steps
     to the previous find match; **Ctrl+Plus / Ctrl+Minus / Ctrl+0** zoom the
     reader text (±10%, persisted); a topbar **«клавіші» button** opens the whole
@@ -198,7 +200,8 @@ official open-data API:
   that clears it and re-searches, plus «скинути все»),
   **arrivals feed with «НОВЕ» badges** (viewed nregs remembered in
   localStorage, «нових: N» + «лише нові» + text filter + an «автооновлення»
-  chip that refreshes the feed once a minute while the tab is open) grouped under
+  chip that refreshes the feed once a minute while the tab is open + an
+  «оновлено: щойно / N хв тому» freshness label) grouped under
   collapsible **date headers** («дд.мм.рррр», dateless docs last under «без дати»),
   **edition comparison** («Порівняти редакції» — word/char/time stats per
   edition plus «різниця: ±N слів»),
@@ -275,6 +278,8 @@ Launch arguments:
 # 2b) Offline health report: index file/size/sync, documents, annotations, dictionaries, cache.
 .\rada-client.exe stats                    # one aligned line per source
 .\rada-client.exe stats --json --out s.json  # machine-readable, BOM-less
+.\rada-client.exe verify                   # db health: SQLite integrity, FKs, FTS consistency, duplicates; exit 1 on problems
+.\rada-client.exe verify --json --out v.json  # checks + verdict, BOM-less
 
 # 3) Live lookups (respect the 5–7 s API pacing).
 .\rada-client.exe card 2755-17          # JSON card with all editions

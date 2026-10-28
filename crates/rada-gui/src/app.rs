@@ -653,6 +653,20 @@ impl App {
         });
     }
 
+    /// F5 in the reader: re-fetch the current text (live request; success
+    /// refreshes the offline cache, offline the cache answers instead).
+    pub fn reload_reader(&mut self) {
+        let Some(r) = self.reader.as_ref() else {
+            return;
+        };
+        if r.text_loading {
+            return;
+        }
+        let ed = r.cur_edition.clone();
+        let run = self.next_run();
+        self.fetch_text(run, ed);
+    }
+
     /// Fetch «Пов'язані документи» for the open document (one paced request;
     /// parsing is the tested `rada_core::related::extract_related`).
     pub fn load_related(&mut self) {
@@ -1927,6 +1941,18 @@ impl eframe::App for App {
                 Page::Search => Some(FocusReq::SearchQuery),
                 _ => None,
             };
+        }
+        // Ctrl+K: jump to «Пошук» and focus the query field (web-style).
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::K)) {
+            self.page = Page::Search;
+            self.focus_req = Some(FocusReq::SearchQuery);
+        }
+        // F5 on the reader page: re-fetch the current text (cache refreshes
+        // on success; offline the cache answers).
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::F5))
+            && self.page == Page::Reader
+        {
+            self.reload_reader();
         }
         // Alt+Left/Right or Alt+PageUp/PageDown: prev/next document inside
         // the reader. The keys are consumed so PageUp/Down never also

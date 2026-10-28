@@ -130,6 +130,7 @@ pub fn help_lines() -> Vec<(&'static str, &'static str)> {
             "Ctrl+F",
             "поле «Знайти в тексті» (читалка) або поле запиту (пошук)",
         ),
+        ("Ctrl+K", "перейти до пошуку та сфокусувати поле запиту"),
         ("Enter", "виконати пошук / відкрити документ за номером"),
         (
             "Enter / Shift+Enter",
@@ -149,6 +150,7 @@ pub fn help_lines() -> Vec<(&'static str, &'static str)> {
             "більший / дрібніший текст читалки (крок 10%)",
         ),
         ("Ctrl+0", "скинути масштаб тексту читалки до 100%"),
+        ("F5", "перезавантажити текст поточного документа (читалка)"),
     ]
 }
 
@@ -429,6 +431,7 @@ mod tests {
         // every global handler in App::update has a row here
         for expected in [
             "Ctrl+F",
+            "Ctrl+K",
             "Enter",
             "Enter / Shift+Enter",
             "Esc",
@@ -436,6 +439,7 @@ mod tests {
             "Alt+PageUp / Alt+PageDown",
             "Ctrl+Plus / Ctrl+Minus",
             "Ctrl+0",
+            "F5",
         ] {
             assert!(keys.contains(&expected), "missing row for {expected:?}");
         }

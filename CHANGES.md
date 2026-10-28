@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.36: «оновлено» на стрічці веб, перевірка бази `verify` та клавіші Ctrl+K/F5 / feed freshness, db verify & new shortcuts
+
+- **UKR:** 1) **«оновлено: щойно / N хв тому / N год тому / N дн тому» у вебі**: поряд із лічильниками Оновлень — час останнього успішного завантаження фіда (і вручну, і автооновленням); у фоновій вкладці не вантажиться. 2) **CLI `verify`**: офлайн перевірка здоров'я індекса — цілість SQLite, зовнішні ключі, кількість документів, узгодженість FTS, дублікати nreg, кеш текстів; вердикт «база здорова» / «є проблеми» з кодом виходу; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 3) **Нові клавіші у програмі**: Ctrl+K — одразу до Пошуку з фокусом на запиті; F5 — перезавантажити текст читалки. Обидві — у віконці «клавіші». 4) Тести: 258/258.
+- **ENG:** 1) **The web arrivals feed gains an «оновлено: щойно / N хв тому / N год тому / N дн тому» label**: the time of the last successful fetch (manual or auto), beside the counters; backgrounded tabs stay quiet. 2) **CLI `verify`**: an offline database health check — SQLite integrity, foreign keys, document count, FTS consistency, duplicate nregs, text cache; a «база здорова» / «є проблеми» verdict with a matching exit code; `--json` and `--out FILE` (BOM table / BOM-less JSON). 3) **New desktop shortcuts**: Ctrl+K jumps straight to Пошук with the query focused; F5 re-fetches the reader text. Both listed in the «клавіші» sheet. 4) Tests: 258/258.
+
+---
+
+## 2026-10-29
+
 ### 0.10.35: кнопка «Догори» у читалках та вивантаження кешованих тіл у теку / back-to-top in both readers & offline cache dump
 
 - **UKR:** 1) **«Догори» у програмній читалці**: глибоко в довгому акті внизу зліва з'являється плаваюча кнопка з відсотком прочитаного («Догори · 47%») — один клік повертає до назви. 2) **«Догори» у веб-читалці**: кнопка з'являється після 800 px прокрутки і плавно веде вгору; при відкритті нового акта ховається. 3) **CLI `cache --dump DIR`**: офлайн вивантаження **всіх** кешованих тіл документів у теку файлами `{nreg}.txt` (кешовані редакції — `{nreg}.{редакція}.txt`), кожен з BOM; «кеш текстів порожній» — якщо немає що експортувати. Мережі не чіпає. 4) Тести: 253/253.
