@@ -111,7 +111,9 @@ official open-data API:
   - **Live pacing control** — «−»/«+» buttons in the top bar adjust the
     request pause 1–60 s at runtime; the choice persists (CLI `--pace` wins).
     Save/open dialogs remember the last used folder.
-  - **Читалка** — live JSON card + clean text with an **edition switcher** and
+  - **Читалка** — live JSON card + clean text with an **edition switcher**, an
+    **edition comparison** («Порівняти редакції» — word/char/reading-time per
+    edition plus the signed «різниця: ±N слів») and
     **structured rendering**: the act header/name line, publication & amendments
     blocks («(Відомості …)», `{Із змінами …}`), «РОЗДІЛ/ГЛАВА» and «Стаття N»
     headings and numbered items are all styled (same classification in the web
@@ -170,7 +172,8 @@ official open-data API:
   **active-filter chips** («Активні фільтри»: one chip per set filter with a ×
   that clears it and re-searches, plus «скинути все»),
   **arrivals feed with «НОВЕ» badges** (viewed nregs remembered in
-  localStorage, «нових: N» + «лише нові» + text filter),
+  localStorage, «нових: N» + «лише нові» + text filter) grouped under
+  collapsible **date headers** («дд.мм.рррр», dateless docs last under «без дати»),
   **edition comparison** («Порівняти редакції» — word/char/time stats per
   edition plus «різниця: ±N слів»),
   **recent query chips** («недавні запити:» from browser storage, click to
@@ -262,6 +265,7 @@ Launch arguments:
 .\rada-client.exe annot list 2041-15 --json
 .\rada-client.exe annot add 2041-15 highlight "текст виділення"
 .\rada-client.exe annot add 2341-14 comment "увага на розділ 3"
+.\rada-client.exe annot add 2341-14 comment --text-file note.txt   # long UTF-8 comment from a file
 .\rada-client.exe annot del 4
 
 # 5) Index statistics.

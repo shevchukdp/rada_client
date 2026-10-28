@@ -55,6 +55,11 @@ pub enum Msg {
         /// `(text, from_cache)` — the offline cache answers when live fails.
         res: Outcome<(String, bool)>,
     },
+    /// Both texts of the edition comparison, in (A, B) order.
+    Compare {
+        run: u64,
+        res: Outcome<(String, String)>,
+    },
     Annotations {
         nreg: String,
         res: Outcome<Vec<rada_db::Annotation>>,
@@ -667,6 +672,50 @@ impl App {
         self.fetch_text(run, edition);
         // card_run unchanged: an in-flight card result stays valid.
         let _ = card_run;
+    }
+
+    /// Fetch both picked edition texts and render the compare report
+    /// (two paced requests; the offline cache answers when live fails).
+    pub fn compare_editions(&mut self) {
+        let Some(r) = self.reader.as_ref() else { return };
+        if r.cmp_loading {
+            return;
+        }
+        let nreg = r.hit.nreg.clone();
+        let (a, b) = (r.cmp_a.clone(), r.cmp_b.clone());
+        let run = self.next_run();
+        {
+            let r = self.reader.as_mut().unwrap();
+            r.cmp_run = run;
+            r.cmp_loading = true;
+            r.cmp_error = None;
+            r.cmp_lines.clear();
+        }
+        let client = self.client.clone();
+        let db = self.db_path.clone();
+        self.spawn(move |tx| {
+            let fetch_one = |edition: &Option<String>| -> Result<String, String> {
+                let key = edition.as_deref().unwrap_or("");
+                let fetched = match edition {
+                    Some(ed) => client.show_edition_text(&nreg, ed).map_err(|e| e.to_string()),
+                    None => client.show_text(&nreg).map_err(|e| e.to_string()),
+                };
+                match fetched {
+                    Ok(text) => {
+                        if let Ok(conn) = rada_db::open(&db) {
+                            let _ = rada_db::textcache::put(&conn, &nreg, key, &text);
+                        }
+                        Ok(text)
+                    }
+                    Err(e) => rada_db::open(&db)
+                        .ok()
+                        .and_then(|conn| rada_db::textcache::get(&conn, &nreg, key).ok().flatten())
+                        .ok_or(e),
+                }
+            };
+            let res = fetch_one(&a).and_then(|ta| fetch_one(&b).map(|tb| (ta, tb)));
+            let _ = tx.send(Msg::Compare { run, res });
+        });
     }
 
     pub fn load_annotations(&mut self) {
@@ -1569,6 +1618,25 @@ impl App {
                         r.text = None;
                         r.text_cached = false;
                         r.text_error = Some(e);
+                    }
+                }
+            }
+            Msg::Compare { run, res } => {
+                let Some(r) = self.reader.as_mut() else { return };
+                if run != r.cmp_run {
+                    return;
+                }
+                r.cmp_loading = false;
+                match res {
+                    Ok((ta, tb)) => {
+                        let la = crate::views::reader::ed_label(&r.cmp_a);
+                        let lb = crate::views::reader::ed_label(&r.cmp_b);
+                        r.cmp_lines = crate::views::reader::cmp_report(&la, &ta, &lb, &tb);
+                        r.cmp_error = None;
+                    }
+                    Err(e) => {
+                        r.cmp_lines.clear();
+                        r.cmp_error = Some(e);
                     }
                 }
             }

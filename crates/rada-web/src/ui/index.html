@@ -275,6 +275,14 @@
   #arr-only-new.selected-look {
     background: var(--accent); color: var(--accent-text); border-color: var(--accent);
   }
+  /* Date-group headers above the arrival rows: muted clickable hint lines
+     (click collapses/expands the group; same accent hover as the chips). */
+  .arr-date-hint {
+    list-style: none; display: block; color: var(--muted); font-size: 12px;
+    font-weight: 600; letter-spacing: .4px; margin: 12px 0 4px;
+    cursor: pointer; user-select: none;
+  }
+  .arr-date-hint:hover { color: var(--accent); }
   .pager { display: flex; gap: 10px; align-items: center; margin: 12px 0; }
   /* Sortable column headers above the results list: same chip language as
      the «Обране» filters, the active column takes the accent. */
@@ -727,6 +735,7 @@ let arrivalsLoaded = false; // «нові документи» already fetched o
 let arrivalsDocs = [];      // fetched feed items; the text filter re-renders from here
 let arrNewSet = new Set();  // nregs unseen at the last successful load («НОВЕ» badges)
 let arrOnlyNew = false;     // «лише нові» toggle: renderArrivals shows only arrNewSet docs
+const arrCollapsed = new Set(); // date-group keys collapsed via their header row
 
 function api(path, opts) {
   return fetch(path, opts).then(async (r) => {
@@ -1922,9 +1931,48 @@ function unseenNregs(docs, seen) {
   return out;
 }
 
+/// Publication/adoption date of a feed item: the 8-digit edition date baked
+/// into the link (`…/ed20241115`), otherwise the publics text verbatim; an
+/// empty key means no date at all (the «без дати» group).
+function arrDateKey(d) {
+  const m = /ed(\d{8})/.exec(d.link || "");
+  if (m) return m[1];
+  return (d.publics || "").trim();
+}
+
+/// 8-digit YYYYMMDD → dd.mm.yyyy; anything else verbatim.
+function fmtArrDate(v) {
+  const s = v || "";
+  if (/^\d{8}$/.test(s)) return s.slice(6, 8) + "." + s.slice(4, 6) + "." + s.slice(0, 4);
+  return s;
+}
+
+/// Group `items` by arrDateKey into [dateKey, items] pairs sorted newest
+/// first (8-digit keys sort lexicographically = chronologically); the
+/// unknown («») group always goes last and items keep their relative order
+/// inside their group.
+function groupArrivalsByDate(items) {
+  const groups = new Map();
+  for (const it of items) {
+    const key = arrDateKey(it);
+    const g = groups.get(key);
+    if (g) g.push(it);
+    else groups.set(key, [it]);
+  }
+  const keys = Array.from(groups.keys()).sort((a, b) => {
+    if (a === b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+    return b < a ? -1 : 1;
+  });
+  return keys.map((k) => [k, groups.get(k)]);
+}
+
 // One arrival card: title link (opens the document) + «nreg · status · publics».
 // Docs in the session newSet get a gold «НОВЕ» pill before the title; with
 // «лише нові» active only those docs are shown (on top of the text filter).
+// Rows are grouped under clickable date headers; a collapsed group renders
+// only its header (arrCollapsed holds the collapsed keys, session-wide).
 function renderArrivals(items) {
   const el = $("arrivals");
   el.innerHTML = "";
@@ -1935,28 +1983,45 @@ function renderArrivals(items) {
       : "немає документів за фільтром";
     return;
   }
-  for (const it of items) {
-    const div = document.createElement("div");
-    div.className = "hit";
-    const a = document.createElement("a");
-    if (arrNewSet.has(it.nreg)) {
-      const pill = document.createElement("span");
-      pill.className = "arr-new-pill";
-      pill.textContent = "НОВЕ";
-      a.appendChild(pill);
+  for (const [key, group] of groupArrivalsByDate(items)) {
+    const head = document.createElement("li");
+    head.className = "arr-date-hint";
+    head.textContent = fmtArrDate(key) || "без дати";
+    head.title = "згорнути / розгорнути групу";
+    head.onclick = () => toggleArrGroup(key);
+    el.appendChild(head);
+    if (arrCollapsed.has(key)) continue;
+    for (const it of group) {
+      const div = document.createElement("div");
+      div.className = "hit";
+      const a = document.createElement("a");
+      if (arrNewSet.has(it.nreg)) {
+        const pill = document.createElement("span");
+        pill.className = "arr-new-pill";
+        pill.textContent = "НОВЕ";
+        a.appendChild(pill);
+      }
+      a.appendChild(document.createTextNode(it.nazva));
+      a.onclick = (ev) => {
+        ev.preventDefault();
+        switchTab("search");
+        openDoc(it.nreg);
+      };
+      const sub = document.createElement("div");
+      sub.className = "sub";
+      sub.textContent = it.nreg + " · " + it.status + " · " + (it.publics || "—");
+      div.appendChild(a); div.appendChild(sub);
+      el.appendChild(div);
     }
-    a.appendChild(document.createTextNode(it.nazva));
-    a.onclick = (ev) => {
-      ev.preventDefault();
-      switchTab("search");
-      openDoc(it.nreg);
-    };
-    const sub = document.createElement("div");
-    sub.className = "sub";
-    sub.textContent = it.nreg + " · " + it.status + " · " + (it.publics || "—");
-    div.appendChild(a); div.appendChild(sub);
-    el.appendChild(div);
   }
+}
+
+// Header click: flip the collapsed state of one date group and repaint the
+// cached feed through the shared filter path (same pattern as arrOnlyNew).
+function toggleArrGroup(key) {
+  if (arrCollapsed.has(key)) arrCollapsed.delete(key);
+  else arrCollapsed.add(key);
+  applyArrFilter();
 }
 
 // Re-render the cached feed through the text filter — never refetches.

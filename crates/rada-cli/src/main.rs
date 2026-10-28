@@ -300,8 +300,14 @@ enum AnnCmd {
     Add {
         nreg: String,
         kind: String,
-        /// Annotation text (not needed for bookmark).
+        /// Annotation text (not needed for bookmark). Exactly one of this
+        /// positional text and `--text-file` may supply the text.
         text: Option<String>,
+        /// Read the annotation text from this UTF-8 file instead of the
+        /// positional argument (surrounding whitespace is trimmed); blank
+        /// files are an error. Mutually exclusive with the positional text.
+        #[arg(long, alias = "text_file")]
+        text_file: Option<PathBuf>,
         /// Highlight span: start char (optional).
         #[arg(long)]
         start: Option<i64>,
@@ -1609,12 +1615,32 @@ fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
                 println!("#{:<4} {:<9} {:<12} {}  {}{}", a.id, a.kind, a.nreg, a.created_at, span, t);
             }
         }
-        AnnCmd::Add { nreg, kind, text, start, end } => {
+        AnnCmd::Add { nreg, kind, text, text_file, start, end } => {
+            // Exactly one of the positional text / `--text-file` may supply
+            // the text; the no-flag case keeps the historical empty-text
+            // behaviour (bookmarks need none).
+            let text = match (text, text_file.as_deref()) {
+                (Some(_), Some(_)) => {
+                    return Err(anyhow::anyhow!("вкажіть текст або --text-file, не обидва"))
+                }
+                (None, Some(p)) => {
+                    let raw = std::fs::read_to_string(p)
+                        .with_context(|| format!("читання {}", p.display()))?;
+                    let text = raw.trim();
+                    if text.is_empty() {
+                        return Err(anyhow::anyhow!("файл тексту порожній"));
+                    }
+                    eprintln!("{}", annot_text_file_note(text.chars().count(), p));
+                    text.to_string()
+                }
+                (Some(t), None) => t,
+                (None, None) => String::new(),
+            };
             let id = rada_db::annotations::insert(
                 &conn,
                 &nreg,
                 &kind,
-                &text.unwrap_or_default(),
+                &text,
                 start,
                 end,
             )?;
@@ -1667,6 +1693,12 @@ fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
 /// The stderr note printed after `annot export --out` has written `file`.
 fn annot_out_note(n: usize, file: &Path) -> String {
     format!("[annot] записано {n} анотацій → {}", file.display())
+}
+
+/// The muted stderr note printed when `annot add --text-file` supplies the
+/// text from `file` (`chars` characters after trimming).
+fn annot_text_file_note(chars: usize, file: &Path) -> String {
+    format!("[annot] текст {chars} симв. з {}", file.display())
 }
 
 fn cmd_status(db: &PathBuf) -> Result<()> {
@@ -1743,9 +1775,9 @@ fn fmt_date(d: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        annot_out_note, arrivals_out_note, backfill_summary, card_out_note, dict_fresh_lines,
-        dict_matches, facet_lines, new_nregs, normalize_fmt, out_note, resolve_out_note,
-        stats_lines, StatsReport,
+        annot_out_note, annot_text_file_note, arrivals_out_note, backfill_summary, card_out_note,
+        dict_fresh_lines, dict_matches, facet_lines, new_nregs, normalize_fmt, out_note,
+        resolve_out_note, stats_lines, StatsReport,
     };
 
     #[test]
@@ -1852,6 +1884,18 @@ mod tests {
         assert!(line.contains("7"));
         assert!(line.contains("анотацій"));
         assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn annot_text_file_note_formats_chars_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//t.txt");
+        let line = annot_text_file_note(4242, file);
+        assert!(line.starts_with("[annot] текст "));
+        assert!(line.contains("4242"));
+        assert!(line.contains("симв."));
+        assert!(line.contains("з "));
         assert!(line.contains(&file.display().to_string()));
     }
 

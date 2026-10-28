@@ -2936,6 +2936,32 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_arrivals_date_groups() {
+        // Arrivals feed grouped by publication date: the pure helper returns
+        // [dateKey, items] pairs newest-first (unknown «» group last, order
+        // kept inside a group), the formatter renders 8-digit YYYYMMDD as
+        // dd.mm.yyyy and anything else verbatim, and the renderer paints one
+        // muted header row per group («без дати» when the date is missing).
+        assert!(ui::INDEX_HTML.contains("function groupArrivalsByDate(items)"));
+        assert!(ui::INDEX_HTML.contains("function fmtArrDate(v)"));
+        assert!(ui::INDEX_HTML.contains("arr-date-hint"));
+        assert!(ui::INDEX_HTML.contains("\u{0431}\u{0435}\u{0437} \u{0434}\u{0430}\u{0442}\u{0438}"));
+    }
+
+    #[test]
+    fn ui_page_has_arrivals_group_collapse() {
+        // Clicking a group header collapses/expands its rows: a session-wide
+        // Set of collapsed date keys drives the renderer (a collapsed group
+        // paints only its header), the header wires its click to the toggle
+        // helper, and that repaints the cached feed through applyArrFilter
+        // (the same state pattern as arrOnlyNew).
+        assert!(ui::INDEX_HTML.contains("const arrCollapsed = new Set();"));
+        assert!(ui::INDEX_HTML.contains("head.onclick = () => toggleArrGroup(key);"));
+        assert!(ui::INDEX_HTML.contains("function toggleArrGroup(key)"));
+        assert!(ui::INDEX_HTML.contains("if (arrCollapsed.has(key)) arrCollapsed.delete(key);"));
+    }
+
+    #[test]
     fn ui_page_has_edition_compare() {
         // «Порівняти редакції» panel (the GUI reader's collapsible edition
         // comparison): a trigger beside «Текст», two selects pre-filled from

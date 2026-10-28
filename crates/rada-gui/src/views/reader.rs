@@ -51,6 +51,15 @@ pub struct ReaderState {
     pub sel_pending: Option<String>,
     /// «Зміст» panel visibility.
     pub outline_open: bool,
+    /// «Порівняти редакції» panel (web parity): visibility, the two picked
+    /// editions (`None` = поточна), fetch state and the rendered lines.
+    pub cmp_open: bool,
+    pub cmp_a: Option<String>,
+    pub cmp_b: Option<String>,
+    pub cmp_loading: bool,
+    pub cmp_lines: Vec<String>,
+    pub cmp_error: Option<String>,
+    pub cmp_run: u64,
 }
 
 pub const ANN_KINDS: [&str; 3] = ["Коментар", "Закладка", "Виділення"];
@@ -88,6 +97,13 @@ impl ReaderState {
             select_mode: false,
             sel_pending: None,
             outline_open: false,
+            cmp_open: false,
+            cmp_a: None,
+            cmp_b: None,
+            cmp_loading: false,
+            cmp_lines: Vec::new(),
+            cmp_error: None,
+            cmp_run: 0,
         }
     }
 
@@ -465,7 +481,6 @@ fn edition_row(app: &mut App, ui: &mut egui::Ui) {
             r.card_error.clone(),
         )
     };
-
     let mut picked: Option<Option<String>> = None;
     let mut retry = false;
 
@@ -512,6 +527,132 @@ fn edition_row(app: &mut App, ui: &mut egui::Ui) {
     if retry {
         app.retry_card();
     }
+
+    edition_compare(app, ui, &eds);
+}
+
+/// «Порівняти редакції» panel: two edition pickers, a fetch-and-compare
+/// button and the rendered report (word/char/time per edition plus the
+/// signed difference). Mirrors the web reader's compare panel.
+fn edition_compare(app: &mut App, ui: &mut egui::Ui, eds: &[rada_core::models::Edition]) {
+    if eds.len() < 2 {
+        return; // nothing to compare against
+    }
+    let (open, a, b, loading, lines, error) = {
+        let r = app.reader.as_ref().unwrap();
+        (
+            r.cmp_open,
+            r.cmp_a.clone(),
+            r.cmp_b.clone(),
+            r.cmp_loading,
+            r.cmp_lines.clone(),
+            r.cmp_error.clone(),
+        )
+    };
+
+    let toggle = ui
+        .button(egui::RichText::new("Порівняти редакції").small())
+        .on_hover_text("порахувати слова, символи й час читання для двох редакцій")
+        .clicked();
+    if toggle {
+        let r = app.reader.as_mut().unwrap();
+        r.cmp_open = !r.cmp_open;
+        if r.cmp_open {
+            // sensible defaults: the shown edition against the previous one
+            let shown = r.cur_edition.clone();
+            r.cmp_a = shown.clone();
+            r.cmp_b = match &shown {
+                Some(cur) => eds
+                    .iter()
+                    .map(|e| e.datred.to_string())
+                    .find(|d| d != cur)
+                    .or_else(|| eds.first().map(|e| e.datred.to_string())),
+                None => eds.first().map(|e| e.datred.to_string()),
+            };
+            r.cmp_lines.clear();
+            r.cmp_error = None;
+        }
+        return;
+    }
+    if !open {
+        return;
+    }
+
+    ui.indent(egui::Id::new("edition_compare"), |ui| {
+        let mut new_a: Option<Option<String>> = None;
+        let mut new_b: Option<Option<String>> = None;
+        let mut run = false;
+        ui.horizontal(|ui| {
+            ui.label(egui::RichText::new("A:").small());
+            new_a = edition_pick(ui, "cmp_a", &a, eds);
+            ui.label(egui::RichText::new("B:").small());
+            new_b = edition_pick(ui, "cmp_b", &b, eds);
+            if ui
+                .button(egui::RichText::new("Порівняти").small())
+                .on_hover_text("завантажить обидві редакції (живі запити)")
+                .clicked()
+            {
+                run = true;
+            }
+            if loading {
+                ui.spinner();
+            }
+        });
+        for line in &lines {
+            ui.label(egui::RichText::new(line).small());
+        }
+        if let Some(e) = &error {
+            ui.label(egui::RichText::new(format!("порівняння: {e}")).small().color(err()));
+        }
+        if let Some(p) = new_a {
+            let r = app.reader.as_mut().unwrap();
+            r.cmp_a = p;
+            r.cmp_lines.clear();
+        }
+        if let Some(p) = new_b {
+            let r = app.reader.as_mut().unwrap();
+            r.cmp_b = p;
+            r.cmp_lines.clear();
+        }
+        if run {
+            app.compare_editions();
+        }
+    });
+}
+
+/// A dated-edition picker for the compare panel; `None` = поточна ред.
+fn edition_pick(
+    ui: &mut egui::Ui,
+    id: &str,
+    cur: &Option<String>,
+    eds: &[rada_core::models::Edition],
+) -> Option<Option<String>> {
+    let label = match cur {
+        Some(ed) => format!("ред. {}", fmt_date(ed)),
+        None => "поточна ред.".to_string(),
+    };
+    let mut picked = None;
+    egui::ComboBox::from_id_salt(id)
+        .width(180.0)
+        .selected_text(label)
+        .show_ui(ui, |ui| {
+            if ui
+                .selectable_label(cur.is_none(), "поточна ред.")
+                .clicked()
+            {
+                picked = Some(None);
+            }
+            for e in eds {
+                let d = e.datred.to_string();
+                if ui
+                    .selectable_label(cur.as_deref() == Some(d.as_str()), format!("ред. {}", fmt_date(&d)))
+                    .clicked()
+                {
+                    picked = Some(Some(d));
+                }
+            }
+        });
+    picked
 }
 
 // ---------------------------------------------------------------------
@@ -1334,6 +1475,47 @@ pub fn type_labels(types: &str, dict: &[(i64, String)]) -> String {
     }
 }
 
+/// Combo label of an edition selector (`None` = поточна ред.).
+pub fn ed_label(ed: &Option<String>) -> String {
+    match ed {
+        Some(d) => format!("ред. {}", fmt_date(d)),
+        None => "поточна ред.".to_string(),
+    }
+}
+
+/// Word/char/time stats of one edition for the compare panel
+/// (««ред. 12.03.2020»: 401 слів · 2 406 симв. · ~2 хв»), same wording as
+/// the web UI's `cmpSummaryLine`.
+pub fn cmp_word_line(label: &str, text: &str) -> String {
+    let words = text.split_whitespace().count();
+    let chars = text.chars().count();
+    let minutes = words.div_ceil(400).max(1);
+    format!(
+        "«{label}»: {} слів · {} симв. · ~{} хв",
+        group_thousands(words),
+        group_thousands(chars),
+        minutes
+    )
+}
+
+/// Signed word-count difference of two editions («різниця: +120 слів»),
+/// `b` minus `a`; mirrors the web `cmpDiffLine`.
+pub fn cmp_diff_line(words_a: usize, words_b: usize) -> String {
+    let d = words_b as i64 - words_a as i64;
+    format!("різниця: {:+} слів", d)
+}
+
+/// The full compare report: one line per edition plus the difference line.
+pub fn cmp_report(la: &str, ta: &str, lb: &str, tb: &str) -> Vec<String> {
+    let wa = ta.split_whitespace().count();
+    let wb = tb.split_whitespace().count();
+    vec![
+        cmp_word_line(la, ta),
+        cmp_word_line(lb, tb),
+        cmp_diff_line(wa, wb),
+    ]
+}
+
 /// Reading stats of the act body as a compact toolbar label
 /// («401 слів · 2 406 симв. · ~2 хв», ≈400 words/min, min 1 хв;
 /// thousands grouped with spaces). Empty string for empty text.
@@ -1606,6 +1788,35 @@ mod tests {
         assert_eq!(group_thousands(1234567), "1 234 567");
         // 1..400 words → ~1 хв.
         assert!(reading_stats(&"слов ".repeat(120)).ends_with("~1 хв"));
+    }
+
+    #[test]
+    fn edition_compare_lines_word_char_and_signed_diff() {
+        // Per-edition line mirrors the web cmpSummaryLine wording.
+        assert_eq!(
+            cmp_word_line("поточна ред.", "a b c"),
+            "«поточна ред.»: 3 слів · 5 симв. · ~1 хв"
+        );
+        assert_eq!(
+            cmp_word_line("ред. 01.01.2020", &"слов ".repeat(401)),
+            "«ред. 01.01.2020»: 401 слів · 2 005 симв. · ~2 хв"
+        );
+        assert_eq!(cmp_word_line("x", "   \n "), "«x»: 0 слів · 5 симв. · ~1 хв");
+        // Difference is B minus A, signed.
+        assert_eq!(cmp_diff_line(10, 10), "різниця: +0 слів");
+        assert_eq!(cmp_diff_line(10, 17), "різниця: +7 слів");
+        assert_eq!(cmp_diff_line(17, 10), "різниця: -7 слів");
+    }
+
+    #[test]
+    fn cmp_report_lists_both_editions_then_the_difference() {
+        let r = cmp_report("A", "один два три", "B", "один два");
+        assert_eq!(r.len(), 3);
+        assert!(r[0].starts_with("«A»"), "{:?}", r);
+        assert!(r[1].starts_with("«B»"), "{:?}", r);
+        assert_eq!(r[2], "різниця: -1 слів");
+        // empty inputs still render three lines
+        assert_eq!(cmp_report("A", "", "B", "").len(), 3);
     }
 
     #[test]
