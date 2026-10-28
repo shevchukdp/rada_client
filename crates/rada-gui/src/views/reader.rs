@@ -755,6 +755,19 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
             }
         }
         if ui
+            .button("цилата")
+            .on_hover_text("скопіювати повне посилання на акт (назва, редакція, URL)")
+            .clicked()
+        {
+            let (nazva, nreg, ed) = {
+                let r = app.reader.as_ref().unwrap();
+                (r.hit.nazva.clone(), r.hit.nreg.clone(), r.cur_edition.clone())
+            };
+            let cite = citation_line(&nazva, &nreg, ed.as_deref());
+            ui.ctx().copy_text(cite);
+            app.toast("цилату скопійовано", crate::app::ok());
+        }
+        if ui
             .button("Друк")
             .on_hover_text("відкрити друковану версію в браузері (друк — Ctrl+P)")
             .clicked()
@@ -1490,6 +1503,21 @@ pub fn ed_label(ed: &Option<String>) -> String {
     }
 }
 
+/// Citation line of a document (web «цилата» parity):
+/// ««{title}» // Офіційний вебпортал парламенту України. Редакція від
+/// {dd.mm.yyyy}, URL: https://zakon.rada.gov.ua/laws/show/{nreg}».
+/// The edition part is omitted for `None`/blank editions (the current one).
+pub fn citation_line(title: &str, nreg: &str, edition: Option<&str>) -> String {
+    let mut s = format!("«{title}» // Офіційний вебпортал парламенту України.");
+    if let Some(ed) = edition {
+        if !ed.trim().is_empty() {
+            s.push_str(&format!(" Редакція від {},", fmt_date(ed)));
+        }
+    }
+    s.push_str(&format!(" URL: https://zakon.rada.gov.ua/laws/show/{nreg}"));
+    s
+}
+
 /// Word/char/time stats of one edition for the compare panel
 /// (««ред. 12.03.2020»: 401 слів · 2 406 симв. · ~2 хв»), same wording as
 /// the web UI's `cmpSummaryLine`.
@@ -1813,6 +1841,26 @@ mod tests {
         // A zero delta normalises the unset value to 100.
         assert_eq!(zoom_step(0, 0), 100);
         assert_eq!(zoom_step(180, 0), 180);
+    }
+
+    #[test]
+    fn citation_line_matches_the_web_format() {
+        // Current edition: no edition clause.
+        assert_eq!(
+            citation_line("Про освіту", "2041-15", None),
+            "«Про освіту» // Офіційний вебпортал парламенту України. \
+             URL: https://zakon.rada.gov.ua/laws/show/2041-15"
+        );
+        // Dated edition: dd.mm.yyyy clause before the URL.
+        assert_eq!(
+            citation_line("Податковий кодекс", "2755-17", Some("20241115")),
+            "«Податковий кодекс» // Офіційний вебпортал парламенту України. \
+             Редакція від 15.11.2024, URL: https://zakon.rada.gov.ua/laws/show/2755-17"
+        );
+        // Blank/whitespace edition behaves like None.
+        assert!(citation_line("X", "1-1", Some("   ")).contains("України. URL:"));
+        // Non-8-digit raw labels pass through (fmt_date contract).
+        assert!(citation_line("X", "1-1", Some("чернетка")).contains("Редакція від чернетка,"));
     }
 
     #[test]

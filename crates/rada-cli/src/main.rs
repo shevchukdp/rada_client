@@ -366,6 +366,24 @@ enum AnnCmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Cross-document annotation grep (offline): case-insensitive
+    /// substring over the annotation text, kind and nreg — the three
+    /// surfaces of the GUI favorites filter; insertion order preserved.
+    Search {
+        /// Term to look for (empty matches all).
+        term: String,
+        /// Emit JSON (the same array as `annot list --json`).
+        #[arg(long)]
+        json: bool,
+        /// Write the match table (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain table gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less. Zero matches writes only the BOM — the header line
+        /// stays on stdout (the house `search --out` zero-hit rule);
+        /// the note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Add an annotation; `kind` is bookmark | highlight | comment.
     Add {
         nreg: String,
@@ -2315,6 +2333,55 @@ fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
                 }
             }
         }
+        AnnCmd::Search { term, json, out } => {
+            let out = out.as_deref();
+            // `annotations::all` returns rows id-ascending: the insertion
+            // order the filtered table below preserves.
+            let all = rada_db::annotations::all(&conn)?;
+            // GUI favorites parity: trim + lowercase the needle once; an
+            // empty (or whitespace-only) term matches every annotation.
+            let needle = term.trim().to_lowercase();
+            let items: Vec<rada_db::Annotation> = all
+                .into_iter()
+                .filter(|a| annot_search_match(a, &needle))
+                .collect();
+            if json {
+                // the same array shape as `annot list --json`
+                let body = serde_json::to_string_pretty(&items)?;
+                match out {
+                    Some(p) => {
+                        // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                        write_out_file(p, format!("{body}\n").as_bytes())?;
+                        eprintln!("[annot] записано JSON → {}", p.display());
+                    }
+                    None => println!("{body}"),
+                }
+                return Ok(());
+            }
+            let lines = annot_search_lines(&items, &term);
+            match out {
+                Some(p) => {
+                    // UTF-8 BOM prefix: the same Excel-friendly convention as
+                    // search/arrivals/resolve/related. Zero matches writes the
+                    // BOM alone: the header line is the stdout-only zero-hit
+                    // message (the house `search --out` rule).
+                    let text = if items.is_empty() {
+                        "\u{FEFF}".to_string()
+                    } else {
+                        format!("\u{FEFF}{}\n", lines.join("\n"))
+                    };
+                    write_out_file(p, text.as_bytes())?;
+                    eprintln!("{}", annot_search_out_note(items.len(), p));
+                }
+                None => {
+                    // Zero matches: the body is just the header line — it
+                    // prints, keeping the output deterministic.
+                    for line in lines {
+                        println!("{line}");
+                    }
+                }
+            }
+        }
         AnnCmd::Add { nreg, kind, text, text_file, start, end } => {
             // Exactly one of the positional text / `--text-file` may supply
             // the text; the no-flag case keeps the historical empty-text
@@ -2419,6 +2486,36 @@ fn annot_list_out_note(n: usize, file: &Path) -> String {
     format!("[annot] записано {n} анотацій → {}", file.display())
 }
 
+/// Case-insensitive substring test behind `annot search` (the GUI
+/// favorites filter, mirrored onto the three annotation surfaces): the
+/// needle must occur in the annotation `text`, `kind` or `nreg`, all
+/// folded with plain `to_lowercase` (folds Ukrainian letters І/і, Ї/ї,
+/// Є/є, …). The caller trims and lowercases the needle once; an empty
+/// needle matches every annotation.
+fn annot_search_match(a: &rada_db::Annotation, needle_low: &str) -> bool {
+    a.text.to_lowercase().contains(needle_low)
+        || a.kind.to_lowercase().contains(needle_low)
+        || a.nreg.to_lowercase().contains(needle_low)
+}
+
+/// The plain-table body of `annot search` (shared by stdout and `--out`
+/// so the two cannot drift): «{n} анотацій з «{term}»:` header, then the
+/// `annot list` rows through the shared [`annot_table_lines`] renderer
+/// (same columns). The header always renders: zero matches is just the
+/// header line on stdout, while the `--out` file carries the BOM alone
+/// (the header is the stdout-only zero-hit message, the house rule).
+fn annot_search_lines(items: &[rada_db::Annotation], term: &str) -> Vec<String> {
+    let mut lines = vec![format!("{} анотацій з «{term}»:", items.len())];
+    lines.extend(annot_table_lines(items));
+    lines
+}
+
+/// The stderr note printed after `annot search --out` has written the
+/// match table (`n` matched annotations) to `file`.
+fn annot_search_out_note(n: usize, file: &Path) -> String {
+    format!("[annot] записано {n} збігів → {}", file.display())
+}
+
 /// The stderr note printed after `annot export --out` has written `file`.
 fn annot_out_note(n: usize, file: &Path) -> String {
     format!("[annot] записано {n} анотацій → {}", file.display())
@@ -2504,7 +2601,8 @@ fn fmt_date(d: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        annot_list_out_note, annot_out_note, annot_text_file_note, arrivals_date_key,
+        annot_list_out_note, annot_out_note, annot_search_lines, annot_search_match,
+        annot_search_out_note, annot_table_lines, annot_text_file_note, arrivals_date_key,
         arrivals_out_note, backfill_summary, cache_search_out_note, card_out_note, dict_fresh_lines,
         dict_matches, dict_out_note, export_html, grep_body, grep_render,
         export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
@@ -2715,6 +2813,62 @@ mod tests {
         assert!(line.contains("симв."));
         assert!(line.contains("з "));
         assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn annot_search_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//as.txt");
+        let line = annot_search_out_note(4, file);
+        assert_eq!(line, format!("[annot] записано 4 збігів → {}", file.display()));
+        assert!(line.starts_with("[annot] записано "));
+        assert!(line.contains("4"));
+        assert!(line.contains("збігів"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the house zero-hit rule: the note still formats with n = 0
+        assert_eq!(
+            annot_search_out_note(0, file),
+            format!("[annot] записано 0 збігів → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn annot_search_match_covers_the_three_surfaces() {
+        let a = rada_db::Annotation {
+            id: 7,
+            nreg: "1556-18".into(),
+            kind: "highlight".into(),
+            text: "Стаття 3 — Вища освіта".into(),
+            span_start: Some(12),
+            span_end: Some(17),
+            created_at: "2026-10-28 07:30:00".into(),
+        };
+        // text surface, case-insensitive both ways (plain to_lowercase
+        // folds Ukrainian letters: «В»/«в», «Я»/«я»)
+        assert!(annot_search_match(&a, "вища освіта"));
+        assert!(annot_search_match(&a, "стаття 3"));
+        // kind surface
+        assert!(annot_search_match(&a, "highli"));
+        // nreg surface
+        assert!(annot_search_match(&a, "1556"));
+        // no surface carries the needle
+        assert!(!annot_search_match(&a, "податков"));
+        assert!(!annot_search_match(&a, "bookmark"));
+        assert!(!annot_search_match(&a, "9-99"));
+        // empty needle matches everything (the GUI favorites parity)
+        assert!(annot_search_match(&a, ""));
+        // the body builder: header + the shared `annot list` rows, and the
+        // zero-match header (the stdout-only zero-hit line)
+        let rows = annot_table_lines(&[a.clone()]);
+        let lines = annot_search_lines(&[a], "освіта");
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0], "1 анотацій з «освіта»:".to_string());
+        assert_eq!(lines[1], rows[0]);
+        assert_eq!(
+            annot_search_lines(&[], "нічого"),
+            vec!["0 анотацій з «нічого»:".to_string()]
+        );
     }
 
     #[test]

@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.33: «клавіші» у веб, пошук по анотаціях з CLI та «цилата» у читалці / shortcuts popover, annotation search & reader citation
+
+- **UKR:** 1) **Кнопка «клавіші» у веб**: списочок усіх справжніх гарячих клавіш (Ctrl+F, Alt+←/→, ←/→ у списку, Enter/Shift+Enter, Esc) — закривається клавішею Esc або кліком поза ним. 2) **CLI `annot search TERM`**: пошук по всіх анотаціях одразу по трьох полях — текст, вид і номер документа; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM), рядки тієї ж форми, що й `annot list`. 3) **«Цилата» у читалці програми**: кнопка копіює повне посилання — ««Назва» // Офіційний вебпортал парламенту України. Редакція від дд.мм.рррр, URL: …» — у тому самому форматі, що й у вебі. 4) Тести: 241/241.
+- **ENG:** 1) **A «клавіші» button in the web UI**: a popover listing every real keyboard shortcut (Ctrl+F, Alt+←/→, ←/→ in the list, Enter/Shift+Enter, Esc) — closed by Escape or an outside click. 2) **CLI `annot search TERM`**: greps all annotations across three fields at once — text, kind and nreg; with `--json` and `--out FILE` (BOM table / BOM-less JSON), rows identical to `annot list`. 3) **A «цилата» button in the desktop reader**: copies the full reference — ««Title» // Офіційний вебпортал парламенту України. Редакція від дд.мм.рррр, URL: …» — in exactly the web format. 4) Tests: 241/241.
+
+---
+
+## 2026-10-28
+
 ### 0.10.32: поділ посиланням у веб, grep текстів з CLI та перехід до пошуку з словника / shareable links, body grep & dictionary jump-to-search
 
 - **UKR:** 1) **Посилання на сторінку у веб**: URL з `#doc=номер` одразу відкриває акт, `#q=запит` — одразу шукає; адреса оновлюється без сміття в історії браузера — таке посилання можна копіювати колезі. 2) **CLI `text <nreg> --grep TERM [--context N]`**: рядки тіла з підсвіткою пошуку у стилі grep — «N: рядок», сусідні рядки навколо збігів, «--» між блоками; з `--out` файл отримує відфільтрований текст. 3) **Клік по значенню в пошуку словників на Головна** застосовує відповідний фільтр (стан/тип/видавець) і одразу шукає документи. 4) Тести: 236/236.

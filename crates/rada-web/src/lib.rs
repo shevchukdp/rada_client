@@ -3395,4 +3395,44 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("\"#doc=\" + encNreg(nreg)"));
         assert!(ui::INDEX_HTML.contains("\"#q=\" + encodeURIComponent(q)"));
     }
+
+    #[test]
+    fn ui_page_has_help_button() {
+        // Header «клавіші» toggle and the hidden-by-default shortcut popover:
+        // the click handler flips the hidden attribute, a document listener
+        // closes it on any click outside (the toggle button itself is exempt
+        // and stops propagation so the same click cannot fight itself), and
+        // Escape closes it only while it is visible — the find bar's own
+        // Escape-to-clear listener on #find-input stays untouched.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-help\""));
+        assert!(ui::INDEX_HTML.contains(">клавіші</button>"));
+        assert!(ui::INDEX_HTML.contains("id=\"help-pop\" hidden"));
+        assert!(ui::INDEX_HTML.contains("$(\"btn-help\").onclick"));
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"help-pop\").hidden = !$(\"help-pop\").hidden;"
+        ));
+        assert!(ui::INDEX_HTML.contains("if (pop.hidden) return;"));
+        assert!(ui::INDEX_HTML.contains("pop.contains(t) || t === $(\"btn-help\")"));
+        assert!(ui::INDEX_HTML.contains("if (!pop.hidden && ev.key === \"Escape\")"));
+    }
+
+    #[test]
+    fn ui_page_has_help_rows_source() {
+        // The popover renders from one source of truth: the pure helpRows()
+        // list of [keys, description] pairs mirroring the real keydown
+        // listeners (Ctrl+F find focus, Alt+arrows and plain-arrow reader
+        // stepping, Enter/Shift+Enter find stepping, Esc find clear, Enter
+        // nreg resolve); renderHelp() maps over it and builds every row as
+        // help-row / help-keys spans without innerHTML.
+        assert!(ui::INDEX_HTML.contains("function helpRows()"));
+        assert!(ui::INDEX_HTML.contains("\"Ctrl+F\""));
+        assert!(ui::INDEX_HTML.contains("\"Alt+← / Alt+→\""));
+        assert!(ui::INDEX_HTML.contains("Alt+←"));
+        assert!(ui::INDEX_HTML.contains("Alt+→"));
+        assert!(ui::INDEX_HTML.contains("попередній/наступний документ"));
+        assert!(ui::INDEX_HTML.contains("for (const [keys, desc] of helpRows())"));
+        assert!(ui::INDEX_HTML.contains("row.className = \"help-row\""));
+        assert!(ui::INDEX_HTML.contains("k.className = \"help-keys\""));
+        assert!(ui::INDEX_HTML.contains("renderHelp();"));
+    }
 }

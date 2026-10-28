@@ -66,7 +66,9 @@ official open-data API:
     gold highlight annotation (double-click selects a word/paragraph).
   - **Query history** — «недавні запити» chips under the search filters repeat
     a past search with one click (persisted, clearable); «копіювати текст» in
-    the reader copies the whole act to the clipboard. Each search hit row has
+    the reader copies the whole act to the clipboard, and «цилата» copies the
+    full reference — «Назва // Офіційний вебпортал парламенту України. Редакція
+    від дд.мм.рррр, URL: …» (same format as the web button). Each search hit row has
     «копія» (copy nreg) and «сайт» (open the act on zakon.rada.gov.ua), and
     **right-click opens a context menu** (open reader / open site / copy
     nreg / copy title / mark for file export).
@@ -183,6 +185,8 @@ official open-data API:
   smooth-scroll jump list of «Розділ/Глава/Стаття» headings),
   **reader copy-text + reading-time stats** (clipboard button and a muted
   «N слів · M симв. · ~K хв» label),
+  **a «клавіші» help popover** in the header (every real shortcut listed from
+  one source of truth; closes on Esc or an outside click),
   **active-filter chips** («Активні фільтри»: one chip per set filter with a ×
   that clears it and re-searches, plus «скинути все»),
   **arrivals feed with «НОВЕ» badges** (viewed nregs remembered in
@@ -299,6 +303,7 @@ Launch arguments:
 .\rada-client.exe annot export --out annots.json      # all annotations as JSON (BOM-less)
 .\rada-client.exe annot list 2041-15 --json
 .\rada-client.exe annot list --out annots.txt    # table to file (BOM); --json → BOM-less JSON array
+.\rada-client.exe annot search "податок"      # grep ALL annotations: text, kind and nreg; --json / --out too
 .\rada-client.exe annot add 2041-15 highlight "текст виділення"
 .\rada-client.exe annot add 2341-14 comment "увага на розділ 3"
 .\rada-client.exe annot add 2341-14 comment --text-file note.txt   # long UTF-8 comment from a file
