@@ -113,6 +113,14 @@ enum Cmd {
         #[arg(required = true)]
         text: Vec<String>,
     },
+    /// List «related documents» — links to other acts referenced by this one,
+    /// parsed from its live portal page (one paced request).
+    Related {
+        nreg: String,
+        /// Output JSON instead of a plain list.
+        #[arg(long)]
+        json: bool,
+    },
     /// Snapshot helpers.
     Snapshot {
         #[command(subcommand)]
@@ -232,6 +240,7 @@ fn run() -> Result<()> {
         Cmd::Cache { purge, nreg } => cmd_cache(&cli.db, purge, nreg.as_deref()),
         Cmd::Dict { kind } => cmd_dict(&cli.db, cli.pace, kind.as_deref()),
         Cmd::Resolve { text } => cmd_resolve(&text.join(" "), cli.pace),
+        Cmd::Related { nreg, json } => cmd_related(&cli.db, &nreg, json, cli.pace),
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
         Cmd::Status => cmd_status(&cli.db),
         Cmd::Annot { what } => cmd_annot(&cli.db, what),
@@ -555,6 +564,43 @@ fn cmd_resolve(text: &str, pace: u64) -> Result<()> {
             "no unambiguous match for {text:?} (the API returned a candidate list)"
         )),
     }
+}
+
+fn cmd_related(db: &PathBuf, nreg: &str, json: bool, pace: u64) -> Result<()> {
+    let c = client(pace);
+    let mut list = c.related(nreg)?;
+    // Prefer offline index titles over the page's anchor text (the CLI has
+    // the index at hand; empty anchors look like bare numbers otherwise).
+    if let Ok(conn) = rada_db::open(db) {
+        for r in list.iter_mut() {
+            if let Some(t) = rada_db::title_by_nreg(&conn, &r.nreg) {
+                if !t.trim().is_empty() {
+                    r.title = t;
+                }
+            }
+        }
+    }
+    if json {
+        let items: Vec<serde_json::Value> = list
+            .iter()
+            .map(|r| serde_json::json!({ "nreg": r.nreg, "title": r.title }))
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "items": items }))
+                .map_err(anyhow::Error::from)?
+        );
+        return Ok(());
+    }
+    if list.is_empty() {
+        println!("посилань на інші акти не знайдено");
+        return Ok(());
+    }
+    println!("{} пов'язаних документів:", list.len());
+    for r in &list {
+        println!("  {}  {}", r.nreg, r.title);
+    }
+    Ok(())
 }
 
 fn cmd_snapshot(db: &PathBuf, what: SnapCmd) -> Result<()> {

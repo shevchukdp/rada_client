@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.3: виділення мишею та related у CLI / mouse-selection highlights & CLI related
+
+- **UKR:** 1) **Виділення мишею в читалці**: чип «Виділення мишею» вмикає режим, у якому текст можна виділяти курсором (подвійний клік виділяє слово/абзац); кнопка «виділити» зберігає виділене як золоте виділення-анотацію (обмеження 500 символів, порожні виділення не зберігаються). 2) **CLI**: команда `related <nreg> [--json]` — список пов'язаних документів з офлайн-назвами з індексу. 3) Тести: 113/113.
+- **ENG:** 1) **Mouse-selection highlights in the reader**: the «Виділення мишею» chip enables a mode where the text is selectable by mouse (double-click selects a word/paragraph); the «виділити» button saves the selection as a gold highlight annotation (capped at 500 chars, empty selections ignored). 2) **CLI**: `related <nreg> [--json]` prints the related-document list with offline index titles. 3) Tests: 113/113.
+
+---
+
+## 2026-10-28
+
 ### 0.10.2: пов'язані документи / related documents
 
 - **UKR:** 1) **«Пов'язані документи» у читалці**: під текстом акту з'являється список посилань на інші документи, які він згадує (розбирається жива сторінка zakon.rada.gov.ua; один виміряний запит на документ). Назви беруться з офлайн-індексу, якщо документ є в базі; клік по рядку відкриває акт у читалці. При помилці мережі — кнопка «оновити». 2) **Веб**: кнопка «Пов'язані документи» в панелі документу (`GET /api/related/{nreg}`) із тим самим списком і переходами. 3) Тести: 110/110 (+1 ігнорований live-тест перевіряє розбір на реальному Кримінальному кодексі — 50 посилань).

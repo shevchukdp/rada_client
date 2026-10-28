@@ -43,6 +43,12 @@ pub struct ReaderState {
     pub related_error: Option<String>,
     /// The related list was already fetched for this document.
     pub related_loaded: bool,
+    /// Mouse-selection mode: paragraphs render as read-only `TextEdit`s
+    /// so the user can select a span and save it as a highlight.
+    pub select_mode: bool,
+    /// Cleaned text last selected with the mouse in `select_mode`
+    /// (`None` = nothing selected). Drives the «виділити» button.
+    pub sel_pending: Option<String>,
 }
 
 pub const ANN_KINDS: [&str; 3] = ["Коментар", "Закладка", "Виділення"];
@@ -77,6 +83,8 @@ impl ReaderState {
             related_loading: false,
             related_error: None,
             related_loaded: false,
+            select_mode: false,
+            sel_pending: None,
         }
     }
 
@@ -621,6 +629,20 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
             app.settings.raw = true;
             crate::settings::save(&app.settings);
         }
+        if ui
+            .add(
+                egui::Button::new(egui::RichText::new("Виділення мишею").small())
+                    .selected(app.reader.as_ref().unwrap().select_mode),
+            )
+            .on_hover_text("режим вибраного мишею: абзаци можна виділяти та зберігати як виділення")
+            .clicked()
+        {
+            let r = app.reader.as_mut().unwrap();
+            r.select_mode = !r.select_mode;
+            if !r.select_mode {
+                r.sel_pending = None;
+            }
+        }
         if loading {
             ui.spinner();
             ui.label(
@@ -630,12 +652,43 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
         }
     });
 
+    // Mouse-selection mode: hint + save button, enabled once a paragraph
+    // TextEdit below has reported a non-empty selection.
+    let mut save_sel = false;
+    if app.reader.as_ref().map(|r| r.select_mode).unwrap_or(false) {
+        ui.horizontal(|ui| {
+            ui.label(
+                egui::RichText::new("мишею виділіть уривок і натисніть «виділити»")
+                    .small()
+                    .color(crate::themes::weak()),
+            );
+            let has_sel = app
+                .reader
+                .as_ref()
+                .and_then(|r| r.sel_pending.clone())
+                .map(|s| !s.is_empty())
+                .unwrap_or(false);
+            if ui
+                .add_enabled(
+                    has_sel,
+                    egui::Button::new(egui::RichText::new("виділити").small()),
+                )
+                .clicked()
+            {
+                save_sel = true;
+            }
+        });
+    }
+
     if loading {
         return;
     }
 
     if let Some(t) = &text {
         let paras = paragraphs(t);
+        let select_mode = app.reader.as_ref().map(|r| r.select_mode).unwrap_or(false);
+        // Non-empty text reported by a paragraph TextEdit this frame.
+        let mut frame_sel: Option<String> = None;
 
         // ---- find in text --------------------------------------------
         let qlab = app.reader.as_ref().unwrap().find.trim().to_string();
@@ -749,7 +802,52 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
                 let kind = if raw_mode { PKind::Plain } else { para.kind };
                 let centered = matches!(kind, PKind::DocTitle | PKind::Subtitle);
                 let scale = zoom_scale;
-                let body = |ui: &mut egui::Ui| {
+                let mut body = |ui: &mut egui::Ui| {
+                    if select_mode {
+                        // Selectable mode: a read-only multiline TextEdit is the
+                        // only built-in way in egui 0.29 to select text with the
+                        // mouse (labels are not selectable). The buffer is a
+                        // fresh clone every frame, so typing never touches the
+                        // document; custom per-kind colors are lost here
+                        // (accepted trade-off). Whole laws are ~200 KB of text,
+                        // so one TextEdit per paragraph stays responsive inside
+                        // the outer ScrollArea. Double-click word/paragraph
+                        // selection works natively — nothing extra needed.
+                        let mut buf = para.text.clone();
+                        let resp = ui.add(
+                            egui::TextEdit::multiline(&mut buf)
+                                .id_salt(("sel", pi))
+                                .font(sel_font_id(ui, kind, scale))
+                                .text_color(ui.visuals().text_color())
+                                .frame(false)
+                                .margin(egui::Margin::same(0.0))
+                                .interactive(true),
+                        );
+                        // egui 0.29 has no `Response::selected_text()` (added
+                        // in 0.30); read the widget's stored cursor state and
+                        // slice the paragraph by *character* index (Cyrillic
+                        // safe). The focused edit wins over stale unfocused
+                        // selections left in other paragraphs.
+                        if let Some(cr) = egui::TextEdit::load_state(ui.ctx(), resp.id)
+                            .and_then(|s| s.cursor.char_range())
+                        {
+                            let [a, b] = cr.sorted();
+                            if a.index < b.index {
+                                let text: String = para
+                                    .text
+                                    .chars()
+                                    .skip(a.index)
+                                    .take(b.index - a.index)
+                                    .collect();
+                                if !text.trim().is_empty()
+                                    && (frame_sel.is_none() || resp.has_focus())
+                                {
+                                    frame_sel = Some(text);
+                                }
+                            }
+                        }
+                        return;
+                    }
                     ui.horizontal_wrapped(|ui| {
                         for (seg, part) in styled(&para.text, &ann, &p_hits) {
                             match seg {
@@ -817,6 +915,28 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
             }
             ui.add_space(40.0);
         });
+
+        // Publish this frame's mouse selection, then act on the «виділити»
+        // button (whose enabled state came from the previous frame's value).
+        let to_save = if save_sel {
+            app.reader.as_ref().and_then(|r| r.sel_pending.clone())
+        } else {
+            None
+        };
+        {
+            let r = app.reader.as_mut().unwrap();
+            r.sel_pending = frame_sel
+                .as_deref()
+                .and_then(|s| clean_selection(s, SEL_MAX_CHARS));
+        }
+        if let Some(t) = to_save {
+            // `save_annotation` reads `selected_span()` (spans are unset in
+            // this flow), so it stores the snippet with `None` spans — same
+            // as the panel's highlight save. The Msg::AnnotationSaved
+            // handler reloads the annotation list on success.
+            app.save_annotation("highlight", &t);
+            app.reader.as_mut().unwrap().sel_pending = None;
+        }
     } else if let Some(e) = &t_err {
         ui.label(egui::RichText::new(format!("текст: {e}")).color(err()));
         if ui.button("ще раз").clicked() {
@@ -1089,6 +1209,37 @@ pub fn paragraphs(t: &str) -> Vec<Para> {
     out
 }
 
+/// Max characters kept from a mouse selection before saving.
+const SEL_MAX_CHARS: usize = 500;
+
+/// Normalize a raw mouse selection for saving: trim, collapse whitespace
+/// runs to single spaces, cap at `max_chars` *characters* (Cyrillic-safe).
+/// `None` when the selection is empty or whitespace-only.
+pub fn clean_selection(raw: &str, max_chars: usize) -> Option<String> {
+    let collapsed = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    if collapsed.is_empty() {
+        return None;
+    }
+    Some(collapsed.chars().take(max_chars).collect())
+}
+
+/// Font used by the mouse-selection `TextEdit`s: mirrors `base_rt`'s
+/// per-kind sizes (TextEdit takes a single `font_id` for the whole widget).
+fn sel_font_id(ui: &egui::Ui, kind: PKind, scale: f32) -> egui::FontId {
+    if scale == 1.0 && matches!(kind, PKind::Plain | PKind::Num) {
+        return egui::TextStyle::Body.resolve(ui.style());
+    }
+    let px = match kind {
+        PKind::DocTitle => 20.0,
+        PKind::Subtitle => 17.0,
+        PKind::Meta => 11.0,
+        PKind::Section => 16.0,
+        PKind::Article => 15.0,
+        PKind::Num | PKind::Plain => 13.0,
+    };
+    egui::FontId::proportional(px * scale)
+}
+
 /// Base styling of one paragraph kind (find/annotation spans may override).
 /// `scale` comes from the user's reader zoom setting (1.0 = default).
 fn base_rt(kind: PKind, part: &str, scale: f32) -> egui::RichText {
@@ -1359,6 +1510,32 @@ mod tests {
             (Seg::Plain, "ежз"),
         ];
         assert_eq!(segs, expect);
+    }
+
+    #[test]
+    fn clean_selection_none_on_empty_or_whitespace() {
+        assert_eq!(clean_selection("", 500), None);
+        assert_eq!(clean_selection("   \n\t", 500), None);
+        assert_eq!(clean_selection("\u{a0} \n", 500), None, "nbsp + blanks");
+    }
+
+    #[test]
+    fn clean_selection_collapses_whitespace_runs() {
+        assert_eq!(
+            clean_selection("  Стаття   1.\n\tвизначає  поняття \n", 500).as_deref(),
+            Some("Стаття 1. визначає поняття")
+        );
+    }
+
+    #[test]
+    fn clean_selection_truncates_by_chars_not_bytes() {
+        // 600 Cyrillic chars (1200 bytes) must cap at exactly 500 *chars*.
+        let raw = "а".repeat(600);
+        let out = clean_selection(&raw, 500).unwrap();
+        assert_eq!(out.chars().count(), 500);
+        assert_eq!(out, "а".repeat(500));
+        // short text passes through untouched
+        assert_eq!(clean_selection("абв", 500).as_deref(), Some("абв"));
     }
 
     #[test]

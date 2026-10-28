@@ -44,7 +44,8 @@ pub enum Msg {
         nreg: String,
         res: Outcome<Vec<rada_db::Annotation>>,
     },
-    AnnotationSaved(Outcome<()>),
+    /// `(kind, result)` — kind lets the toast match the saved annotation type.
+    AnnotationSaved(String, Outcome<()>),
     AnnotationDeleted(Outcome<bool>),
     Arrivals {
         run: u64,
@@ -611,7 +612,7 @@ impl App {
                 .map_err(|e| e.to_string())?;
                 Ok(())
             })();
-            let _ = tx.send(Msg::AnnotationSaved(res));
+            let _ = tx.send(Msg::AnnotationSaved(kind, res));
         });
     }
 
@@ -1462,9 +1463,13 @@ impl App {
                     Err(e) => r.ann_error = Some(e),
                 }
             }
-            Msg::AnnotationSaved(res) => match res {
+            Msg::AnnotationSaved(kind, res) => match res {
                 Ok(()) => {
-                    self.toast("анотацію збережено", ok());
+                    if kind == "highlight" {
+                        self.toast("додано виділення", ok());
+                    } else {
+                        self.toast("анотацію збережено", ok());
+                    }
                     if let Some(r) = self.reader.as_mut() {
                         r.ann_text.clear();
                     }

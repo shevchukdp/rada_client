@@ -50,7 +50,10 @@ official open-data API:
     portal page for links to other acts referenced by the open one (one paced
     request), shows their offline titles, and opens any of them on click; the
     web UI has the same list behind a «Пов'язані документи» button
-    (`GET /api/related/{nreg}`).
+    (`GET /api/related/{nreg}`). CLI: `related <nreg> [--json]`.
+  - **Mouse-selection highlights** — the «Виділення мишею» chip in the reader
+    makes the text selectable by mouse; «виділити» saves the selection as a
+    gold highlight annotation (double-click selects a word/paragraph).
   - **Plain-text mode** — «Форматований/Простий» toggle (GUI) and «Простий»
     (web) switch off structural styling of titles/sections/articles.
   - **Printing** — «Друк» in the reader (and «🖨 Друк» in the web UI) opens a
