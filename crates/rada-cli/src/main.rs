@@ -95,6 +95,9 @@ enum Cmd {
         /// Specific edition date YYYYMMDD (default: current).
         #[arg(long)]
         edition: Option<String>,
+        /// Write to this file instead of stdout (parent dirs created).
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Offline text cache: statistics, purge (`--purge [nreg]`), or a
     /// full-text scan of cached bodies (`--search TERM`) — offline, Unicode
@@ -262,7 +265,9 @@ fn run() -> Result<()> {
             facets,
         } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, sort, json, facets),
         Cmd::Card { nreg } => cmd_card(&nreg, cli.pace),
-        Cmd::Text { nreg, edition } => cmd_text(&cli.db, &nreg, edition.as_deref(), cli.pace),
+        Cmd::Text { nreg, edition, out } => {
+            cmd_text(&cli.db, &nreg, edition.as_deref(), out.as_deref(), cli.pace)
+        }
         Cmd::Cache { purge, search, limit, nreg } => {
             cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref())
         }
@@ -476,7 +481,13 @@ fn cmd_card(nreg: &str, pace: u64) -> Result<()> {
     Ok(())
 }
 
-fn cmd_text(db: &PathBuf, nreg: &str, edition: Option<&str>, pace: u64) -> Result<()> {
+fn cmd_text(
+    db: &PathBuf,
+    nreg: &str,
+    edition: Option<&str>,
+    out: Option<&Path>,
+    pace: u64,
+) -> Result<()> {
     let c = client(pace);
     let key = edition.unwrap_or("");
     let fetched = match edition {
@@ -489,8 +500,7 @@ fn cmd_text(db: &PathBuf, nreg: &str, edition: Option<&str>, pace: u64) -> Resul
             if let Ok(conn) = rada_db::open(db) {
                 let _ = rada_db::textcache::put(&conn, nreg, key, &text);
             }
-            println!("{text}");
-            Ok(())
+            emit_text(&text, out)
         }
         Err(e) => {
             // Offline fallback: serve the cached copy when we have one.
@@ -500,13 +510,39 @@ fn cmd_text(db: &PathBuf, nreg: &str, edition: Option<&str>, pace: u64) -> Resul
             match hit {
                 Some(text) => {
                     eprintln!("[text] live fetch failed ({e}); served from offline cache");
-                    println!("{text}");
-                    Ok(())
+                    emit_text(&text, out)
                 }
                 None => Err(anyhow::anyhow!("text {nreg}: {e} (no cached copy)")),
             }
         }
     }
+}
+
+/// Print `text` to stdout, or (with `--out`) write it as UTF-8 to the file,
+/// creating parent directories; a write failure is a hard error.
+fn emit_text(text: &str, out: Option<&Path>) -> Result<()> {
+    match out {
+        Some(p) => {
+            if let Some(parent) = p.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("create dir {}", parent.display()))?;
+                }
+            }
+            std::fs::write(p, text).with_context(|| format!("запис {}", p.display()))?;
+            eprintln!("{}", out_note(text.chars().count(), p));
+            Ok(())
+        }
+        None => {
+            println!("{text}");
+            Ok(())
+        }
+    }
+}
+
+/// The stderr note printed after `text --out` has written `file`.
+fn out_note(chars: usize, file: &Path) -> String {
+    format!("[text] записано {chars} симв. → {}", file.display())
 }
 
 /// Validate the `--fmt` value; returns the canonical format string.
@@ -946,7 +982,18 @@ fn fmt_date(d: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{facet_lines, new_nregs, normalize_fmt};
+    use super::{facet_lines, new_nregs, normalize_fmt, out_note};
+
+    #[test]
+    fn out_note_formats_chars_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//a.txt");
+        let line = out_note(1234, file);
+        assert!(line.starts_with("[text] записано "));
+        assert!(line.contains("1234"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
 
     #[test]
     fn facet_lines_resolves_labels_and_caps_at_six() {

@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.12: зміст у веб-читалці, файл із CLI та кеш на головній / web reader TOC, CLI text --out, home cache row
+
+- **UKR:** 1) **«Зміст» у веб-читалці**: кнопка «Зміст (N)» над текстом акту; список «Розділ/Глава/Стаття» будується з уже відмальованих заголовків і плавно прокручується до вибраного (схована, якщо заголовків менше двух). 2) **CLI `text --out FILE`**: запис тексту акту (живого чи з кешу) у файл UTF-8 з створенням тек; у консоль — «записано N симв. → файл». 3) **«Кеш текстів» на головній**: рядок із кількістю кешованих тіл і їх об'ємом (кеш поповнюється при читанні). 4) Тести: 148/148.
+- **ENG:** 1) **«Зміст» in the web reader**: a «Зміст (N)» button above the act; the «Розділ/Глава/Стаття» list is built from the already-rendered headings and smooth-scrolls to the picked one (hidden below two headings). 2) **CLI `text --out FILE`**: writes the act text (live or cached) to a UTF-8 file, creating parent dirs; the console gets «записано N симв. → файл». 3) **«Кеш текстів» on the home page**: a row with the number of cached bodies and their size (the cache fills as you read). 4) Tests: 148/148.
+
+---
+
+## 2026-10-28
+
 ### 0.10.11: фільтр оновлень у пам'яті та фасети в CLI / remembered arrivals filter & CLI facets
 
 - **UKR:** 1) **Фільтр Оновлень зберігається**: введений текст-фільтр стрічки (назва/номер/публікація) запам'ятовується між запусками (settings.ini), кнопка «×» чистить і його. 2) **CLI `search --facets`**: після таблиці результатів друкуються «Фасети:» — Статус/Тип/Видавник з назвами словників і кількістю (top-6), з пом'якшеною помилкою замість падіння; `--json --facets` додає ключ `facets`. 3) Тести: 146/146.

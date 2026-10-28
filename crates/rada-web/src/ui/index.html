@@ -318,6 +318,22 @@
     outline: 1px solid var(--find-fg);
   }
   #find-input { min-width: 180px; }
+  /* «Зміст» panel: ghost toggle above the text + collapsible outline list
+     (entries indent 0 for «Розділ/Глава», 14px for «Стаття»). */
+  button.ghost {
+    background: transparent; color: var(--muted); border: 1px solid var(--border);
+  }
+  button.ghost:hover { color: var(--text); border-color: var(--accent); }
+  #toc-list {
+    background: var(--panel2); border: 1px solid var(--border); border-radius: 8px;
+    padding: 6px 10px; margin: 2px 0 8px; max-height: 30vh; overflow: auto;
+    font-size: 14px;
+  }
+  #toc-list .toc-item {
+    padding: 2px 4px; border-radius: 4px; cursor: pointer;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  #toc-list .toc-item:hover { color: var(--text); background: var(--panel); }
   #annotations { list-style: none; padding: 0; margin: 10px 0; }
   #related-list { list-style: none; padding: 0; margin: 6px 0 10px; }
   #related-list li {
@@ -589,6 +605,10 @@
       <button id="find-next" type="button" title="Наступний збіг">↓</button>
       <span id="find-count" class="hint"></span>
     </div>
+    <div class="row">
+      <button id="btn-toc" class="ghost" type="button" hidden>Зміст</button>
+    </div>
+    <div id="toc-list" hidden></div>
     <div id="doc-text" hidden></div>
     <div class="row" id="text-retry-row" hidden>
       <button id="retry-text" type="button" title="Завантажити текст ще раз">ще раз</button>
@@ -981,6 +1001,7 @@ async function openDoc(nreg) {
   findHits = []; findIdx = -1;
   $("find-input").value = "";
   $("find-count").textContent = "";
+  resetToc(); // stale outline entries must never survive into a new document
   const pane = $("doc-pane");
   pane.hidden = false;
   $("doc-head").textContent = "Завантаження картки (живий API, ≈5 с)…";
@@ -1120,6 +1141,7 @@ async function loadText(edition) {
   const el = $("doc-text");
   el.hidden = false;
   el.textContent = "Завантаження тексту…";
+  resetToc(); // the body is about to be replaced — drop the old outline
   let url = "/api/doc/" + enc + "/text";
   if (edition) url += "?edition=" + encodeURIComponent(edition);
   try {
@@ -1249,6 +1271,62 @@ function renderDocText() {
   runFind();
 }
 
+// ---- «Зміст» outline (the GUI reader's toc_entries/toc_label/toc_is_section) -
+// Entries are collected from the RENDERED heading blocks (#doc-text
+// .p-section / .p-article), i.e. from the very elements the per-line
+// classifier produced, so labels and order can never drift from the
+// renderer. Session-only: openDoc and every text reload clear the list via
+// resetToc, and runFind rebuilds it right after each repaint of the body.
+function tocLabel(t) {
+  const s = t.trim();
+  const chars = Array.from(s); // Cyrillic-safe: 90 characters, not UTF-16 units
+  return chars.length <= 90 ? s : chars.slice(0, 90).join("") + "…";
+}
+
+/// True for top-level headings («Розділ …» / «Глава …», any case).
+function tocIsSection(t) {
+  const l = t.trimStart().toUpperCase();
+  return l.startsWith("РОЗДІЛ") || l.startsWith("ГЛАВА");
+}
+
+/// Rebuild #toc-list from the current heading blocks; the toggle is hidden
+/// when the document has fewer than 2 headings.
+function buildToc() {
+  const list = $("toc-list");
+  list.innerHTML = "";
+  const heads = $("doc-text").querySelectorAll(".p-section, .p-article");
+  const btn = $("btn-toc");
+  if (heads.length < 2) {
+    btn.hidden = true;
+    list.hidden = true;
+    return;
+  }
+  btn.hidden = false;
+  btn.textContent = "Зміст (" + heads.length + ")";
+  for (const h of heads) {
+    const title = h.textContent || "";
+    const row = document.createElement("div");
+    row.className = "toc-item";
+    row.textContent = tocLabel(title);
+    row.title = title;
+    row.style.paddingLeft = tocIsSection(title) ? "0px" : "14px";
+    row.onclick = () => h.scrollIntoView({ behavior: "smooth", block: "start" });
+    list.appendChild(row);
+  }
+}
+
+/// Empty the outline and hide the toggle (called on openDoc and text reload).
+function resetToc() {
+  $("toc-list").innerHTML = "";
+  $("toc-list").hidden = true;
+  $("btn-toc").hidden = true;
+}
+
+$("btn-toc").onclick = () => {
+  const list = $("toc-list");
+  list.hidden = !list.hidden;
+};
+
 function plural(n, one, few, many) {
   const d10 = n % 10, d100 = n % 100;
   if (d10 === 1 && d100 !== 11) return one;
@@ -1269,6 +1347,7 @@ function runFind() {
   const q = $("find-input").value;
   const pre = $("doc-text");
   if (state.curText) pre.innerHTML = goldHtml(state.curText);
+  buildToc(); // headings were just re-rendered — rebuild the outline from them
   if (!q || !state.curText) {
     $("find-count").textContent = "";
     return;

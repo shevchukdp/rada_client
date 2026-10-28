@@ -2767,4 +2767,20 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("history.replaceState(null, \"\", \"?doc=\""));
         assert!(ui::INDEX_HTML.contains("readDeepLink();"));
     }
+
+    #[test]
+    fn ui_page_has_toc() {
+        // «Зміст» panel (the GUI reader's outline parity): a ghost toggle
+        // above the document text, the entries list, labels built from the
+        // rendered .p-section/.p-article heading blocks, smooth scrollIntoView
+        // navigation, and the reset that clears stale entries on openDoc.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-toc\""));
+        assert!(ui::INDEX_HTML.contains("id=\"toc-list\""));
+        assert!(ui::INDEX_HTML.contains("Зміст"));
+        assert!(ui::INDEX_HTML.contains("function buildToc()"));
+        assert!(ui::INDEX_HTML.contains("\".p-section, .p-article\""));
+        assert!(ui::INDEX_HTML.contains("scrollIntoView({ behavior: \"smooth\", block: \"start\" })"));
+        assert!(ui::INDEX_HTML.contains("function resetToc()"));
+        assert!(ui::INDEX_HTML.contains("resetToc(); // stale outline entries must never survive into a new document"));
+    }
 }

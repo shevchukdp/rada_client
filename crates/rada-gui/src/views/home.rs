@@ -64,6 +64,24 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 ui.label(format!("{:.1} MB", st.size_bytes as f64 / KB));
                                 ui.end_row();
 
+                                ui.label("кеш текстів");
+                                match app.cache_stats {
+                                    Some((rows, bytes)) if rows > 0 => ui.label(format!(
+                                        "{} тіл · {:.1} MB",
+                                        crate::views::reader::group_thousands(rows as usize),
+                                        bytes as f64 / KB
+                                    )),
+                                    Some(_) => ui.label(
+                                        egui::RichText::new("порожньо — тіла кешуються при читанні")
+                                            .small()
+                                            .weak(),
+                                    ),
+                                    None => ui.label(
+                                        egui::RichText::new("зчитую …").small().weak(),
+                                    ),
+                                };
+                                ui.end_row();
+
                                 ui.label("останній імпорт/синк");
                                 ui.label(st.last_import.clone().unwrap_or_else(|| "—".into()));
                                 ui.end_row();

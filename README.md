@@ -152,7 +152,8 @@ official open-data API:
   counts after each search), **theme-colored printing** (the print view keeps
   the current theme's accent on white paper),
   **deep links** (`?q=&sort=&status=…` reproduces a search on load,
-  `?doc=<nreg>` opens a document directly),
+  `?doc=<nreg>` opens a document directly), **web reader outline («Зміст»** —
+  smooth-scroll jump list of «Розділ/Глава/Стаття» headings),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -213,6 +214,7 @@ Launch arguments:
 # 3) Live lookups (respect the 5–7 s API pacing).
 .\rada-client.exe card 2755-17          # JSON card with all editions
 .\rada-client.exe text 2755-17          # clean current text (offline cache fallback)
+.\rada-client.exe text 2755-17 --out zakon.txt   # write the text to a file (UTF-8)
 .\rada-client.exe text 2755-17 --edition 20101202
 .\rada-client.exe cache                 # offline text-cache stats
 .\rada-client.exe cache --purge 2755-17 # drop one document's cached text

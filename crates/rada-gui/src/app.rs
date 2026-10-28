@@ -22,6 +22,8 @@ pub type Outcome<T> = Result<T, String>;
 /// Background result messages.
 pub enum Msg {
     Status(IndexStatus),
+    /// `(rows, body bytes)` from the offline text cache (home page row).
+    CacheStats((i64, i64)),
     Dicts {
         stan: Vec<(i64, String)>,
         typs: Vec<(i64, String)>,
@@ -161,6 +163,8 @@ pub struct App {
     pub fav: views::FavoritesState,
     pub dicts: views::Dicts,
     pub index_status: Option<IndexStatus>,
+    /// Offline text-cache size `(rows, body bytes)` (home page row).
+    pub cache_stats: Option<(i64, i64)>,
     pub toasts: Vec<Toast>,
     /// «Про програму» dialog visibility.
     pub show_about: bool,
@@ -214,6 +218,7 @@ impl App {
             fav: views::FavoritesState::default(),
             dicts: views::Dicts::default(),
             index_status: None,
+            cache_stats: None,
             toasts: Vec::new(),
             show_about: false,
             settings,
@@ -330,6 +335,12 @@ impl App {
         let db = self.db_path.clone();
         self.spawn(move |tx| {
             let _ = tx.send(Msg::Status(read_index_status(&db)));
+            // Text-cache size rides along with the index status refresh.
+            if let Ok(conn) = rada_db::open(&db) {
+                if let Ok(pair) = rada_db::textcache::stats(&conn) {
+                    let _ = tx.send(Msg::CacheStats(pair));
+                }
+            }
         });
     }
 
@@ -1393,6 +1404,9 @@ impl App {
 
     fn apply(&mut self, msg: Msg) {
         match msg {
+            Msg::CacheStats(pair) => {
+                self.cache_stats = Some(pair);
+            }
             Msg::Status(st) => {
                 let dicts_empty = st.dicts.iter().all(|(_, c)| *c == 0);
                 let auto_fetch = st.docs > 0 && dicts_empty;
