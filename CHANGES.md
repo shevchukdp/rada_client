@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.9.5: діалог «Про програму» та версія у веб / 0.9.5: About dialog & web version
+
+- **UKR:** 1) **Діалог «Про програму»**: кнопки в рядку стану та на «Головній» — версія, шлях і розмір індексу, кількість документів, дата найновіших отриманих даних, останній імпорт, словники, лічильник live-запитів і пауза, джерела даних (відкриті дані Ради, CC BY 4.0, ліміт ~200 МБ/добу) та посилання (GitHub, zakon.rada, data.rada). 2) **Веб**: `/api/status` тепер віддає `version`, у футері сторінки — «rada_client v…». 3) Тести: 69/69 (+тест версії веб-статусу).
+- **ENG:** 1) **"About" dialog**: buttons in the status bar and on Home — version, index path and size, document count, freshest fetched data date, last import, dictionaries, live-request counter and pacing, data sources (Rada open data, CC BY 4.0, ~200 MB/day limit) and links (GitHub, zakon.rada, data.rada). 2) **Web**: `/api/status` now returns `version` and the page footer shows "rada_client v…". 3) Tests: 69/69 (+web status version test).
+
+---
+
+## 2026-10-28
+
 ### 0.9.4: сортування результатів — клікабельні стовпці / 0.9.4: sortable result columns
 
 - **UKR:** 1) **Сортування у пошуку**: рядок «Сортування» над результатами — «Назва ▲/▼», «Дата ▼/▲» (типово найновіші першими), «Редакція ▼» (дата поточної редакції), «Релевантність» (ранг FTS для запитів із 2+ слів). 2) **Веб**: клікабельні заголовки стовпців над результатами + параметр `?sort=` у `GET /api/search` (date_desc|date_asc|nazva_asc|nazva_desc|podd_desc|relevance). 3) **CLI**: `search --sort <вид>` з тими самими ідентифікаторами. 4) Сортування назв — без урахування регістру (NOCASE), стабільна прив'язка за nreg. 5) Тести: 68/68 (+5 у ядрі — усі напрямки, fallback, парсер; +4 у веб — параметр sort і заголовок сторінки).

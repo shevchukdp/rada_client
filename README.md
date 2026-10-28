@@ -33,6 +33,9 @@ official open-data API:
     query (`%LOCALAPPDATA%\rada-client\settings.ini`); Home shows clickable
     chips of the **last opened documents**, and the search field pre-loads the
     last query.
+  - **About dialog («Про програму»)** — version, index path/size/docs, freshest
+    fetched data, dictionaries, live-request counter, API limits and links;
+    the web footer shows the same version (`version` in `/api/status`).
   - **Keyboard shortcuts** — **Ctrl+F** focuses the find-in-text field (reader)
     or the query field (search); **Esc** clears the find query; **Alt+←/→**
     pages through the results list from inside the reader; **Shift+Enter** steps

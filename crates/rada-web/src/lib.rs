@@ -242,6 +242,7 @@ fn status_handler(st: &State) -> Resp {
         "organs": all_labels(&conn, "organs").len(),
     });
     json_ok(&json!({
+        "version": env!("CARGO_PKG_VERSION"),
         "docs": docs,
         "last_import": last,
         "db_path": st.db_path.display().to_string(),
@@ -1427,6 +1428,18 @@ mod tests {
         let (code, v) = call(&st, Method::Post, "/api/annotations/all", "");
         assert_eq!(code, 405);
         assert!(v["error"].as_str().unwrap().contains("method"));
+    }
+
+    #[test]
+    fn status_reports_version() {
+        let st = favorites_state("ver");
+        let (code, v) = call(&st, Method::Get, "/api/status", "");
+        assert_eq!(code, 200);
+        assert_eq!(
+            v["version"].as_str().unwrap(),
+            env!("CARGO_PKG_VERSION"),
+            "/api/status must expose the crate version for the footer"
+        );
     }
 
     #[test]

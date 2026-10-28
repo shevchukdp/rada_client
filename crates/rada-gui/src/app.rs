@@ -135,6 +135,8 @@ pub struct App {
     pub dicts: views::Dicts,
     pub index_status: Option<IndexStatus>,
     pub toasts: Vec<Toast>,
+    /// «Про програму» dialog visibility.
+    pub show_about: bool,
     /// Last opened doc / last query, persisted for "Continue".
     pub settings: crate::settings::Settings,
     /// Signature of the visuals currently applied (theme id + OS theme),
@@ -184,6 +186,7 @@ impl App {
             dicts: views::Dicts::default(),
             index_status: None,
             toasts: Vec::new(),
+            show_about: false,
             settings: crate::settings::load(),
             theme_sig: String::new(),
             focus_req: None,

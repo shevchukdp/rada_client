@@ -83,6 +83,125 @@ pub fn topbar(app: &mut App, ctx: &egui::Context) {
     if let Some(id) = theme_pick {
         app.set_theme(&id);
     }
+    if app.show_about {
+        about_window(app, ctx);
+    }
+}
+
+/// «Про програму»: version, index facts, live counters, data sources, links.
+fn about_window(app: &mut App, ctx: &egui::Context) {
+    let sent = app
+        .client
+        .requests_sent
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let st = app.index_status.clone();
+    let db = app.db_path.display().to_string();
+    let pace = app.pace_secs;
+    let mut open = app.show_about;
+    let mut close_req = false;
+    egui::Window::new("Про програму")
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(
+                    egui::RichText::new(" § ")
+                        .strong()
+                        .color(gold())
+                        .size(30.0),
+                );
+                ui.vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new("Законодавство України")
+                            .strong()
+                            .size(17.0),
+                    );
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "локальний офлайн-клієнт · v{}",
+                            env!("CARGO_PKG_VERSION")
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                });
+            });
+            ui.separator();
+            egui::Grid::new("about_grid")
+                .num_columns(2)
+                .spacing([12.0, 4.0])
+                .show(ui, |ui| {
+                    ui.label(egui::RichText::new("Індекс").strong());
+                    ui.label(db);
+                    ui.end_row();
+                    match &st {
+                        Some(s) if s.docs > 0 => {
+                            ui.label(egui::RichText::new("Документів").strong());
+                            ui.label(format!(
+                                "{}  ·  {:.0} MB",
+                                s.docs,
+                                s.size_bytes as f64 / 1_048_576.0
+                            ));
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Найновіші дані").strong());
+                            ui.label(
+                                s.max_date
+                                    .as_deref()
+                                    .map(|d| crate::views::search::fmt_date(d))
+                                    .unwrap_or_else(|| "—".into()),
+                            );
+                            ui.end_row();
+                            ui.label(egui::RichText::new("Останній імпорт").strong());
+                            ui.label(s.last_import.clone().unwrap_or_else(|| "—".into()));
+                            ui.end_row();
+                            let dict: Vec<String> = s
+                                .dicts
+                                .iter()
+                                .map(|(k, n)| format!("{k} {n}"))
+                                .collect();
+                            ui.label(egui::RichText::new("Словники").strong());
+                            ui.label(dict.join("  ·  "));
+                            ui.end_row();
+                        }
+                        _ => {
+                            ui.label("—");
+                            ui.label("індекс відсутній — «Головна» → «Отримати снапшот»");
+                            ui.end_row();
+                        }
+                    }
+                    ui.label(egui::RichText::new("Live-запити").strong());
+                    ui.label(format!("{sent}  ·  пауза {pace} с/запит"));
+                    ui.end_row();
+                });
+            ui.separator();
+            ui.label(
+                egui::RichText::new(
+                    "Дані: zakon.rada.gov.ua / data.rada.gov.ua (відкриті дані, CC BY 4.0).\n\
+                     Обмеження сервера: ~200 МБ/добу — клиент сам дотримується паузи.",
+                )
+                .small()
+                .weak(),
+            );
+            ui.horizontal(|ui| {
+                let mut link = |ui: &mut egui::Ui, label: &str, url: &str| {
+                    if ui.button(egui::RichText::new(label).small()).clicked() {
+                        ui.ctx().open_url(egui::OpenUrl::new_tab(url));
+                    }
+                };
+                link(ui, "GitHub проєкту", "https://github.com/shevchukdp/rada_client");
+                link(ui, "zakon.rada.gov.ua", "https://zakon.rada.gov.ua");
+                link(ui, "відкриті дані", "https://data.rada.gov.ua/open");
+            });
+            if ui.button("Закрити").clicked() {
+                close_req = true;
+            }
+        });
+    if close_req {
+        open = false;
+    }
+    app.show_about = open;
 }
 
 fn page_button(
@@ -136,6 +255,14 @@ pub fn statusbar(app: &mut App, ctx: &egui::Context) {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(format!("live-запитів: {sent}")).small());
+                    ui.separator();
+                    if ui
+                        .button(egui::RichText::new("Про програму").small())
+                        .on_hover_text("версія, індекс, джерела даних")
+                        .clicked()
+                    {
+                        app.show_about = true;
+                    }
                 });
             });
         });

@@ -153,6 +153,23 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 ))
                 .small(),
             );
+            ui.horizontal(|ui| {
+                if ui
+                    .button(egui::RichText::new("Про програму").small())
+                    .on_hover_text("версія, індекс, джерела даних")
+                    .clicked()
+                {
+                    app.show_about = true;
+                }
+                ui.label(
+                    egui::RichText::new(format!(
+                        "rada-client v{}",
+                        env!("CARGO_PKG_VERSION")
+                    ))
+                    .small()
+                    .weak(),
+                );
+            });
         });
     });
 }

@@ -660,7 +660,7 @@ async function refreshFoot() {
   try {
     const s = await api("/api/status");
     $("foot").textContent =
-      "rada_client · локальний індекс · " + s.docs + " документів · імпорт: " +
+      "rada_client v" + (s.version || "?") + " · локальний індекс · " + s.docs + " документів · імпорт: " +
       (s.last_import || "—") + " · анотацій: " + s.annotations;
   } catch (e) {
     $("foot").textContent = "не вдалося з’єднатися з індексом: " + e.message;
