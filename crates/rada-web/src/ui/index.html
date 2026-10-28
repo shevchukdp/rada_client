@@ -278,6 +278,13 @@
     cursor: pointer; padding: 0 4px;
   }
   #rada-recent .clear:hover { color: var(--err); }
+  /* «Активні фільтри» row (the GUI search page parity): one chip per set
+     filter + «скинути все», same chip language as the sort/favorites rows. */
+  #active-filters .chip {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #active-filters .chip:hover { color: var(--text); border-color: var(--accent); }
   #doc-text {
     background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
     padding: 14px; font-size: 15px; max-height: 60vh; overflow: auto;
@@ -483,6 +490,7 @@
       <button class="primary" type="submit">Пошук</button>
       <button id="btn-cache-search" type="button" title="Повнотекстовий пошук у кешованих тілах документів (офлайн, без мережі)">Пошук у тексті</button>
     </form>
+    <div id="active-filters" class="row" hidden></div>
     <div class="row">
       <input id="resolve-input" placeholder="Назва документа для пошуку реєстр. номера…" size="32" autocomplete="off">
       <button id="btn-resolve" type="button">Знайти nreg</button>
@@ -842,6 +850,75 @@ function statusLabel(id) {
   return state.statusLabels.get(String(id)) || String(id);
 }
 
+// ---- active-filter chips (the GUI search page's «Активні фільтри» row) ------
+// One chip per set filter («Статус: Чинний ×», «№ 2041 ×», …); clicking a
+// chip clears that control and re-runs the search from the first page,
+// «скинути все» clears every filter control at once (never the query #q).
+
+/// Shared chip shape: «{kind}: {label} ×» (the GUI's chip format).
+function chipLabel(kind, label) {
+  return kind + ": " + label + " ×";
+}
+
+/// `YYYYMMDD` → `YYYY-MM-DD` for the date chips (other values pass through).
+function chipDate(d) {
+  return d.length === 8 ? d.slice(0, 4) + "-" + d.slice(4, 6) + "-" + d.slice(6, 8) : d;
+}
+
+/// Chips for the filters currently set, as `{ id, text }` where `id` is the
+/// control the chip clears. Mirrors doSearch's parameter building: dict
+/// values resolve through the cached option labels (fallback: the raw value),
+/// dates count only as full 8-digit YYYYMMDD, exactly as the query sends them.
+function activeChips() {
+  const chips = [];
+  const dictLabel = (id) => {
+    const v = $(id).value;
+    const cache = optionLabels[id] || {};
+    return cache[v] === undefined ? v : cache[v];
+  };
+  if ($("f-status").value) chips.push({ id: "f-status", text: chipLabel("Статус", dictLabel("f-status")) });
+  if ($("f-typ").value) chips.push({ id: "f-typ", text: chipLabel("Тип", dictLabel("f-typ")) });
+  if ($("f-org").value) chips.push({ id: "f-org", text: chipLabel("Видавник", dictLabel("f-org")) });
+  const df = $("date-from").value.trim();
+  if (/^[0-9]{8}$/.test(df)) chips.push({ id: "date-from", text: chipLabel("Дата від", chipDate(df)) });
+  const dt = $("date-to").value.trim();
+  if (/^[0-9]{8}$/.test(dt)) chips.push({ id: "date-to", text: chipLabel("Дата до", chipDate(dt)) });
+  const n = $("f-number").value.trim();
+  if (n) chips.push({ id: "f-number", text: "№ " + n + " ×" });
+  return chips;
+}
+
+/// Repaint the «Активні фільтри» row: one chip per set filter plus
+/// «скинути все»; the whole row hides while nothing is set.
+function renderActiveFilters() {
+  const row = $("active-filters");
+  row.innerHTML = "";
+  const chips = activeChips();
+  row.hidden = chips.length === 0;
+  for (const c of chips) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.textContent = c.text;
+    b.title = "прибрати цей фільтр";
+    b.onclick = () => { $(c.id).value = ""; doSearch(0); };
+    row.appendChild(b);
+  }
+  if (!chips.length) return;
+  const all = document.createElement("button");
+  all.type = "button";
+  all.className = "chip";
+  all.textContent = "скинути все";
+  all.title = "прибрати всі фільтри";
+  all.onclick = () => {
+    for (const id of ["f-status", "f-typ", "f-org", "f-number", "date-from", "date-to"]) {
+      $(id).value = "";
+    }
+    doSearch(0);
+  };
+  row.appendChild(all);
+}
+
 async function doSearch(offset) {
   state.offset = offset;
   const q = $("q").value.trim();
@@ -872,6 +949,7 @@ async function doSearch(offset) {
   $("results").innerHTML = "";
   $("sort-bar").hidden = true;
   resetFacetLabels(); // never show counts from the previous result set
+  renderActiveFilters(); // the chips mirror exactly the filters this query goes out with
   try {
     const d = await api("/api/search?" + p.toString());
     // Offline number search: exact nreg hit opens the document directly.

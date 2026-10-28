@@ -522,7 +522,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         stan_label(&app.dicts.stan, h.status),
                         fmt_date(&h.poddat),
                     );
-                    let avail = (ui.available_width() - 56.0).max(100.0);
+                    let avail = (ui.available_width() - 96.0).max(100.0);
                     let text =
                         egui::RichText::new(format!("{}\n{}", h.nazva, meta)).small();
                     ui.horizontal(|ui| {
@@ -546,6 +546,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                         }
                         if ui.button(egui::RichText::new("копія").small()).clicked() {
                             ui.ctx().copy_text(h.nreg.clone());
+                        }
+                        if ui
+                            .button(egui::RichText::new("сайт").small())
+                            .on_hover_text("відкрити акт на порталі zakon.rada.gov.ua")
+                            .clicked()
+                        {
+                            ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                rada_core::RadaClient::site_url(&h.nreg),
+                            ));
                         }
                     });
                 }

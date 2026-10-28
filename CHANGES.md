@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.16: фільтри-чипи у веб, звіт статистики та кнопка «сайт» / web filter chips, stats report & site buttons
+
+- **UKR:** 1) **«Активні фільтри» у веб**: після пошуку рядок чипів із кожним увімкненим фільтром («Статус: Чинний ×», «Дата від: 2024-01-01 ×», «№ 2041 ×»); клік знімає фільтр і перевиконує пошук, «скинути все» чистить усі (поле заголовка лишається). 2) **CLI `stats`**: офлайн-звіт індексу — документи, розмір, останній імпорт, найновіші дані, словники, кеш текстів і знімок оновлень; `--json` для скриптів; відсутній індекс — не помилка. 3) **Кнопка «сайт» у результатах GUI**: кожен рядок видачі тепер має «копія» і «сайт» — акт відкривається на zakon.rada.gov.ua в новій вкладці. 4) Тести: 160/160.
+- **ENG:** 1) **«Активні фільтри» in the web UI**: after a search, a chip row shows every enabled filter («Статус: Чинний ×», «Дата від: 2024-01-01 ×», «№ 2041 ×»); a click clears it and re-runs the search, «скинути все» clears them all (the title box stays). 2) **CLI `stats`**: an offline index report — documents, size, last import, newest data, dictionaries, text cache and the arrivals snapshot; `--json` for scripts; a missing index is not an error. 3) **A «сайт» button on GUI hits**: every result row now carries «копія» and «сайт», opening the act on zakon.rada.gov.ua in a new tab. 4) Tests: 160/160.
+
+---
+
+## 2026-10-28
+
 ### 0.10.15: зняття фільтрів одним кліком та фід у файл / one-click filter clearing & feed to file
 
 - **UKR:** 1) **«Активні фільтри» на сторінці пошуку**: рядок чипів із кожним увімкненим фільтром («Статус: Чинний ×», «Дата від: 01.01.2024 ×», «№ 2041 ×»…); клік знімає фільтр і перевиконує пошук, «скинути все» чистить усі. 2) **CLI `arrivals --out FILE`**: табличний перелік (з «новими» і приміткою про обрізання) пишеся у файл UTF-8 з BOM для Excel; `--json --out` — JSON без BOM. 3) Тести: 157/157.

@@ -2844,4 +2844,35 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("хв"));
         assert!(ui::INDEX_HTML.contains("/400"));
     }
+
+    #[test]
+    fn ui_page_has_active_filter_chips() {
+        // «Активні фільтри» row under the search form (the GUI search page
+        // parity): one chip per set filter with Ukrainian labels and a × to
+        // clear it, the shared chipLabel shape helper («{kind}: {label} ×»),
+        // and «скинути все» clearing everything at once.
+        assert!(ui::INDEX_HTML.contains("<div id=\"active-filters\" class=\"row\" hidden></div>"));
+        assert!(ui::INDEX_HTML.contains("function chipLabel(kind, label)"));
+        assert!(ui::INDEX_HTML.contains("kind + \": \" + label + \" ×\""));
+        assert!(ui::INDEX_HTML.contains("function activeChips("));
+        assert!(ui::INDEX_HTML.contains("скинути все"));
+        assert!(ui::INDEX_HTML.contains("chipLabel(\"Статус\""));
+        assert!(ui::INDEX_HTML.contains("chipLabel(\"Тип\""));
+        assert!(ui::INDEX_HTML.contains("chipLabel(\"Видавник\""));
+        assert!(ui::INDEX_HTML.contains("chipLabel(\"Дата від\""));
+        assert!(ui::INDEX_HTML.contains("chipLabel(\"Дата до\""));
+    }
+
+    #[test]
+    fn ui_page_search_refreshes_active_filter_chips() {
+        // The chip row repaints inside doSearch on every search — the init
+        // doSearch(0) covers deep links that prefill filters too — a chip
+        // click clears its own control and re-searches from page 1, and
+        // «скинути все» zeroes all six filter controls (never #q).
+        assert!(ui::INDEX_HTML.contains("renderActiveFilters();"));
+        assert!(ui::INDEX_HTML.contains("$(c.id).value = \"\"; doSearch(0);"));
+        assert!(ui::INDEX_HTML.contains(
+            "for (const id of [\"f-status\", \"f-typ\", \"f-org\", \"f-number\", \"date-from\", \"date-to\"])"
+        ));
+    }
 }

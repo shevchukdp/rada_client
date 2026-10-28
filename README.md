@@ -58,7 +58,8 @@ official open-data API:
     gold highlight annotation (double-click selects a word/paragraph).
   - **Query history** — «недавні запити» chips under the search filters repeat
     a past search with one click (persisted, clearable); «копіювати текст» in
-    the reader copies the whole act to the clipboard.
+    the reader copies the whole act to the clipboard. Each search hit row has
+    «копія» (copy nreg) and «сайт» (open the act on zakon.rada.gov.ua).
   - **New-arrival badges** — the arrivals feed is diffed against what you have
     seen: fresh docs are gold, with a «нових» counter and a «лише нові» filter
     (the seen list persists across sessions); the text filter is remembered
@@ -157,6 +158,8 @@ official open-data API:
   smooth-scroll jump list of «Розділ/Глава/Стаття» headings),
   **reader copy-text + reading-time stats** (clipboard button and a muted
   «N слів · M симв. · ~K хв» label),
+  **active-filter chips** («Активні фільтри»: one chip per set filter with a ×
+  that clears it and re-searches, plus «скинути все»),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -220,6 +223,8 @@ Launch arguments:
 .\rada-client.exe text 2755-17 --out zakon.txt   # write the text to a file (UTF-8)
 .\rada-client.exe text 2755-17 --edition 20101202
 .\rada-client.exe cache                 # offline text-cache stats
+.\rada-client.exe stats                  # offline index report (docs, dicts, cache, snapshot)
+.\rada-client.exe stats --json           # machine-readable
 .\rada-client.exe cache --purge 2755-17 # drop one document's cached text
 .\rada-client.exe cache --search "освіту" --limit 10   # offline full-text over cached bodies
 .\rada-client.exe arrivals --save            # live updated-docs feed, diffed vs the saved snapshot
