@@ -142,9 +142,11 @@ enum Cmd {
         #[arg(long, default_value_t = 0)]
         context: usize,
     },
-    /// Offline text cache: statistics, purge (`--purge [nreg]`), or a
+    /// Offline text cache: statistics, purge (`--purge [nreg]`), a
     /// full-text scan of cached bodies (`--search TERM`) — offline, Unicode
-    /// case-insensitive, ranked by occurrence count.
+    /// case-insensitive, ranked by occurrence count — or a bulk export of
+    /// every cached body into a directory of plain-text files
+    /// (`--dump DIR`, offline).
     Cache {
         /// Delete cached texts (all, or only the given nreg).
         #[arg(long)]
@@ -167,6 +169,14 @@ enum Cmd {
         /// «збігів … немає» message stays on stdout.
         #[arg(long)]
         out: Option<PathBuf>,
+        /// Export every cached document body into this directory as a
+        /// UTF-8 (WITH BOM) plain-text file: `{sanitized-nreg}.txt` for the
+        /// current edition, `{sanitized-nreg}.{edition}.txt` for dated ones
+        /// (body verbatim + trailing newline; parent dirs created).
+        /// Offline; stdout prints only the final summary line and `--out`
+        /// is not supported in this mode.
+        #[arg(long)]
+        dump: Option<PathBuf>,
         /// Restrict to one document.
         nreg: Option<String>,
     },
@@ -480,8 +490,8 @@ fn run() -> Result<()> {
             context,
             cli.pace,
         ),
-        Cmd::Cache { purge, search, limit, nreg, json, out } => {
-            cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref(), json, out.as_deref())
+        Cmd::Cache { purge, search, limit, nreg, json, out, dump } => {
+            cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref(), json, out.as_deref(), dump.as_deref())
         }
         Cmd::Backfill { query, limit, dry_run, json } => {
             cmd_backfill(&cli.db, &query, limit, dry_run, json, cli.pace)
@@ -1528,14 +1538,16 @@ fn cmd_toc(db: &PathBuf, nreg: &str, json: bool, out: Option<&Path>) -> Result<(
 
 /// Offline text cache: `--purge` deletes cached bodies (all or one `nreg`),
 /// `--search TERM` scans the cached current texts offline (ranked by
-/// occurrence count), and the bare form prints cache statistics. With
+/// occurrence count), `--dump DIR` exports every cached body (all editions)
+/// as UTF-8-with-BOM plain-text files, and the bare form prints cache
+/// statistics. With
 /// `--search --out` the exact stdout body goes to the file (parent dirs
 /// created) and nothing prints to stdout: the plain table is written UTF-8
 /// with a BOM (Excel-friendly, like search/arrivals/resolve/related), the
 /// `--json` body BOM-less; zero hits write the BOM alone (n=0 note). The
 /// «у кешованому тексті збігів … немає» line is stdout-only (the
 /// `search --facets` rule): it never enters the file. `--out` and `--json`
-/// apply to `--search` only.
+/// apply to `--search` only (`--dump` ignores both).
 fn cmd_cache(
     db: &PathBuf,
     purge: bool,
@@ -1544,11 +1556,56 @@ fn cmd_cache(
     nreg: Option<&str>,
     json: bool,
     out: Option<&Path>,
+    dump: Option<&Path>,
 ) -> Result<()> {
     let conn = rada_db::open(db)?;
     if purge {
         let n = rada_db::textcache::purge(&conn, nreg)?;
         eprintln!("[cache] видалено рядків: {n}");
+        return Ok(());
+    }
+    // `--dump DIR`: offline bulk export of every cached body. The textcache
+    // API exposes no enumeration helper (get/purge/stats/search_bodies only),
+    // so — like the `nreg` stats query below — this reads the `docs_text`
+    // table through the same connection directly. Dated editions (keys
+    // besides `""`) get their own file; bodies go verbatim + trailing
+    // newline, UTF-8 WITH a BOM (human documents, via `write_out_file`).
+    // stdout stays quiet: only the final summary line.
+    if let Some(dir) = dump {
+        let mut stmt = conn
+            .prepare(
+                "SELECT nreg, edition, body FROM docs_text
+                 ORDER BY nreg, edition",
+            )
+            .context("dump docs_text")?;
+        let mut rows = stmt
+            .query_map([], |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            })
+            .context("dump docs_text")?;
+        let mut written = 0usize;
+        while let Some((nreg, edition, body)) = rows.next().transpose()? {
+            let name = if edition.is_empty() {
+                format!("{}.txt", cache_dump_filename(&nreg))
+            } else {
+                format!(
+                    "{}.{}.txt",
+                    cache_dump_filename(&nreg),
+                    cache_dump_filename(&edition)
+                )
+            };
+            // human document: UTF-8 with a BOM; a write failure aborts with
+            // the usual «запис {file}» context (exit 1 via main).
+            write_out_file(&dir.join(name), format!("\u{FEFF}{body}\n").as_bytes())?;
+            written += 1;
+        }
+        for line in cache_dump_lines(written, dir) {
+            println!("{line}");
+        }
         return Ok(());
     }
     if let Some(term) = search {
@@ -1658,6 +1715,40 @@ fn cache_search_lines(
 /// plain table (`n` matched documents) to `file`.
 fn cache_search_out_note(n: usize, file: &Path) -> String {
     format!("[cache] записано {n} збігів → {}", file.display())
+}
+
+/// The dump filename stem behind `cache --dump` (pure): ASCII alphanumerics
+/// and `-`, `_`, `.` are kept; every other char — including the
+/// Windows-reserved residue `: * ? / \ < > |` and any non-ASCII letter —
+/// becomes `_`. An empty or whitespace-only nreg yields `"doc"`; the stem
+/// is capped at 80 chars (the caller appends the `.txt` suffix, plus the
+/// `.{edition}` infix for dated editions).
+fn cache_dump_filename(nreg: &str) -> String {
+    if nreg.trim().is_empty() {
+        return "doc".to_string();
+    }
+    nreg.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' || c == '_' || c == '.' {
+                c
+            } else {
+                '_'
+            }
+        })
+        .take(80)
+        .collect()
+}
+
+/// The stdout of `cache --dump` (pure): never per-file lines, only the one
+/// final summary `документів записано: {n} → {dir}`, or the empty-cache
+/// notice `кеш текстів порожній — нічого експортувати` when nothing was
+/// exported (still a normal exit 0).
+fn cache_dump_lines(n: usize, dir: &Path) -> Vec<String> {
+    if n == 0 {
+        vec!["кеш текстів порожній — нічого експортувати".to_string()]
+    } else {
+        vec![format!("документів записано: {n} → {}", dir.display())]
+    }
 }
 
 /// Final summary line of `backfill` (one line, pure): counts of the run plus
@@ -2767,7 +2858,8 @@ mod tests {
     use super::{
         annot_list_out_note, annot_out_note, annot_search_lines, annot_search_match,
         annot_search_out_note, annot_table_lines, annot_text_file_note, arrivals_date_key,
-        arrivals_out_note, backfill_summary, cache_search_out_note, card_out_note, dict_fresh_lines,
+        arrivals_out_note, backfill_summary, cache_dump_filename, cache_dump_lines,
+        cache_search_out_note, card_out_note, dict_fresh_lines,
         dict_matches, dict_out_note, export_html, grep_body, grep_render,
         export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
         normalize_fmt, out_note, related_out_note, resolve_out_note, search_out_note, since_note,
@@ -3082,6 +3174,45 @@ mod tests {
         assert!(line.contains("збігів"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn cache_dump_filename_sanitizes_and_caps() {
+        // a normal nreg passes through unchanged
+        assert_eq!(cache_dump_filename("2755-17"), "2755-17");
+        assert_eq!(cache_dump_filename("1556-18_2.ed1"), "1556-18_2.ed1");
+        // slashes (and colons) are replaced
+        assert_eq!(cache_dump_filename("2755-17/ed2024"), "2755-17_ed2024");
+        // the whole Windows-reserved residue goes to '_'
+        assert_eq!(
+            cache_dump_filename("a:b*c?d/e\\f<g>h|i"),
+            "a_b_c_d_e_f_g_h_i"
+        );
+        // empty or whitespace-only garbage → "doc"
+        assert_eq!(cache_dump_filename(""), "doc");
+        assert_eq!(cache_dump_filename("   \t "), "doc");
+        // a 200-char input is capped at 80 chars
+        let capped = cache_dump_filename(&"x".repeat(200));
+        assert_eq!(capped.chars().count(), 80);
+        assert_eq!(capped, "x".repeat(80));
+        // non-ASCII letters are not kept: every «йц» char is replaced
+        assert_eq!(cache_dump_filename("йц"), "__");
+    }
+
+    #[test]
+    fn cache_dump_lines_summary_and_empty() {
+        // double separator keeps the test path-separator-stable via display()
+        let dir = std::path::Path::new("out//dump");
+        let lines = cache_dump_lines(2, dir);
+        assert_eq!(lines.len(), 1, "one summary line only");
+        assert!(lines[0].contains("документів записано: 2"), "{}", lines[0]);
+        assert!(lines[0].contains(&dir.display().to_string()));
+        assert!(lines[0].contains('→'));
+        // empty cache: exactly the zero message, still one line (exit 0)
+        assert_eq!(
+            cache_dump_lines(0, dir),
+            vec!["кеш текстів порожній — нічого експортувати".to_string()]
+        );
     }
 
     #[test]

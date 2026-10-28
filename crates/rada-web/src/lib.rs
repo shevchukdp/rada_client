@@ -3496,4 +3496,60 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("k.className = \"help-keys\""));
         assert!(ui::INDEX_HTML.contains("renderHelp();"));
     }
+
+    #[test]
+    fn ui_page_has_scroll_top_button() {
+        // Floating «догори» button for the reader (acts run to millions of
+        // characters): hidden by default with a plain-text label, fixed to
+        // the free bottom-right viewport corner and styled with theme
+        // variables only, the pure TOP_SHOW_AT show threshold, and the
+        // scroll listener on `window` — the element that actually scrolls
+        // #doc-text (no overflow container around it, so the outline's
+        // scrollIntoView jumps bubble up to the window scroller too).
+        assert!(ui::INDEX_HTML.contains(
+            "<button id=\"btn-top\" type=\"button\" hidden>догори</button>"
+        ));
+        let css = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("#btn-top {")
+            .expect("btn-top css")..];
+        let css = &css[..css.find('}').expect("btn-top css end")];
+        assert!(css.contains("position: fixed;"));
+        assert!(css.contains("right: 16px; bottom: 16px;"));
+        assert!(css.contains("background: var(--panel2);"));
+        assert!(ui::INDEX_HTML.contains(
+            "#btn-top:hover { color: var(--text); border-color: var(--accent); }"
+        ));
+        assert!(ui::INDEX_HTML.contains("const TOP_SHOW_AT = 800;"));
+        assert!(ui::INDEX_HTML.contains(
+            "window.addEventListener(\"scroll\", updateTopButton);"
+        ));
+    }
+
+    #[test]
+    fn ui_page_has_scroll_top_actions() {
+        // Clicking «догори» hides the button at once (no waiting out the
+        // smooth ride) and smooth-scrolls that same window scroller back to
+        // the top; the show/hide test compares the window's scrollTop with
+        // TOP_SHOW_AT; openDoc hides the button, since a freshly opened
+        // document starts at the top anyway.
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"btn-top\").hidden = scrollTop <= TOP_SHOW_AT;"
+        ));
+        assert!(ui::INDEX_HTML.contains(
+            "window.scrollTo({ top: 0, behavior: \"smooth\" });"
+        ));
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"btn-top\").hidden = true; // a fresh document starts at the top anyway"
+        ));
+        let body = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("$(\"btn-top\").onclick = () => {")
+            .expect("btn-top click")..];
+        let hide = body
+            .find("$(\"btn-top\").hidden = true;")
+            .expect("immediate hide on click");
+        let scroll = body
+            .find("window.scrollTo({ top: 0")
+            .expect("smooth scroll to top");
+        assert!(hide < scroll);
+    }
 }

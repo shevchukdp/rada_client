@@ -60,6 +60,10 @@ pub struct ReaderState {
     pub cmp_lines: Vec<String>,
     pub cmp_error: Option<String>,
     pub cmp_run: u64,
+    /// Scroll progress of the body (0..=100), refreshed every render.
+    pub scroll_pct: u8,
+    /// «Догори» was clicked — force the scroll area back to the top next render.
+    pub scroll_to_top: bool,
 }
 
 pub const ANN_KINDS: [&str; 3] = ["Коментар", "Закладка", "Виділення"];
@@ -104,6 +108,8 @@ impl ReaderState {
             cmp_lines: Vec::new(),
             cmp_error: None,
             cmp_run: 0,
+            scroll_pct: 0,
+            scroll_to_top: false,
         }
     }
 
@@ -258,19 +264,63 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             annotations_panel(app, ui);
         });
 
+    // «Догори» click from the previous frame: force the body back to the top.
+    let jump = app.reader.as_ref().map(|r| r.scroll_to_top).unwrap_or(false);
+    let last_pct = app.reader.as_ref().map(|r| r.scroll_pct).unwrap_or(0);
     egui::CentralPanel::default().show(ctx, |ui| {
-        egui::ScrollArea::vertical()
-            .auto_shrink([false, false])
-            .show(ui, |ui| {
-                header(app, ui);
-                ui.add_space(6.0);
-                edition_row(app, ui);
-                ui.add_space(8.0);
-                ui.separator();
-                text_block(app, ui);
-                related_block(app, ui);
-            });
+        let mut sa = egui::ScrollArea::vertical().auto_shrink([false, false]);
+        if jump {
+            sa = sa.vertical_scroll_offset(0.0);
+        }
+        let out = sa.show(ui, |ui| {
+            header(app, ui);
+            ui.add_space(6.0);
+            edition_row(app, ui);
+            ui.add_space(8.0);
+            ui.separator();
+            text_block(app, ui);
+            related_block(app, ui);
+        });
+        if let Some(r) = app.reader.as_mut() {
+            r.scroll_pct = scroll_pct(out.state.offset.y, out.content_size.y, out.inner_rect.height());
+            if jump {
+                r.scroll_to_top = false;
+            }
+        }
     });
+
+    // Floating «Догори» (web btn-top parity): deep in a long act, one click
+    // back to the title. Bottom-left, clear of the toasts (bottom-right).
+    if top_button_shown(last_pct) {
+        egui::Area::new(egui::Id::new("reader_top_btn"))
+            .anchor(egui::Align2::LEFT_BOTTOM, [16.0, -16.0])
+            .show(ctx, |ui| {
+                if ui
+                    .button(egui::RichText::new(format!("Догори · {last_pct}%")).strong())
+                    .on_hover_text("прокрутити до початку документа")
+                    .clicked()
+                {
+                    if let Some(r) = app.reader.as_mut() {
+                        r.scroll_to_top = true;
+                    }
+                }
+            });
+    }
+}
+
+/// Scroll progress of the reader body in percents: 0 when the document fits
+/// without scrolling; clamped to 0..=100 otherwise.
+pub fn scroll_pct(offset: f32, content_h: f32, view_h: f32) -> u8 {
+    let span = content_h - view_h;
+    if span <= 1.0 {
+        return 0;
+    }
+    ((offset / span) * 100.0).clamp(0.0, 100.0) as u8
+}
+
+/// Should the floating «Догори» button be visible at this progress?
+pub fn top_button_shown(pct: u8) -> bool {
+    pct >= 5
 }
 
 // ---------------------------------------------------------------------
@@ -1841,6 +1891,30 @@ mod tests {
         // A zero delta normalises the unset value to 100.
         assert_eq!(zoom_step(0, 0), 100);
         assert_eq!(zoom_step(180, 0), 180);
+    }
+
+    #[test]
+    fn scroll_pct_clamps_and_detects_unscrollable() {
+        // Nothing to scroll → always 0.
+        assert_eq!(scroll_pct(0.0, 500.0, 800.0), 0);
+        assert_eq!(scroll_pct(30.0, 800.0, 800.0), 0, "span <= 1 px is not scrollable");
+        // Quarter / halfway / end of a 10 000 px span.
+        assert_eq!(scroll_pct(2_500.0, 10_800.0, 800.0), 25);
+        assert_eq!(scroll_pct(5_000.0, 10_800.0, 800.0), 50);
+        assert_eq!(scroll_pct(10_000.0, 10_800.0, 800.0), 100);
+        // Overshoot (bounce/kinetic) clamps to 100.
+        assert_eq!(scroll_pct(10_800.0, 10_800.0, 800.0), 100);
+        // Never negative, never over 100.
+        assert_eq!(scroll_pct(-40.0, 10_800.0, 800.0), 0);
+        assert_eq!(scroll_pct(99_000.0, 10_800.0, 800.0), 100);
+    }
+
+    #[test]
+    fn top_button_shown_from_five_percent() {
+        assert!(!top_button_shown(0));
+        assert!(!top_button_shown(4));
+        assert!(top_button_shown(5));
+        assert!(top_button_shown(100));
     }
 
     #[test]

@@ -5,6 +5,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ---
 
+## 2026-10-29
+
+### 0.10.35: кнопка «Догори» у читалках та вивантаження кешованих тіл у теку / back-to-top in both readers & offline cache dump
+
+- **UKR:** 1) **«Догори» у програмній читалці**: глибоко в довгому акті внизу зліва з'являється плаваюча кнопка з відсотком прочитаного («Догори · 47%») — один клік повертає до назви. 2) **«Догори» у веб-читалці**: кнопка з'являється після 800 px прокрутки і плавно веде вгору; при відкритті нового акта ховається. 3) **CLI `cache --dump DIR`**: офлайн вивантаження **всіх** кешованих тіл документів у теку файлами `{nreg}.txt` (кешовані редакції — `{nreg}.{редакція}.txt`), кожен з BOM; «кеш текстів порожній» — якщо немає що експортувати. Мережі не чіпає. 4) Тести: 253/253.
+- **ENG:** 1) **A «Догори» button in the desktop reader**: deep in a long act a floating button appears at the bottom-left showing reading progress («Догори · 47%») — one click jumps back to the title. 2) **The web reader gains its own «догори»**: the same navigation relief — it appears past 800 px of scroll and smooth-scrolls up (hidden again when a new act opens). 3) **CLI `cache --dump DIR`**: offline export of **every** cached document body into a folder as `{nreg}.txt` files (cached editions land as `{nreg}.{edition}.txt`), each with a BOM; an empty cache just says so. Never touches the network. 4) Tests: 253/253.
+
+---
+
 ## 2026-10-28
 
 ### 0.10.34: «клавіші» у програмі, зміст документа з CLI та шапка друку у веб / desktop shortcuts sheet, document outline & print masthead

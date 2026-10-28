@@ -99,6 +99,9 @@ official open-data API:
   - **Reader outline («Зміст»)** — a collapsible panel listing every
     «Розділ/Глава/Стаття» heading; one click scrolls straight to it (shown for
     acts with at least two headings, e.g. 604 entries in the Criminal Code).
+  - **Reader «Догори» button** — deep in a long act a floating button appears
+    at the bottom-left with the scroll progress («Догори · 47%»); one click
+    returns to the title (web «догори» parity).
   - **Plain-text mode** — «Форматований/Простий» toggle (GUI) and «Простий»
     (web) switch off structural styling of titles/sections/articles.
   - **Printing** — «Друк» in the reader (and «🖨 Друк» in the web UI) opens a
@@ -183,7 +186,9 @@ official open-data API:
   **deep links** (`?q=&sort=&status=…` reproduces a search on load,
   `?doc=<nreg>` opens a document directly; the URL also carries a
   copy-friendly `#doc=<nreg>` / `#q=<term>` fragment kept in sync without
-  adding browser-history entries), **web reader outline («Зміст»** —
+  adding browser-history entries), a floating **«догори» button** in the reader
+  (appears past 800 px of scroll, smooth-scrolls back to the top),
+  **web reader outline («Зміст»** —
   smooth-scroll jump list of «Розділ/Глава/Стаття» headings),
   **reader copy-text + reading-time stats** (clipboard button and a muted
   «N слів · M симв. · ~K хв» label),
@@ -285,6 +290,7 @@ Launch arguments:
 .\rada-client.exe backfill --query "податковий кодекс" --limit 5   # pre-cache top hits' texts for offline reading (--dry-run lists without network)
 .\rada-client.exe cache --search "освіту" --limit 10   # offline full-text over cached bodies
 .\rada-client.exe cache --search "освіту" --out hits.txt  # report to file (BOM); --json → BOM-less JSON
+.\rada-client.exe cache --dump C:\archiv                   # offline: write EVERY cached body to DIR as {nreg}.txt (BOM), quiet summary
 .\rada-client.exe arrivals --save            # live updated-docs feed, diffed vs the saved snapshot
 .\rada-client.exe arrivals --since 7         # only docs dated in the last 7 days (undated ones kept)
 .\rada-client.exe resolve "податковий кодекс"   # name → nreg (offline index first, live only as fallback)

@@ -429,6 +429,18 @@
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   #toc-list .toc-item:hover { color: var(--text); background: var(--panel); }
+  /* Floating «догори» button for the reader (acts can be millions of
+     characters): hidden until the window scrolls deep into the document.
+     Fixed to the viewport's bottom-right corner, which nothing else
+     occupies (the outline list flows inline above the text, the footer is
+     static). Same small-button language as button.copy / the chips. */
+  #btn-top {
+    position: fixed; right: 16px; bottom: 16px; z-index: 20;
+    background: var(--panel2); color: var(--muted);
+    border: 1px solid var(--border); border-radius: 7px;
+    padding: 6px 12px; font-size: 13px;
+  }
+  #btn-top:hover { color: var(--text); border-color: var(--accent); }
   #annotations { list-style: none; padding: 0; margin: 10px 0; }
   #related-list { list-style: none; padding: 0; margin: 6px 0 10px; }
   #related-list li {
@@ -806,6 +818,7 @@
     </div>
     <ul id="related-list" hidden></ul>
     <ul id="annotations"></ul>
+    <button id="btn-top" type="button" hidden>догори</button>
   </div>
 </main>
 
@@ -1490,6 +1503,7 @@ async function openDoc(nreg) {
   $("find-input").value = "";
   $("find-count").textContent = "";
   resetToc(); // stale outline entries must never survive into a new document
+  $("btn-top").hidden = true; // a fresh document starts at the top anyway
   resetCompare(); // a stale edition comparison must never linger either
   $("doc-stats").textContent = ""; // stale stats must never linger either
   $("copy-hint").textContent = "";
@@ -1940,6 +1954,24 @@ function resetToc() {
 $("btn-toc").onclick = () => {
   const list = $("toc-list");
   list.hidden = !list.hidden;
+};
+
+// ---- floating «догори» button (back to the top of enormous acts) -------------
+// The document body scrolls with the WINDOW: nothing around #doc-text has an
+// overflow container, so the outline's scrollIntoView jumps bubble up to the
+// window scroller. This mirrors that same scroller — the listener lives on
+// `window`, the show/hide test compares its scrollTop against TOP_SHOW_AT,
+// and the way back up reuses the outline's smooth behavior. The button lives
+// inside #doc-pane, so a closed reader hides it for free.
+const TOP_SHOW_AT = 800;
+function updateTopButton() {
+  const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+  $("btn-top").hidden = scrollTop <= TOP_SHOW_AT;
+}
+window.addEventListener("scroll", updateTopButton);
+$("btn-top").onclick = () => {
+  $("btn-top").hidden = true; // hide at once, do not wait out the smooth ride
+  window.scrollTo({ top: 0, behavior: "smooth" });
 };
 
 function plural(n, one, few, many) {
