@@ -1860,8 +1860,10 @@ $("btn-export").onclick = () => {
 
 $("btn-print").onclick = () => {
   if (!state.curNreg) { return; }
+  // Pass the current theme so the print view restyles headings in it.
+  const th = encodeURIComponent(localStorage.getItem("rada-theme") || "");
   window.open("/api/export/" + encNreg(state.curNreg) +
-    "?print=1" +
+    "?print=1&theme=" + th +
     ($("editions").value ? "&edition=" + encodeURIComponent($("editions").value) : ""), "_blank");
 };
 

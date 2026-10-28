@@ -7,6 +7,7 @@
 //! - `card`      live JSON card for a document;
 //! - `text`      clean text of a document (current or a given edition);
 //! - `dict`      load reference dictionaries (stan/typs/organs) from the live API;
+//! - `arrivals`  live updated-documents feed with a diff against the saved snapshot;
 //! - `snapshot`  create / restore gzip snapshots;
 //! - `status`    index statistics;
 //! - `export`    save a document (card + text) as txt / md / html;
@@ -107,6 +108,19 @@ enum Cmd {
         limit: Option<usize>,
         /// Restrict to one document.
         nreg: Option<String>,
+    },
+    /// Show the live updated-documents feed (r.tsv) and diff it against the
+    /// last saved snapshot; `--save` persists the feed for the next run.
+    Arrivals {
+        /// Persist the fetched feed so the next run diffs against it.
+        #[arg(long)]
+        save: bool,
+        /// Output JSON instead of a plain list.
+        #[arg(long)]
+        json: bool,
+        /// Max rows to print (default 30, capped at 1000).
+        #[arg(long, default_value_t = 30)]
+        limit: usize,
     },
     /// Load the reference dictionaries (stan / typs / organs) from the live API.
     Dict {
@@ -248,6 +262,7 @@ fn run() -> Result<()> {
         Cmd::Cache { purge, search, limit, nreg } => {
             cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref())
         }
+        Cmd::Arrivals { save, json, limit } => cmd_arrivals(&cli.db, save, json, limit, cli.pace),
         Cmd::Dict { kind } => cmd_dict(&cli.db, cli.pace, kind.as_deref()),
         Cmd::Resolve { text } => cmd_resolve(&text.join(" "), cli.pace),
         Cmd::Related { nreg, json } => cmd_related(&cli.db, &nreg, json, cli.pace),
@@ -576,6 +591,76 @@ fn cmd_cache(db: &PathBuf, purge: bool, search: Option<&str>, limit: Option<usiz
     Ok(())
 }
 
+/// Docs in `live` whose nreg is absent from `seen`: feed order preserved,
+/// duplicates collapsed, empty `seen` ⇒ everything is new.
+fn new_nregs(live: &[String], seen: &[String]) -> Vec<String> {
+    let seen: std::collections::HashSet<&str> = seen.iter().map(String::as_str).collect();
+    let mut emitted: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for n in live {
+        if !seen.contains(n.as_str()) && emitted.insert(n.as_str()) {
+            out.push(n.clone());
+        }
+    }
+    out
+}
+
+fn cmd_arrivals(db: &PathBuf, save: bool, json: bool, limit: usize, pace: u64) -> Result<()> {
+    let c = client(pace);
+    let feed = c
+        .updated_docs()
+        .with_context(|| "failed to fetch the updated-documents feed (r.tsv)")?;
+
+    // Diff against the last saved snapshot BEFORE persisting the new one.
+    let snapshot = rada_db::open(db)
+        .ok()
+        .and_then(|conn| rada_db::sync::load_arrivals(&conn));
+    let first_run = snapshot.is_none();
+    let seen: Vec<String> = snapshot
+        .as_ref()
+        .map(|(docs, _)| docs.iter().map(|d| d.nreg.clone()).collect())
+        .unwrap_or_default();
+    let live_nregs: Vec<String> = feed.iter().map(|d| d.nreg.clone()).collect();
+    let new = new_nregs(&live_nregs, &seen);
+
+    if save {
+        let conn = rada_db::open(db)
+            .with_context(|| format!("open db {}", db.display()))?;
+        rada_db::sync::save_arrivals(&conn, &feed)?;
+        eprintln!(
+            "[arrivals] збережено {} документів — наступний запуск порівняє з цим фідом",
+            feed.len()
+        );
+    }
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "items": feed,
+                "new_nregs": new,
+            }))
+            .map_err(anyhow::Error::from)?
+        );
+        return Ok(());
+    }
+
+    if first_run {
+        eprintln!("збереженого феду ще немає — усі документи вважаються новими");
+    }
+    println!("{} документів, нових: {}", feed.len(), new.len());
+    let newset: std::collections::HashSet<&str> = new.iter().map(String::as_str).collect();
+    let limit = limit.clamp(1, 1000);
+    for d in feed.iter().take(limit) {
+        let marker = if newset.contains(d.nreg.as_str()) { "* " } else { "  " };
+        println!("{marker}{}  [{}]  {}", d.nreg, d.status, d.nazva);
+    }
+    if feed.len() > limit {
+        println!("… ще {} див. --limit", feed.len() - limit);
+    }
+    Ok(())
+}
+
 fn cmd_resolve(text: &str, pace: u64) -> Result<()> {
     let c = client(pace);
     match c.resolve_name(text) {
@@ -802,7 +887,7 @@ fn fmt_date(d: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_fmt;
+    use super::{new_nregs, normalize_fmt};
 
     #[test]
     fn normalize_fmt_accepts_known_formats() {
@@ -819,5 +904,26 @@ mod tests {
         assert!(normalize_fmt("pdf").is_err());
         assert!(normalize_fmt("").is_err());
         assert!(normalize_fmt("markdown").is_err());
+    }
+
+    #[test]
+    fn new_nregs_preserves_order_dedups_and_handles_empty_seen() {
+        // feed order is preserved, seen nregs are skipped
+        assert_eq!(
+            new_nregs(&["b".into(), "a".into(), "c".into()], &["z".into()]),
+            vec!["b".to_string(), "a".to_string(), "c".to_string()]
+        );
+        // duplicates in the live feed collapse into one entry
+        assert_eq!(
+            new_nregs(&["a".into(), "b".into(), "a".into(), "c".into()], &["a".into()]),
+            vec!["b".to_string(), "c".to_string()]
+        );
+        // empty seen ⇒ everything is new (dedup still applies)
+        assert_eq!(
+            new_nregs(&["x".into(), "x".into(), "y".into()], &[]),
+            vec!["x".to_string(), "y".to_string()]
+        );
+        // empty live ⇒ nothing new
+        assert!(new_nregs(&[], &["a".into()]).is_empty());
     }
 }

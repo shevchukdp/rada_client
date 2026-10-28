@@ -137,7 +137,8 @@ official open-data API:
   `GET /api/cache/search?q=`), **date-range filters** (`date_from`/`date_to`,
   validated 8-digit YYYYMMDD, never blocking),
   **dict facets** (the status/type/publisher dropdowns show per-option result
-  counts after each search),
+  counts after each search), **theme-colored printing** (the print view keeps
+  the current theme's accent on white paper),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -201,6 +202,7 @@ Launch arguments:
 .\rada-client.exe cache                 # offline text-cache stats
 .\rada-client.exe cache --purge 2755-17 # drop one document's cached text
 .\rada-client.exe cache --search "освіту" --limit 10   # offline full-text over cached bodies
+.\rada-client.exe arrivals --save            # live updated-docs feed, diffed vs the saved snapshot
 .\rada-client.exe resolve "податковий кодекс"   # name → nreg
 .\rada-client.exe export 2755-17 --fmt md --out zakon.md   # cache-first export
 .\rada-client.exe dict                   # load dictionaries (stan/typs/organs)

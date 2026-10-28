@@ -1229,7 +1229,8 @@ fn export_handler(
                         .filter(|l| !l.is_empty());
                     let conn = open_db(st).ok();
                     let body = print_body_with_related(&body, related, conn.as_ref());
-                    Response::from_data(print_wrap(&body).into_bytes())
+                    let theme = qget(q, "theme").unwrap_or("");
+                    Response::from_data(print_wrap(&body, theme).into_bytes())
                         .with_chunked_threshold(usize::MAX)
                         .with_header(h("Content-Type", "text/html; charset=utf-8"))
                 } else {
@@ -1373,16 +1374,47 @@ fn esc_html(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// Turn a rendered html export into a print view: sensible print margins
-/// and the browser print dialog on load. Falls back to the input when the
-/// document has no `</body>`.
-fn print_wrap(doc: &str) -> String {
-    const INJECT: &str = "<style media=\"print\">@page{margin:18mm 16mm}\
-        body{margin:0;max-width:none}</style>\n\
-        <script>window.addEventListener('load',function(){\
-        setTimeout(function(){window.print();},250);});</script>\n</body></html>";
+/// Print accent color of a web theme (per-theme print CSS): headings and
+/// rules keep the on-screen identity of the picked theme, while the paper
+/// stays light (white background, black text) so dark themes print cheaply.
+/// Unknown/missing ids fall back to the classical gold.
+fn print_accent(id: &str) -> &'static str {
+    match id {
+        "classical" => "#B8860B",
+        "white" => "#1F6FEB",
+        "black" => "#8A6D00",
+        "invert" => "#7A00CC",
+        "matrix" => "#0B7A30",
+        "opencode" => "#C25E00",
+        "nord" => "#4A7C93",
+        "dracula" => "#7A4FCC",
+        "solarized-dark" | "solarized-light" => "#268BD2",
+        "gruvbox-dark" => "#B5760A",
+        "monokai" => "#C0155A",
+        "one-dark" => "#B08A3E",
+        "tokyo-night" => "#9A7A2E",
+        "catppuccin" => "#C2643A",
+        "github-dark" => "#9A6A0E",
+        _ => "#B8860B",
+    }
+}
+
+/// Turn a rendered html export into a print view: sensible print margins,
+/// the theme's accent color and the browser print dialog on load. Falls
+/// back to the input when the document has no `</body>`.
+fn print_wrap(doc: &str, theme: &str) -> String {
+    let accent = print_accent(theme);
+    let inject = format!(
+        "<style media=\"print\">@page{{margin:18mm 16mm}}\
+         body{{margin:0;max-width:none;background:#FFFFFF;color:#000000}}\
+         h1,h2{{color:{accent};border-bottom:1px solid {accent};padding-bottom:2px}}\
+         hr{{border:none;border-top:1px solid {accent}}}\
+         a{{color:#000000;text-decoration:none}}</style>\n\
+         <script>window.addEventListener('load',function(){{\
+         setTimeout(function(){{window.print();}},250);}});</script>\n</body></html>"
+    );
     match doc.rfind("</body>") {
-        Some(i) => format!("{}{}", &doc[..i], INJECT),
+        Some(i) => format!("{}{}", &doc[..i], inject),
         None => doc.to_string(),
     }
 }
@@ -2257,13 +2289,26 @@ mod tests {
     #[test]
     fn print_wrap_injects_dialog_and_survives_without_body() {
         let doc = "<!doctype html><html><head></head><body><pre>x</pre></body></html>";
-        let w = print_wrap(doc);
+        let w = print_wrap(doc, "");
         assert!(w.contains("window.print()"), "{w}");
         assert!(w.contains("@page"), "{w}");
         assert!(w.starts_with("<!doctype html><html><head></head><body><pre>x</pre>"));
         assert!(w.ends_with("</body></html>"), "{w}");
         // No </body>: returned unchanged.
-        assert_eq!(print_wrap("<p>q</p>"), "<p>q</p>");
+        assert_eq!(print_wrap("<p>q</p>", ""), "<p>q</p>");
+    }
+
+    #[test]
+    fn print_accent_follows_theme_and_print_wrap_uses_it() {
+        // Known themes get their own accent, unknown ones the classical gold.
+        assert_eq!(print_accent("matrix"), "#0B7A30");
+        assert_eq!(print_accent("white"), "#1F6FEB");
+        assert_eq!(print_accent("nonsense"), "#B8860B");
+        assert_eq!(print_accent(""), "#B8860B");
+        let doc = "<html><body><h1>т</h1></body></html>";
+        let w = print_wrap(doc, "matrix");
+        assert!(w.contains("#0B7A30"), "{w}");
+        assert!(w.contains("background:#FFFFFF"), "paper stays light: {w}");
     }
 
     fn related_docs(pairs: &[(&str, &str)]) -> Vec<RelatedDoc> {
@@ -2679,8 +2724,7 @@ mod tests {
     }
 
     #[test]
-    fn ui_page_has_cache_search() {
-        // «Пошук у тексті»: offline full-text button on the search page that
+    fn ui_page_has_cache_search() {        // «Пошук у тексті»: offline full-text button on the search page that
         // calls the cache endpoint and renders ranked snippet rows.
         assert!(ui::INDEX_HTML.contains("id=\"btn-cache-search\""));
         assert!(ui::INDEX_HTML.contains("Пошук у тексті"));
@@ -2703,5 +2747,13 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("applyFacets(\"f-typ\", d.facets && d.facets.typ)"));
         assert!(ui::INDEX_HTML.contains("applyFacets(\"f-org\", d.facets && d.facets.org)"));
         assert!(ui::INDEX_HTML.contains("facets"));
+    }
+
+    #[test]
+    fn ui_page_print_passes_theme() {
+        // The «Друк» button appends the current theme id so the print view
+        // restyles headings with the theme accent (per-theme print CSS).
+        assert!(ui::INDEX_HTML.contains("rada-theme"));
+        assert!(ui::INDEX_HTML.contains("\"?print=1&theme=\""));
     }
 }
