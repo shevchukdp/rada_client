@@ -83,6 +83,43 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             });
 
         ui.add_space(8.0);
+        // ---- recent queries: one-click repeat of yesterday's searches ------
+        if !app.settings.recent_q.is_empty() {
+            let mut pick: Option<String> = None;
+            let mut clear_hist = false;
+            ui.horizontal_wrapped(|ui| {
+                ui.label(
+                    egui::RichText::new("недавні запити:")
+                        .small()
+                        .color(crate::themes::weak()),
+                );
+                for q in app.settings.recent_q.iter().take(6) {
+                    if ui
+                        .button(egui::RichText::new(q).small())
+                        .on_hover_text("повторити пошук")
+                        .clicked()
+                    {
+                        pick = Some(q.clone());
+                    }
+                }
+                if ui
+                    .button(egui::RichText::new("очистити").small())
+                    .on_hover_text("прибрати історію запитів")
+                    .clicked()
+                {
+                    clear_hist = true;
+                }
+            });
+            if let Some(q) = pick {
+                app.search.query = q;
+                app.run_search();
+            }
+            if clear_hist {
+                app.settings.recent_q.clear();
+                crate::settings::save(&app.settings);
+            }
+            ui.add_space(4.0);
+        }
         ui.horizontal(|ui| {
             let find = ui.add(
                 egui::Button::new(egui::RichText::new("🔎 Знайти").strong().color(gold())),

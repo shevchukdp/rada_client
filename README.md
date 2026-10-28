@@ -54,6 +54,9 @@ official open-data API:
   - **Mouse-selection highlights** — the «Виділення мишею» chip in the reader
     makes the text selectable by mouse; «виділити» saves the selection as a
     gold highlight annotation (double-click selects a word/paragraph).
+  - **Query history** — «недавні запити» chips under the search filters repeat
+    a past search with one click (persisted, clearable); «копіювати текст» in
+    the reader copies the whole act to the clipboard.
   - **Plain-text mode** — «Форматований/Простий» toggle (GUI) and «Простий»
     (web) switch off structural styling of titles/sections/articles.
   - **Printing** — «Друк» in the reader (and «🖨 Друк» in the web UI) opens a

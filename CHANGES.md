@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.4: історія запитів, копіювання тексту, зв'язки у друці / query history, copy-text, related in print
+
+- **UKR:** 1) **Історія запитів**: під полями пошуку з'являються чипи «недавні запити» (до 6) — клік повторює пошук; кнопка «очистити» стирає історію (зберігається між сесіями). 2) **Копіювання тексту**: кнопка «копіювати текст» у читалці копіює весь акт у буфер обміну з підтвердженням. 3) **Друк (веб)**: у друковану версію додається секція «Пов'язані документи» (кнопка «Друк» тепер запитує їх з одним additional live-запитом; без мережі друк друкується як раніше). 4) Тести: 117/117.
+- **ENG:** 1) **Query history**: «недавні запити» chips (up to 6) under the search filters — click repeats a search; «очистити» clears the list (persisted across sessions). 2) **Copy text**: a «копіювати текст» button in the reader copies the whole act to the clipboard with a toast. 3) **Print (web)**: the print view gains a «Пов'язані документи» section (the «Друк» button now adds one extra live request; offline it prints exactly as before). 4) Tests: 117/117.
+
+---
+
+## 2026-10-28
+
 ### 0.10.3: виділення мишею та related у CLI / mouse-selection highlights & CLI related
 
 - **UKR:** 1) **Виділення мишею в читалці**: чип «Виділення мишею» вмикає режим, у якому текст можна виділяти курсором (подвійний клік виділяє слово/абзац); кнопка «виділити» зберігає виділене як золоте виділення-анотацію (обмеження 500 символів, порожні виділення не зберігаються). 2) **CLI**: команда `related <nreg> [--json]` — список пов'язаних документів з офлайн-назвами з індексу. 3) Тести: 113/113.

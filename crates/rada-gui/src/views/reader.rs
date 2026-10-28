@@ -574,6 +574,17 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
         if ui.button("⬇ Експорт .html").clicked() {
             app.export_reader("html");
         }
+        if let Some(t) = text.clone() {
+            if ui
+                .button("копіювати текст")
+                .on_hover_text("скопіювати весь текст документа в буфер обміну")
+                .clicked()
+            {
+                let n = t.chars().count();
+                ui.ctx().copy_text(t);
+                app.toast(format!("текст скопійовано ({n} симв.)"), crate::app::ok());
+            }
+        }
         if ui
             .button("Друк")
             .on_hover_text("відкрити друковану версію в браузері (друк — Ctrl+P)")

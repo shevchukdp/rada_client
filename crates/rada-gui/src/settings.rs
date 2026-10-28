@@ -23,6 +23,8 @@ pub struct Settings {
     pub export_dir: String,
     /// Live-request pause in seconds (0 = not configured, use CLI/default).
     pub pace: u64,
+    /// Recent search queries, newest first, max 10.
+    pub recent_q: Vec<String>,
 }
 
 impl Settings {
@@ -56,6 +58,20 @@ pub fn remember(s: &mut Settings, nreg: &str, title: &str) {
     s.recents.retain(|(n, _)| n != nreg);
     s.recents.insert(0, (nreg.to_string(), title.to_string()));
     s.recents.truncate(10);
+}
+
+/// Push a query to the front of the recent-queries list (dedup
+/// case-insensitively, cap 10) and refresh the "last query" field.
+pub fn remember_query(s: &mut Settings, q: &str) {
+    let q = q.trim();
+    if q.is_empty() {
+        return;
+    }
+    s.last_query = q.to_string();
+    let low = q.to_lowercase();
+    s.recent_q.retain(|x| x.to_lowercase() != low);
+    s.recent_q.insert(0, q.to_string());
+    s.recent_q.truncate(10);
 }
 
 pub fn path() -> Option<PathBuf> {
@@ -95,6 +111,12 @@ fn parse(text: &str) -> Settings {
                 "raw" => s.raw = v.trim() == "1",
                 "export_dir" => s.export_dir = v.trim().to_string(),
                 "pace" => s.pace = v.trim().parse().unwrap_or(0),
+                "recentq" => {
+                    let q = v.trim().to_string();
+                    if !q.is_empty() {
+                        s.recent_q.push(q);
+                    }
+                }
                 "recent" => {
                     if let Some((n, t)) = v.split_once('\t') {
                         s.recents.push((n.to_string(), t.to_string()));
@@ -107,6 +129,10 @@ fn parse(text: &str) -> Settings {
     // settings from v0.4 (only a "last" pair): seed the list from it
     if s.recents.is_empty() && !s.last_nreg.is_empty() {
         s.recents.push((s.last_nreg.clone(), s.last_title.clone()));
+    }
+    // same for the query history: seed from the single remembered query
+    if s.recent_q.is_empty() && !s.last_query.trim().is_empty() {
+        s.recent_q.push(s.last_query.trim().to_string());
     }
     s
 }
@@ -126,6 +152,9 @@ fn render(s: &Settings) -> String {
     );
     for (n, t) in &s.recents {
         out.push_str(&format!("recent={}\t{}\n", clean(n), clean(t)));
+    }
+    for q in &s.recent_q {
+        out.push_str(&format!("recentq={}\n", clean(q)));
     }
     out
 }
@@ -149,6 +178,7 @@ mod tests {
             raw: true,
             export_dir: "C:\\temp".into(),
             pace: 7,
+            recent_q: vec!["податковий кодекс".into(), "лік".into()],
         };
         let p = std::env::temp_dir().join("rada-settings-test.ini");
         save_to(&p, &s).unwrap();
@@ -185,6 +215,29 @@ mod tests {
         assert_eq!(parse("pace=abc\n").pace, 0, "garbage falls back to unset");
         let s = parse("pace=9\n");
         assert_eq!(parse(&render(&s)).pace, 9);
+    }
+
+    #[test]
+    fn recent_query_history() {
+        // dedup is case-insensitive, newest first, cap 10.
+        let mut s = Settings::default();
+        for i in 0..12 {
+            remember_query(&mut s, &format!("запит {i}"));
+        }
+        remember_query(&mut s, "ЗАПИТ 11");
+        assert_eq!(s.recent_q.len(), 10);
+        assert_eq!(s.recent_q[0], "ЗАПИТ 11", "case-insensitive dedup keeps the newest form");
+        assert_eq!(s.last_query, "ЗАПИТ 11");
+        // round-trip through the ini file format
+        let p = std::env::temp_dir().join("rada-settings-recentq.ini");
+        save_to(&p, &s).unwrap();
+        let got = parse(&std::fs::read_to_string(&p).unwrap());
+        assert_eq!(got.recent_q, s.recent_q);
+        // empty queries are ignored; legacy single-query settings seed the list
+        remember_query(&mut s, "   ");
+        assert_eq!(s.recent_q.len(), 10);
+        let legacy = parse("last_query=податковий кодекс\n");
+        assert_eq!(legacy.recent_q, vec!["податковий кодекс".to_string()]);
     }
 
     #[test]

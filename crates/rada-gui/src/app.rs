@@ -363,7 +363,7 @@ impl App {
         self.search.run = run;
         self.search.loading = true;
         self.search.searched = true;
-        self.settings.last_query = self.search.query.trim().to_string();
+        crate::settings::remember_query(&mut self.settings, &self.search.query);
         crate::settings::save(&self.settings);
         let nreg_guess = self.search.query.trim().to_string();
         self.spawn(move |tx| {

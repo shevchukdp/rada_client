@@ -18,6 +18,7 @@ use std::time::Duration;
 
 use anyhow::{anyhow, Context, Result};
 use rada_core::models::{LawCardJson, StatusId};
+use rada_core::related::RelatedDoc;
 use rada_core::RadaClient;
 use rada_db::dict::all_labels;
 use rada_db::search::{search, SearchQuery, Sort};
@@ -1161,7 +1162,18 @@ fn export_handler(
             Ok((body, ext, filename)) => {
                 if print {
                     // Inline print view: same document, auto-opens the
-                    // browser print dialog on load.
+                    // browser print dialog on load. The route is already
+                    // live (card + text), so one more paced request adds
+                    // the «Пов'язані документи» section — best-effort: a
+                    // failed or empty fetch simply omits it, so printing
+                    // never depends on the related endpoint.
+                    let related = st
+                        .client
+                        .related(tail)
+                        .ok()
+                        .filter(|l| !l.is_empty());
+                    let conn = open_db(st).ok();
+                    let body = print_body_with_related(&body, related, conn.as_ref());
                     Response::from_data(print_wrap(&body).into_bytes())
                         .with_chunked_threshold(usize::MAX)
                         .with_header(h("Content-Type", "text/html; charset=utf-8"))
@@ -1317,6 +1329,43 @@ fn print_wrap(doc: &str) -> String {
     match doc.rfind("</body>") {
         Some(i) => format!("{}{}", &doc[..i], INJECT),
         None => doc.to_string(),
+    }
+}
+
+/// Append the «Пов'язані документи» section to a rendered print document,
+/// before `</body>` (same insertion point as [`print_wrap`]). `related` is
+/// `None` when the live fetch failed — the document is then returned
+/// unchanged, keeping the print view reliable when the endpoint is down.
+/// Offline index titles replace the page anchors (same pattern as
+/// `related_handler`); display is capped at 25 entries to keep the print
+/// compact, and every string goes through [`esc_html`].
+fn print_body_with_related(
+    body: &str,
+    related: Option<Vec<RelatedDoc>>,
+    conn: Option<&Connection>,
+) -> String {
+    let Some(list) = related.filter(|l| !l.is_empty()) else {
+        return body.to_string();
+    };
+    let mut items = String::new();
+    for mut d in list.into_iter().take(25) {
+        if let Some(conn) = conn {
+            if let Some(t) = rada_db::title_by_nreg(conn, &d.nreg) {
+                if !t.trim().is_empty() {
+                    d.title = t;
+                }
+            }
+        }
+        items.push_str(&format!(
+            "<li>{} ({})</li>\n",
+            esc_html(d.title.trim()),
+            esc_html(&d.nreg),
+        ));
+    }
+    let section = format!("<h2>Пов'язані документи</h2>\n<ul>\n{items}</ul>\n");
+    match body.rfind("</body>") {
+        Some(i) => format!("{}{}\n{}", &body[..i], section, &body[i..]),
+        None => format!("{body}{section}"),
     }
 }
 
@@ -2113,6 +2162,88 @@ mod tests {
         assert!(w.ends_with("</body></html>"), "{w}");
         // No </body>: returned unchanged.
         assert_eq!(print_wrap("<p>q</p>"), "<p>q</p>");
+    }
+
+    fn related_docs(pairs: &[(&str, &str)]) -> Vec<RelatedDoc> {
+        pairs
+            .iter()
+            .map(|(nreg, title)| RelatedDoc {
+                nreg: nreg.to_string(),
+                title: title.to_string(),
+            })
+            .collect()
+    }
+
+    /// Degraded / offline path: no related list (live fetch failed) or an
+    /// empty one ⇒ the print document is returned unchanged — no section,
+    /// no failure. The happy path is covered by the core extractor tests;
+    /// the paced (3600 s) test client is never called here.
+    #[test]
+    fn print_view_omits_related_section_when_unavailable() {
+        let doc = "<!doctype html><html><body><pre>x</pre></body></html>";
+        assert_eq!(print_body_with_related(doc, None, None), doc);
+        assert_eq!(print_body_with_related(doc, Some(vec![]), None), doc);
+        assert!(!print_body_with_related(doc, None, None).contains("Пов'язані"));
+        // A non-empty list does add the section before `</body>`.
+        let s = print_body_with_related(doc, Some(related_docs(&[("1-1", "Закон")])), None);
+        assert!(s.contains("<h2>Пов'язані документи</h2>"), "{s}");
+        assert!(s.contains("<li>Закон (1-1)</li>"), "{s}");
+        assert!(
+            s.find("Пов'язані документи").unwrap() < s.find("</body>").unwrap(),
+            "section must sit inside the body: {s}"
+        );
+        assert!(s.ends_with("</body></html>"), "{s}");
+    }
+
+    /// Titles and nregs are HTML-escaped (the existing print view escapes
+    /// via `esc_html`; the section mirrors it), and the list is capped at
+    /// 25 entries to keep the print compact.
+    #[test]
+    fn print_related_section_escapes_and_caps() {
+        let s = print_body_with_related(
+            "<body></body>",
+            Some(related_docs(&[("254к/96-вр", "<b>Закон</b> & <i>про все</i>")])),
+            None,
+        );
+        assert!(
+            s.contains("&lt;b&gt;Закон&lt;/b&gt; &amp; &lt;i&gt;про все&lt;/i&gt; (254к/96-вр)"),
+            "{s}"
+        );
+        assert!(!s.contains("<b>Закон</b>"), "raw anchor markup must not leak: {s}");
+        let many: Vec<RelatedDoc> = (0..40)
+            .map(|i| RelatedDoc {
+                nreg: format!("{i}-2026"),
+                title: format!("Закон {i}"),
+            })
+            .collect();
+        let s = print_body_with_related("<body></body>", Some(many), None);
+        assert_eq!(s.matches("<li>").count(), 25, "capped at 25 entries: {s}");
+        assert!(s.contains("Закон 24 (24-2026)"), "{s}");
+        assert!(!s.contains("Закон 25"), "entries past the cap are dropped: {s}");
+        // No </body>: the section is appended (same fallback shape as print_wrap).
+        let s = print_body_with_related("<p>q</p>", Some(related_docs(&[("1-1", "T")])), None);
+        assert!(s.starts_with("<p>q</p><h2>Пов'язані документи</h2>"), "{s}");
+    }
+
+    /// Offline index titles replace the page anchors (the same
+    /// `title_by_nreg` join as `related_handler`); documents missing from
+    /// the index keep the page title.
+    #[test]
+    fn print_related_section_prefers_index_title() {
+        let st = favorites_state("print-related");
+        let conn = db_open(&st.db_path).unwrap();
+        let s = print_body_with_related(
+            "<body></body>",
+            Some(related_docs(&[("2341-14", "якір із сторінки")])),
+            Some(&conn),
+        );
+        assert!(s.contains("<li>Про тестовий закон (2341-14)</li>"), "{s}");
+        let s = print_body_with_related(
+            "<body></body>",
+            Some(related_docs(&[("9999-99", "З назви сторінки")])),
+            Some(&conn),
+        );
+        assert!(s.contains("<li>З назви сторінки (9999-99)</li>"), "{s}");
     }
 
     #[test]
