@@ -22,7 +22,9 @@ official open-data API:
 
 - **Native GUI (egui 0.29)** — 17 color themes (classical/white/black/invert/auto/
   matrix/opencode/nord/dracula/solarized/gruvbox/monokai/one-dark/tokyo-night/
-  catppuccin/github-dark, header picker, persisted), Ukrainian labels:
+  catppuccin/github-dark, header picker, persisted) — the default «Класична» is a
+  light classic Windows theme (gray face, white panels, Windows-blue accent),
+  Ukrainian labels:
   - **Пошук** — local FTS5 search with filters (status/type/date/number/publisher),
     AND-narrowing with last-word prefix matching (automatic OR fallback),
     a **date-range calendar** (Ukrainian months, dates beyond the freshest data
@@ -116,7 +118,8 @@ official open-data API:
   - **Анотації** — bookmarks / comments / highlights, stored inside the
     index itself (survive snapshot restores — auto-backed-up), with **inline
     text editing** («змінити»), **portable JSON export/import** (Favorites
-    page or CLI `annot export/import`), saved "highlight" annotations
+    page or CLI `annot export/import`, with an «Перевірка імпорту» preflight
+    report before anything is written), saved "highlight" annotations
     **painted gold in the document text**, and a "» текст" button that
     scrolls to the passage.
   - **Оновлення** — the live recently-updated feed (`r.tsv`), rows open the

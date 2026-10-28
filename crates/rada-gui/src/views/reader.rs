@@ -542,6 +542,14 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
     if let Some(c) = app.reader.as_ref().unwrap().card.clone() {
         ui.collapsing("Картка документа (наживо)", |ui| {
             egui::Grid::new("card_meta").num_columns(2).spacing([16.0, 4.0]).show(ui, |ui| {
+                ui.label("тип");
+                ui.label(type_labels(&c.types, &app.dicts.typs));
+                ui.end_row();
+                if c.org != 0 {
+                    ui.label("видавник");
+                    ui.label(crate::views::search::filter_label(&app.dicts.organs, c.org));
+                    ui.end_row();
+                }
                 ui.label("поточна ред. від");
                 ui.label(c.poddat.map(fmt_i64_date).unwrap_or_else(|| "—".into()));
                 ui.end_row();
@@ -1307,6 +1315,25 @@ pub fn toc_entries(paras: &[Para]) -> Vec<(usize, String)> {
         .collect()
 }
 
+/// Resolve a card's raw `|`-separated type ids into dictionary labels
+/// joined with « · » (non-numeric tokens pass through as-is; empty → «—»).
+pub fn type_labels(types: &str, dict: &[(i64, String)]) -> String {
+    let parts: Vec<String> = types
+        .split('|')
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .map(|s| match s.parse::<i64>() {
+            Ok(id) => crate::views::search::filter_label(dict, id),
+            Err(_) => s.to_string(),
+        })
+        .collect();
+    if parts.is_empty() {
+        "—".into()
+    } else {
+        parts.join(" · ")
+    }
+}
+
 /// Reading stats of the act body as a compact toolbar label
 /// («401 слів · 2 406 симв. · ~2 хв», ≈400 words/min, min 1 хв;
 /// thousands grouped with spaces). Empty string for empty text.
@@ -1553,6 +1580,18 @@ fn annotations_panel(app: &mut App, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn type_labels_resolves_joins_and_passes_through() {
+        let d = vec![(1i64, "Закон".to_string()), (21, "постанова".to_string())];
+        assert_eq!(type_labels("1", &d), "Закон");
+        assert_eq!(type_labels("1|21", &d), "Закон · постанова");
+        assert_eq!(type_labels(" 21 | ", &d), "постанова");
+        assert_eq!(type_labels("", &d), "—");
+        assert_eq!(type_labels("| |", &d), "—", "only separators is empty");
+        assert_eq!(type_labels("999", &d), "id 999", "unknown id");
+        assert_eq!(type_labels("закон", &d), "закон", "non-numeric passes through");
+    }
 
     #[test]
     fn reading_stats_format() {

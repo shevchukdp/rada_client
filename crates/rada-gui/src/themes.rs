@@ -41,18 +41,20 @@ pub const THEMES: &[ThemeDef] = &[
     ThemeDef {
         id: "classical",
         label: "Класична",
+        // Classic Windows light: gray face, white panels, black text,
+        // Windows-blue accent. This is the default on first launch.
         pal: Palette {
-            dark: true,
-            bg: rgb(0x1A, 0x22, 0x33),
-            panel: rgb(0x14, 0x1B, 0x2A),
-            faint: rgb(0x22, 0x2C, 0x42),
-            muted: rgb(0x33, 0x3F, 0x5A),
-            text: rgb(0xEC, 0xEF, 0xF6),
-            weak: rgb(0x9A, 0xA6, 0xBC),
-            accent: rgb(0xFF, 0xB3, 0x00),
-            ok: rgb(0x9A, 0xCC, 0x80),
-            err: rgb(0xE6, 0x6A, 0x6A),
-            info: rgb(0x7A, 0xC7, 0xE4),
+            dark: false,
+            bg: rgb(0xF0, 0xF0, 0xF0),
+            panel: rgb(0xFF, 0xFF, 0xFF),
+            faint: rgb(0xE0, 0xE0, 0xE0),
+            muted: rgb(0xBF, 0xBF, 0xBF),
+            text: rgb(0x00, 0x00, 0x00),
+            weak: rgb(0x59, 0x59, 0x59),
+            accent: rgb(0x00, 0x78, 0xD4),
+            ok: rgb(0x10, 0x7C, 0x10),
+            err: rgb(0xC0, 0x00, 0x00),
+            info: rgb(0x00, 0x66, 0xCC),
         },
     },
     ThemeDef {
@@ -321,17 +323,17 @@ pub const THEMES: &[ThemeDef] = &[
 impl ThemeDef {
     /// Fallback used when the system theme is unknown.
     const P_CLASSICAL: Palette = Palette {
-        dark: true,
-        bg: egui::Color32::from_rgb(0x1A, 0x22, 0x33),
-        panel: egui::Color32::from_rgb(0x14, 0x1B, 0x2A),
-        faint: egui::Color32::from_rgb(0x22, 0x2C, 0x42),
-        muted: egui::Color32::from_rgb(0x33, 0x3F, 0x5A),
-        text: egui::Color32::from_rgb(0xEC, 0xEF, 0xF6),
-        weak: egui::Color32::from_rgb(0x9A, 0xA6, 0xBC),
-        accent: egui::Color32::from_rgb(0xFF, 0xB3, 0x00),
-        ok: egui::Color32::from_rgb(0x9A, 0xCC, 0x80),
-        err: egui::Color32::from_rgb(0xE6, 0x6A, 0x6A),
-        info: egui::Color32::from_rgb(0x7A, 0xC7, 0xE4),
+        dark: false,
+        bg: egui::Color32::from_rgb(0xF0, 0xF0, 0xF0),
+        panel: egui::Color32::from_rgb(0xFF, 0xFF, 0xFF),
+        faint: egui::Color32::from_rgb(0xE0, 0xE0, 0xE0),
+        muted: egui::Color32::from_rgb(0xBF, 0xBF, 0xBF),
+        text: egui::Color32::from_rgb(0x00, 0x00, 0x00),
+        weak: egui::Color32::from_rgb(0x59, 0x59, 0x59),
+        accent: egui::Color32::from_rgb(0x00, 0x78, 0xD4),
+        ok: egui::Color32::from_rgb(0x10, 0x7C, 0x10),
+        err: egui::Color32::from_rgb(0xC0, 0x00, 0x00),
+        info: egui::Color32::from_rgb(0x00, 0x66, 0xCC),
     };
 }
 
@@ -347,7 +349,9 @@ pub fn by_id(id: &str) -> Option<&'static ThemeDef> {
 pub fn resolve(id: &str, sys: Option<egui::Theme>) -> &'static Palette {
     if id == "auto" {
         match sys {
-            Some(egui::Theme::Light) => &by_id("white").unwrap().pal,
+            // Light (or unknown) systems get the classic Windows palette;
+            // dark systems get a comfortable dark one.
+            Some(egui::Theme::Dark) => &by_id("github-dark").unwrap().pal,
             _ => &by_id("classical").unwrap().pal,
         }
     } else {
@@ -460,10 +464,22 @@ mod tests {
 
     #[test]
     fn resolve_auto_follows_system() {
-        assert!(resolve("auto", Some(egui::Theme::Light)).dark == false);
+        // Light/unknown systems: the classic Windows palette (light).
+        assert!(!resolve("auto", Some(egui::Theme::Light)).dark);
+        assert!(!resolve("auto", None).dark);
+        assert_eq!(resolve("auto", None).bg, resolve("classical", None).bg);
+        // Dark systems get a dark palette.
         assert!(resolve("auto", Some(egui::Theme::Dark)).dark);
-        assert!(resolve("auto", None).dark);
         // unknown id falls back to classical
         assert_eq!(resolve("nope", None).accent, resolve("classical", None).accent);
+    }
+
+    #[test]
+    fn classical_is_the_light_windows_default() {
+        let c = by_id("classical").unwrap();
+        assert!(!c.pal.dark, "the default theme must not be dark");
+        assert_eq!(c.pal.bg, rgb(0xF0, 0xF0, 0xF0), "classic Windows gray");
+        assert_eq!(c.pal.text, rgb(0x00, 0x00, 0x00));
+        assert_eq!(c.pal.accent, rgb(0x00, 0x78, 0xD4), "Windows blue");
     }
 }

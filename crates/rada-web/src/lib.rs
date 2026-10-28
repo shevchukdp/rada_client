@@ -1382,10 +1382,10 @@ fn esc_html(s: &str) -> String {
 /// Print accent color of a web theme (per-theme print CSS): headings and
 /// rules keep the on-screen identity of the picked theme, while the paper
 /// stays light (white background, black text) so dark themes print cheaply.
-/// Unknown/missing ids fall back to the classical gold.
+/// Unknown/missing ids fall back to the classical Windows blue.
 fn print_accent(id: &str) -> &'static str {
     match id {
-        "classical" => "#B8860B",
+        "classical" => "#0078D4",
         "white" => "#1F6FEB",
         "black" => "#8A6D00",
         "invert" => "#7A00CC",
@@ -1400,7 +1400,7 @@ fn print_accent(id: &str) -> &'static str {
         "tokyo-night" => "#9A7A2E",
         "catppuccin" => "#C2643A",
         "github-dark" => "#9A6A0E",
-        _ => "#B8860B",
+        _ => "#0078D4",
     }
 }
 
@@ -2305,11 +2305,12 @@ mod tests {
 
     #[test]
     fn print_accent_follows_theme_and_print_wrap_uses_it() {
-        // Known themes get their own accent, unknown ones the classical gold.
+        // Known themes get their own accent, unknown ones the classical blue.
         assert_eq!(print_accent("matrix"), "#0B7A30");
         assert_eq!(print_accent("white"), "#1F6FEB");
-        assert_eq!(print_accent("nonsense"), "#B8860B");
-        assert_eq!(print_accent(""), "#B8860B");
+        assert_eq!(print_accent("classical"), "#0078D4");
+        assert_eq!(print_accent("nonsense"), "#0078D4");
+        assert_eq!(print_accent(""), "#0078D4");
         let doc = "<html><body><h1>т</h1></body></html>";
         let w = print_wrap(doc, "matrix");
         assert!(w.contains("#0B7A30"), "{w}");
@@ -2873,6 +2874,37 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("$(c.id).value = \"\"; doSearch(0);"));
         assert!(ui::INDEX_HTML.contains(
             "for (const id of [\"f-status\", \"f-typ\", \"f-org\", \"f-number\", \"date-from\", \"date-to\"])"
+        ));
+    }
+
+    #[test]
+    fn ui_page_has_arrivals_filter() {
+        // Text filter over the arrivals feed (the GUI arrivals page parity):
+        // a filter box with the GUI hint text, a x clear button, a count
+        // hidden while no filter is active, and the pure substring helper
+        // over nazva/nreg/publics shared by the filter.
+        assert!(ui::INDEX_HTML.contains("id=\"arr-filter\""));
+        assert!(ui::INDEX_HTML.contains("placeholder=\"\u{043D}\u{0430}\u{0437}\u{0432}\u{0430}, \u{043D}\u{043E}\u{043C}\u{0435}\u{0440} \u{0447}\u{0438} \u{043F}\u{0443}\u{0431}\u{043B}\u{0456}\u{043A}\u{0430}\u{0446}\u{0456}\u{044F}\u{2026}\""));
+        assert!(ui::INDEX_HTML.contains("id=\"arr-filter-clear\""));
+        assert!(ui::INDEX_HTML.contains("id=\"arr-shown\" class=\"hint\""));
+        assert!(ui::INDEX_HTML.contains("\u{043F}\u{043E}\u{043A}\u{0430}\u{0437}\u{0430}\u{043D}\u{043E} "));
+        assert!(ui::INDEX_HTML.contains("function arrFilterMatch(d, needle)"));
+    }
+
+    #[test]
+    fn ui_page_arrivals_filter_rerenders_from_cached_feed() {
+        // The filter never refetches: the input handler re-renders the cached
+        // arrivalsDocs array through the shared renderer with arrFilterMatch,
+        // and the clear button empties the box and re-renders the full list.
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"arr-filter\").addEventListener(\"input\", () => applyArrFilter());"
+        ));
+        assert!(ui::INDEX_HTML.contains(
+            "const items = arrivalsDocs.filter((d) => arrFilterMatch(d, needle));"
+        ));
+        assert!(ui::INDEX_HTML.contains("renderArrivals(items);"));
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"arr-filter-clear\").onclick = () => { $(\"arr-filter\").value = \"\"; applyArrFilter(); };"
         ));
     }
 }

@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.17: класична світла тема за замовчуванням + фільтр оновлень у веб та перевірка імпорту / light classic Windows default, web arrivals filter & import preflight
+
+- **UKR:** 1) **«Класична» тепер світла тема Windows**: сірий фон, білі панелі, чорний текст, синій акцент Windows — саме вона зустрічає перший запуск (раніше за замовчуванням була темна). «Авто» для темної системи тепер дає темну тему. 2) **Фільтр в Оновленнях веб**: поле «назва, номер чи публікація…» фільтрує завантажений фід без мережі, з «×» і «показано X з Y». 3) **Перевірка імпорту в Обраному**: перед імпортом JSON — вікно «Перевірка імпорту» (скільки записів увійде, скільки битих і чому, перші 5 помилок); імпортується лише після підтвердження. 4) **Картка документа**: рядки «тип» і «видавник» зі словниковими назвами замість id. 5) Тести: 171/171.
+- **ENG:** 1) **«Класична» is now a light classic Windows theme**: gray face, white panels, black text, Windows-blue accent — this is what greets the first launch (the default used to be dark); «Авто» on a dark system now picks a dark theme. 2) **Arrivals filter in the web UI**: a «назва, номер чи публікація…» box filters the loaded feed with no network, with a «×» clear and «показано X з Y». 3) **Import preflight in Favorites**: importing a JSON now opens a «Перевірка імпорту» report (entries accepted, records rejected and why, first 5 errors) and imports only on confirm. 4) **Document card**: «тип»/«видавник» rows with dictionary labels instead of raw ids. 5) Tests: 171/171.
+
+---
+
+## 2026-10-28
+
 ### 0.10.16: фільтри-чипи у веб, звіт статистики та кнопка «сайт» / web filter chips, stats report & site buttons
 
 - **UKR:** 1) **«Активні фільтри» у веб**: після пошуку рядок чипів із кожним увімкненим фільтром («Статус: Чинний ×», «Дата від: 2024-01-01 ×», «№ 2041 ×»); клік знімає фільтр і перевиконує пошук, «скинути все» чистить усі (поле заголовка лишається). 2) **CLI `stats`**: офлайн-звіт індексу — документи, розмір, останній імпорт, найновіші дані, словники, кеш текстів і знімок оновлень; `--json` для скриптів; відсутній індекс — не помилка. 3) **Кнопка «сайт» у результатах GUI**: кожен рядок видачі тепер має «копія» і «сайт» — акт відкривається на zakon.rada.gov.ua в новій вкладці. 4) Тести: 160/160.

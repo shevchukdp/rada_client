@@ -4,6 +4,11 @@
 //! client-side by a text needle (annotation text + document title) and a
 //! kind chip. Filtering lives in the pure [`row_matches`] /
 //! [`filter_and_group`] pair so both render modes share one source.
+//!
+//! Import is two-step: the picked file is validated first with
+//! [`preflight_import`] (what the real importer would import vs skip and
+//! why) and only written to the database after «Імпортувати» in the
+//! «Перевірка імпорту» window.
 
 use eframe::egui;
 
@@ -29,6 +34,9 @@ pub struct FavoritesState {
     pub grouped: bool,
     /// First visit triggers an auto-load.
     pub loaded: bool,
+    /// Two-step import: file picked through «Імпорт .json», waiting for the
+    /// user's verdict in the «Перевірка імпорту» window.
+    pub confirm_import: Option<PendingImport>,
 }
 
 impl Default for FavoritesState {
@@ -41,8 +49,31 @@ impl Default for FavoritesState {
             kind_sel: 0,
             grouped: true,
             loaded: false,
+            confirm_import: None,
         }
     }
+}
+
+/// Pre-import validation verdict for one file (see [`preflight_import`]).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct ImportPlan {
+    /// Entries the real importer would insert.
+    pub ok: usize,
+    /// Entries the real importer would skip (malformed / blank fields).
+    pub bad: usize,
+    /// Up to 5 human-readable skip reasons («запис 7: немає nreg»),
+    /// 1-based record numbers.
+    pub bad_preview: Vec<String>,
+    /// Accepted entries per kind, singular page labels
+    /// («коментар» / «виділення» / «закладка»), first-appearance order.
+    pub kinds: Vec<(String, usize)>,
+}
+
+/// A file picked for import whose [`ImportPlan`] awaits confirmation.
+#[derive(Debug, Clone)]
+pub struct PendingImport {
+    pub path: std::path::PathBuf,
+    pub plan: ImportPlan,
 }
 
 fn kind_tag(kind: &str) -> (&'static str, egui::Color32) {
@@ -107,6 +138,74 @@ pub fn filter_and_group(
     groups
 }
 
+/// Validate an annotations JSON exactly the way the real importer
+/// (`rada_db::annotations::import_json`) accepts rows, *before* anything is
+/// written: the same top-level shape rules (array or `{"annotations": [...]}`),
+/// the same required string fields of `AnnEntry`, the same blank-nreg skip,
+/// and the same kind/text validation `annotations::insert` applies. Whatever
+/// this counts as `ok` the importer inserts; `bad` rows it skips.
+pub fn preflight_import(json: &str) -> ImportPlan {
+    let broken_file = || ImportPlan {
+        ok: 0,
+        bad: 1,
+        bad_preview: vec!["файл не є списком анотацій".to_string()],
+        kinds: Vec::new(),
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(json) else {
+        return broken_file();
+    };
+    let Some(arr) = v
+        .as_array()
+        .or_else(|| v.get("annotations").and_then(|x| x.as_array()))
+    else {
+        return broken_file();
+    };
+
+    let has_text = |s: Option<&str>| s.map_or(false, |t| !t.trim().is_empty());
+    let mut plan = ImportPlan::default();
+    for (i, item) in arr.iter().enumerate() {
+        let nreg = item.get("nreg").and_then(|x| x.as_str());
+        let kind = item.get("kind").and_then(|x| x.as_str());
+        let text = item.get("text").and_then(|x| x.as_str());
+        let problem = if !item.is_object() {
+            Some("не об'єкт".to_string())
+        } else if !has_text(nreg) {
+            Some("немає nreg".to_string())
+        } else if !has_text(kind) {
+            Some("немає kind".to_string())
+        } else if !matches!(kind.unwrap(), "comment" | "highlight" | "bookmark") {
+            Some(format!("невідомий тип «{}»", kind.unwrap()))
+        } else if kind.unwrap() != "bookmark" && !has_text(text) {
+            // insert() demands a snippet/body for highlights and comments.
+            Some("немає text".to_string())
+        } else if serde_json::from_value::<rada_db::annotations::AnnEntry>(item.clone()).is_err()
+        {
+            // Required fields are strings already; only span_* can still
+            // fail the importer's AnnEntry deserialization.
+            Some("невірні span_start/span_end".to_string())
+        } else {
+            None
+        };
+        match problem {
+            Some(r) => {
+                plan.bad += 1;
+                if plan.bad_preview.len() < 5 {
+                    plan.bad_preview.push(format!("запис {}: {r}", i + 1));
+                }
+            }
+            None => {
+                plan.ok += 1;
+                let label = kind_tag(kind.unwrap()).0.to_string();
+                match plan.kinds.iter_mut().find(|(l, _)| *l == label) {
+                    Some((_, n)) => *n += 1,
+                    None => plan.kinds.push((label, 1)),
+                }
+            }
+        }
+    }
+    plan
+}
+
 pub fn show(app: &mut App, ctx: &egui::Context) {
     if !app.fav.loaded {
         app.load_favorites();
@@ -131,10 +230,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
                 if ui
                     .button(egui::RichText::new("⬆ Імпорт .json").small())
-                    .on_hover_text("додати анотації з JSON-файлу")
+                    .on_hover_text("додати анотації з JSON-файлу (спочатку перевірка)")
                     .clicked()
                 {
-                    app.import_annotations();
+                    pick_and_preflight_import(app);
                 }
             });
         });
@@ -239,6 +338,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
             });
     });
+
+    import_confirm_window(app, ctx);
 }
 
 /// One annotation card: kind tag + document line + text (or cached-doc
@@ -302,6 +403,88 @@ fn annotation_row(app: &mut App, ui: &mut egui::Ui, a: &rada_db::Annotation, tit
                 }
             });
         });
+}
+
+/// Pick a `.json` through the file dialog, preflight it with
+/// [`preflight_import`] and stash the verdict in
+/// [`FavoritesState::confirm_import`]; nothing is written until the user
+/// confirms in the «Перевірка імпорту» window.
+fn pick_and_preflight_import(app: &mut App) {
+    let mut d = rfd::FileDialog::new().add_filter("json", &["json"]);
+    let dir = app.settings.export_dir.clone();
+    if !dir.is_empty() && std::path::Path::new(&dir).is_dir() {
+        d = d.set_directory(&dir);
+    }
+    let Some(path) = d.pick_file() else {
+        return;
+    };
+    if let Some(par) = path.parent() {
+        app.settings.export_dir = par.display().to_string();
+        crate::settings::save(&app.settings);
+    }
+    match std::fs::read_to_string(&path) {
+        Ok(raw) => {
+            app.fav.error = None;
+            app.fav.confirm_import = Some(PendingImport {
+                path,
+                plan: preflight_import(&raw),
+            });
+        }
+        Err(e) => app.fav.error = Some(format!("імпорт: не вдалося прочитати файл: {e}")),
+    }
+}
+
+/// «Перевірка імпорту»: what the importer will do with the picked file,
+/// before a single row is written. «Імпортувати» reuses the existing app
+/// entry point `App::import_annotations` (file re-pick in the same folder
+/// is its own dialog's price for keeping the apply path in `app.rs`).
+fn import_confirm_window(app: &mut App, ctx: &egui::Context) {
+    let Some(pending) = app.fav.confirm_import.clone() else {
+        return;
+    };
+    let mut confirm = false;
+    let mut cancel = false;
+    egui::Window::new("Перевірка імпорту")
+        .collapsible(false)
+        .resizable(false)
+        .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+        .show(ctx, |ui| {
+            ui.label(format!("файл: {}", pending.path.display()));
+            ui.label(format!("імпортується: {}", pending.plan.ok));
+            ui.label(format!("пропущено битих: {}", pending.plan.bad));
+            if !pending.plan.kinds.is_empty() {
+                let kinds: Vec<String> = pending
+                    .plan
+                    .kinds
+                    .iter()
+                    .map(|(label, n)| format!("{label} {n}"))
+                    .collect();
+                ui.label(egui::RichText::new(kinds.join("  ·  ")).small());
+            }
+            for line in &pending.plan.bad_preview {
+                ui.label(egui::RichText::new(line).small().color(crate::themes::weak()));
+            }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                if ui.button("Скасувати").clicked() {
+                    cancel = true;
+                }
+                if ui
+                    .button(egui::RichText::new("Імпортувати").strong().color(gold()))
+                    .on_hover_text("у діалозі виберіть той самий файл ще раз")
+                    .clicked()
+                {
+                    confirm = true;
+                }
+            });
+        });
+
+    if cancel {
+        app.fav.confirm_import = None;
+    } else if confirm {
+        app.fav.confirm_import = None;
+        app.import_annotations();
+    }
 }
 
 #[cfg(test)]
@@ -405,5 +588,111 @@ mod tests {
     fn no_match_gives_no_groups() {
         assert!(filter_and_group(&rows(), "нічого подібного", 0).is_empty());
         assert!(filter_and_group(&[], "", 0).is_empty());
+    }
+
+    // ---- preflight_import: mirrors rada_db::annotations::import_json ------
+
+    #[test]
+    fn preflight_counts_mixed_array_and_previews_point_at_bad_records() {
+        let json = r#"[
+            {"nreg": "2961-20", "kind": "comment", "text": "добре"},
+            {"nreg": "1556-18", "kind": "bookmark", "text": ""},
+            {"nreg": "   ", "kind": "comment", "text": "текст є, реєстраційного ні"},
+            {"nreg": "777-21", "kind": "highlight"},
+            {"nreg": "1556-18", "kind": "comment", "text": "ще одна"}
+        ]"#;
+        let p = preflight_import(json);
+        assert_eq!(p.ok, 3, "two comments + one bare bookmark importable");
+        assert_eq!(p.bad, 2, "blank nreg + missing text");
+        assert_eq!(
+            p.kinds,
+            vec![("коментар".to_string(), 2), ("закладка".to_string(), 1)]
+        );
+        assert_eq!(p.bad_preview.len(), 2, "1-based indices of the bad rows");
+        assert!(
+            p.bad_preview[0].starts_with("запис 3:") && p.bad_preview[0].contains("немає nreg"),
+            "{:?}",
+            p.bad_preview[0]
+        );
+        assert!(
+            p.bad_preview[1].starts_with("запис 4:") && p.bad_preview[1].contains("немає text"),
+            "{:?}",
+            p.bad_preview[1]
+        );
+    }
+
+    #[test]
+    fn preflight_rejects_missing_nreg() {
+        let p = preflight_import(r#"[{"kind": "comment", "text": "без nreg"}]"#);
+        assert_eq!((p.ok, p.bad), (0, 1));
+        assert_eq!(p.bad_preview, vec!["запис 1: немає nreg".to_string()]);
+    }
+
+    #[test]
+    fn preflight_rejects_whitespace_nreg() {
+        // import_json skips `nreg.trim().is_empty()` — preflight must too.
+        let p = preflight_import(r#"[{"nreg": " \t ", "kind": "comment", "text": "текст є"}]"#);
+        assert_eq!((p.ok, p.bad), (0, 1));
+        assert_eq!(p.bad_preview, vec!["запис 1: немає nreg".to_string()]);
+    }
+
+    #[test]
+    fn preflight_rejects_unknown_kind() {
+        // Deserializes fine, then insert() rejects the kind → the importer
+        // skips it, so preflight counts it as bad too.
+        let p = preflight_import(r#"[{"nreg": "1-1", "kind": "note", "text": "хиба"}]"#);
+        assert_eq!((p.ok, p.bad), (0, 1));
+        assert_eq!(
+            p.bad_preview,
+            vec!["запис 1: невідомий тип «note»".to_string()]
+        );
+    }
+
+    #[test]
+    fn preflight_broken_file_is_a_report_not_a_panic() {
+        // Unparseable, truncated, or a well-formed non-list: the real
+        // importer bails without inserting anything.
+        for garbage in ["", "не json", "[1, 2, 3", "{\"foo\": 1}", "42"] {
+            let p = preflight_import(garbage);
+            assert_eq!((p.ok, p.bad), (0, 1), "garbage: {garbage:?}");
+            assert_eq!(
+                p.bad_preview,
+                vec!["файл не є списком анотацій".to_string()],
+                "garbage: {garbage:?}"
+            );
+            assert!(p.kinds.is_empty());
+        }
+    }
+
+    #[test]
+    fn preflight_mirrors_importer_leniency_and_strictness() {
+        // Wrapped {"annotations": [...]}, unknown extra field and a bare
+        // bookmark are all accepted by the importer; a string span_start
+        // fails its from_value::<AnnEntry>, so preflight skips it as well.
+        let json = r#"{"annotations": [
+            {"nreg": "1-1", "kind": "bookmark", "text": "", "extra": true},
+            {"nreg": "2-2", "kind": "highlight", "text": "x", "span_start": "12"},
+            {"nreg": "3-3", "kind": "highlight", "text": "y", "span_start": 12, "span_end": 17}
+        ]}"#;
+        let p = preflight_import(json);
+        assert_eq!(p.ok, 2, "bare bookmark + good highlight are importable");
+        assert_eq!(p.bad, 1, "string span_start is rejected by the importer");
+        assert_eq!(
+            p.kinds,
+            vec![("закладка".to_string(), 1), ("виділення".to_string(), 1)]
+        );
+        assert!(p.bad_preview[0].starts_with("запис 2:"), "{:?}", p.bad_preview[0]);
+    }
+
+    #[test]
+    fn preflight_caps_bad_preview_at_five_lines() {
+        let items: Vec<String> = (1..=8)
+            .map(|i| format!(r#"{{"nreg": "", "kind": "comment", "text": "ігнор {i}"}}"#))
+            .collect();
+        let p = preflight_import(&format!("[{}]", items.join(",")));
+        assert_eq!((p.ok, p.bad), (0, 8));
+        assert_eq!(p.bad_preview.len(), 5);
+        assert!(p.bad_preview[0].starts_with("запис 1:"));
+        assert!(p.bad_preview[4].starts_with("запис 5:"));
     }
 }

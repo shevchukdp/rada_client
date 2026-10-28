@@ -6,19 +6,21 @@
    properties on the root element; `:root` in the stylesheet below keeps the
    classical defaults. The saved theme is applied here, before first paint.
    Persistence: localStorage key `rada-theme`; `auto` follows the system
-   color scheme (light ≈ white, dark ≈ classical). */
+   color scheme (light ≈ classical, dark ≈ github-dark). */
 (function () {
   "use strict";
   var THEME_KEY = "rada-theme";
   var THEMES = {
     "classical": {
-      "--bg": "#1A2233", "--panel": "#141B2A", "--panel2": "#232E47",
-      "--text": "#ECEFF6", "--muted": "#93A0B8",
-      "--accent": "#FFB300", "--accent-text": "#1A2233",
-      "--ok": "#9ACC80", "--err": "#E66A6A", "--border": "#333F5A",
-      "--code-bg": "#0F1522", "--hl-bg": "#C9A227", "--hl-fg": "#211A05",
+      /* classic Windows light: gray face, white panels, black text,
+         Windows-blue accent — the default on first load */
+      "--bg": "#F0F0F0", "--panel": "#FFFFFF", "--panel2": "#FFFFFF",
+      "--text": "#000000", "--muted": "#595959",
+      "--accent": "#0078D4", "--accent-text": "#FFFFFF",
+      "--ok": "#107C10", "--err": "#C00000", "--border": "#BFBFBF",
+      "--code-bg": "#FFFFFF", "--hl-bg": "#C9A227", "--hl-fg": "#211A05",
       "--find-bg": "#59E6FF", "--find-fg": "#04272E", "--find-cur-bg": "#EFFAFF",
-      "--link": "#6DB3FF", "--shadow": "0 1px 5px rgba(0,0,0,.5)",
+      "--link": "#0066CC", "--shadow": "0 1px 5px rgba(25,40,80,.18)",
     },
     "white": {
       "--bg": "#FBFBFD", "--panel": "#F1F3F6", "--panel2": "#FFFFFF",
@@ -166,7 +168,7 @@
     if (!known(id)) id = "classical";
     activeId = id;
     var vars = (id === "auto")
-      ? THEMES[mqDark.matches ? "classical" : "white"]
+      ? THEMES[mqDark.matches ? "github-dark" : "classical"]
       : THEMES[id];
     for (var k in vars) {
       document.documentElement.style.setProperty(k, vars[k]);
@@ -191,13 +193,13 @@
 <style>
   :root {
     /* classical defaults — overwritten per theme by the script above */
-    --bg: #1A2233; --panel: #141B2A; --panel2: #232E47;
-    --text: #ECEFF6; --muted: #93A0B8;
-    --accent: #FFB300; --accent-text: #1A2233;
-    --ok: #9ACC80; --err: #E66A6A; --border: #333F5A;
-    --code-bg: #0F1522; --hl-bg: #C9A227; --hl-fg: #211A05;
+    --bg: #F0F0F0; --panel: #FFFFFF; --panel2: #FFFFFF;
+    --text: #000000; --muted: #595959;
+    --accent: #0078D4; --accent-text: #FFFFFF;
+    --ok: #107C10; --err: #C00000; --border: #BFBFBF;
+    --code-bg: #FFFFFF; --hl-bg: #C9A227; --hl-fg: #211A05;
     --find-bg: #59E6FF; --find-fg: #04272E; --find-cur-bg: #EFFAFF;
-    --link: #6DB3FF; --shadow: 0 1px 5px rgba(0,0,0,.5);
+    --link: #0066CC; --shadow: 0 1px 5px rgba(25,40,80,.18);
   }
   * { box-sizing: border-box; }
   body {
@@ -532,6 +534,11 @@
       <button id="arrivals-load" type="button">Завантажити (живий фід, ≈5 с)</button>
       <span class="hint">документи, оновлені з минулого серверного збігу</span>
     </div>
+    <div class="row">
+      <input id="arr-filter" placeholder="назва, номер чи публікація…" autocomplete="off">
+      <button id="arr-filter-clear" type="button" title="Очистити фільтр" hidden>×</button>
+      <span id="arr-shown" class="hint" hidden></span>
+    </div>
     <div id="arrivals"></div>
   </section>
 
@@ -671,6 +678,7 @@ const state = {
 let findHits = [];   // mark.find elements of the current find query
 let findIdx = -1;    // index of the current hit
 let arrivalsLoaded = false; // «нові документи» already fetched once
+let arrivalsDocs = [];      // fetched feed items; the text filter re-renders from here
 
 function api(path, opts) {
   return fetch(path, opts).then(async (r) => {
@@ -1624,30 +1632,63 @@ function jumpToText(t) {
   }
 }
 
+/// GUI row-filter parity (rada-gui arrivals): case-insensitive substring over
+/// nazva + nreg + publics; an empty (or whitespace-only) needle matches all.
+function arrFilterMatch(d, needle) {
+  const f = (needle || "").trim().toLowerCase();
+  if (!f) return true;
+  return (d.nazva || "").toLowerCase().includes(f)
+    || (d.nreg || "").toLowerCase().includes(f)
+    || (d.publics || "").toLowerCase().includes(f);
+}
+
+// One arrival card: title link (opens the document) + «nreg · status · publics».
+function renderArrivals(items) {
+  const el = $("arrivals");
+  el.innerHTML = "";
+  if (!items.length) { el.textContent = "немає документів за фільтром"; return; }
+  for (const it of items) {
+    const div = document.createElement("div");
+    div.className = "hit";
+    const a = document.createElement("a");
+    a.textContent = it.nazva;
+    a.onclick = (ev) => {
+      ev.preventDefault();
+      switchTab("search");
+      openDoc(it.nreg);
+    };
+    const sub = document.createElement("div");
+    sub.className = "sub";
+    sub.textContent = it.nreg + " · " + it.status + " · " + (it.publics || "—");
+    div.appendChild(a); div.appendChild(sub);
+    el.appendChild(div);
+  }
+}
+
+// Re-render the cached feed through the text filter — never refetches.
+function applyArrFilter() {
+  const needle = $("arr-filter").value;
+  const items = arrivalsDocs.filter((d) => arrFilterMatch(d, needle));
+  $("arr-filter-clear").hidden = needle.trim() === "";
+  const shown = $("arr-shown");
+  if (items.length === arrivalsDocs.length) {
+    shown.hidden = true;
+  } else {
+    shown.hidden = false;
+    shown.textContent = "показано " + items.length + " з " + arrivalsDocs.length;
+  }
+  renderArrivals(items);
+}
+
 async function loadArrivals() {
   const el = $("arrivals");
   el.textContent = "Завантаження живого фіду (pacing ≈5 с)…";
   try {
     const d = await api("/api/arrivals?limit=100");
     arrivalsLoaded = true;
-    el.innerHTML = "";
-    if (!d.items.length) { el.textContent = "Фід порожній."; return; }
-    for (const it of d.items) {
-      const div = document.createElement("div");
-      div.className = "hit";
-      const a = document.createElement("a");
-      a.textContent = it.nazva;
-      a.onclick = (ev) => {
-        ev.preventDefault();
-        switchTab("search");
-        openDoc(it.nreg);
-      };
-      const sub = document.createElement("div");
-      sub.className = "sub";
-      sub.textContent = it.nreg + " · " + it.status + " · " + (it.publics || "—");
-      div.appendChild(a); div.appendChild(sub);
-      el.appendChild(div);
-    }
+    arrivalsDocs = d.items || [];
+    if (!arrivalsDocs.length) { el.textContent = "Фід порожній."; return; }
+    applyArrFilter();
   } catch (e) {
     el.textContent = "Помилка: " + e.message;
   }
@@ -2180,6 +2221,8 @@ $("bulk-export").onclick = async () => {
 };
 
 $("arrivals-load").onclick = loadArrivals;
+$("arr-filter").addEventListener("input", () => applyArrFilter());
+$("arr-filter-clear").onclick = () => { $("arr-filter").value = ""; applyArrFilter(); };
 $("status-refresh").onclick = loadStatusTab;
 $("btn-jobs-sync").onclick = () => startDataJob("sync");
 $("btn-jobs-snapshot").onclick = () => startDataJob("snapshot");
