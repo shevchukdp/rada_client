@@ -170,6 +170,8 @@ official open-data API:
   localStorage, «нових: N» + «лише нові» + text filter),
   **edition comparison** («Порівняти редакції» — word/char/time stats per
   edition plus «різниця: ±N слів»),
+  **recent query chips** («недавні запити:» from browser storage, click to
+  re-run, «очистити»),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -244,6 +246,8 @@ Launch arguments:
 .\rada-client.exe dict                   # load dictionaries (stan/typs/organs)
 .\rada-client.exe dict --kind typs
 .\rada-client.exe dict --search "чинн"   # offline label filter («локально» — no refetch)
+.\rada-client.exe dict --fresh           # quick freshness report («N записів» / «порожньо», no refetch)
+.\rada-client.exe dict --from-file stan.txt --kind stan   # seed a dictionary from a local dump (id\tlabel, cp1251)
 
 # 4) Keep the index current.
 .\rada-client.exe sync                   # dictionaries + updated-documents feed

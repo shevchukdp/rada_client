@@ -6,7 +6,9 @@
 //! - `search`    local title search (FTS5 + filters);
 //! - `card`      live card for a document (human summary, `--json` for raw JSON);
 //! - `text`      clean text of a document (current or a given edition);
-//! - `dict`      load reference dictionaries (stan/typs/organs) from the live API;
+//! - `dict`      load reference dictionaries (stan/typs/organs) from the live API,
+//!               seed one offline from a file (`--from-file`) or report
+//!               local freshness (`--fresh`);
 //! - `arrivals`  live updated-documents feed with a diff against the saved snapshot;
 //! - `snapshot`  create / restore gzip snapshots;
 //! - `status`    index statistics;
@@ -165,6 +167,17 @@ enum Cmd {
         /// Emit JSON instead of the plain listing.
         #[arg(long)]
         json: bool,
+        /// Seed ONE dictionary from a local file instead of the network: the
+        /// raw portal dump exactly as `RadaClient::dictionary(k)` returns it —
+        /// `id<TAB>label` lines in Windows-1251 (not JSON). Requires `--kind`;
+        /// the loaded rows then render through the normal (offline) path.
+        #[arg(long, alias = "from_file")]
+        from_file: Option<PathBuf>,
+        /// Offline freshness report: print each requested kind's row count
+        /// («порожньо» when its table is empty) and never fetch a non-empty
+        /// kind; with `--json` emits `{"fresh": {kind: n, …}}`.
+        #[arg(long)]
+        fresh: bool,
     },
     /// Resolve a human name to an nreg: offline-first via the local index
     /// (exact nreg / title search), then the live `find/a` endpoint only when
@@ -330,9 +343,21 @@ fn run() -> Result<()> {
             limit,
             out,
         } => cmd_arrivals(&cli.db, save, json, limit, out.as_deref(), cli.pace),
-        Cmd::Dict { kind, search, json } => {
-            cmd_dict(&cli.db, cli.pace, kind.as_deref(), search.as_deref(), json)
-        }
+        Cmd::Dict {
+            kind,
+            search,
+            json,
+            from_file,
+            fresh,
+        } => cmd_dict(
+            &cli.db,
+            cli.pace,
+            kind.as_deref(),
+            search.as_deref(),
+            json,
+            from_file.as_deref(),
+            fresh,
+        ),
         Cmd::Resolve { text, limit, json, out } => {
             cmd_resolve(&cli.db, &text.join(" "), limit, json, out.as_deref(), cli.pace)
         }
@@ -431,26 +456,69 @@ fn cmd_dict(
     kind: Option<&str>,
     search: Option<&str>,
     json: bool,
+    from_file: Option<&Path>,
+    fresh: bool,
 ) -> Result<()> {
-    let c = client(pace);
+    // Offline seed works on exactly one kind, so --kind is mandatory there.
+    if from_file.is_some() && kind.is_none() {
+        return Err(anyhow::anyhow!("--from_file потребує --kind"));
+    }
     let mut conn = rada_db::open(db)?;
     let kinds: Vec<String> = match kind {
         Some(k) => vec![k.to_string()],
         None => vec!["stan".into(), "typs".into(), "organs".into()],
     };
-    // Lookup mode (`--search`/`--json`) is offline-first: only kinds whose
-    // local table is still empty get a live fetch. A plain `dict` refreshes
-    // all three live as always.
-    let lookup = search.is_some() || json;
-    for k in &kinds {
-        if lookup && !rada_db::dict::all_labels(&conn, k).is_empty() {
-            eprintln!("[dict] {k}: локально");
-            continue;
-        }
-        eprintln!("[dict] fetching {k} ...");
-        let raw = c.dictionary(k)?;
+    // `--from-file`: load ONE dictionary from a local dump (the raw bytes the
+    // portal serves, `id<TAB>label` in Windows-1251 — exactly what
+    // `RadaClient::dictionary` returns) and skip the network entirely; the
+    // rows render through the normal table / `--json` path below.
+    if let Some(path) = from_file {
+        let k = kind.expect("--kind checked above");
+        let raw = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
         let n = rada_db::dict::load_simple_dict(&mut conn, k, &raw)?;
-        eprintln!("[dict] {k}: {n} entries");
+        eprintln!("[dict] {k}: {n} entries (з файлу)");
+    }
+    // Lookup modes (`--search` / `--json` / `--fresh` / `--from-file`) are
+    // offline-first: only kinds whose local table is still empty get a live
+    // fetch. A plain `dict` refreshes all three live as always.
+    let lookup = search.is_some() || json || fresh || from_file.is_some();
+    if from_file.is_none() {
+        let c = client(pace);
+        for k in &kinds {
+            if lookup && !rada_db::dict::all_labels(&conn, k).is_empty() {
+                eprintln!("[dict] {k}: локально");
+                continue;
+            }
+            eprintln!("[dict] fetching {k} ...");
+            let raw = c.dictionary(k)?;
+            let n = rada_db::dict::load_simple_dict(&mut conn, k, &raw)?;
+            eprintln!("[dict] {k}: {n} entries");
+        }
+    }
+    // `--fresh`: pure row-count report over what the steps above produced;
+    // the normal listing / JSON path never runs.
+    if fresh {
+        let counts: Vec<(&str, i64)> = kinds
+            .iter()
+            .map(|k| (k.as_str(), rada_db::dict::all_labels(&conn, k).len() as i64))
+            .collect();
+        if json {
+            let mut fresh_map = serde_json::Map::new();
+            for (k, n) in &counts {
+                fresh_map.insert((*k).to_string(), serde_json::json!(n));
+            }
+            let out = serde_json::Value::Object(
+                [("fresh".to_string(), serde_json::Value::Object(fresh_map))]
+                    .into_iter()
+                    .collect(),
+            );
+            println!("{}", serde_json::to_string_pretty(&out).map_err(anyhow::Error::from)?);
+        } else {
+            for line in dict_fresh_lines(&counts) {
+                println!("{line}");
+            }
+        }
+        return Ok(());
     }
     // Read the freshly loaded rows back from the index and apply the optional
     // `--search` filter; zero matches is a normal (exit-0) empty filter result.
@@ -530,6 +598,22 @@ fn dict_caption(kind: &str) -> &str {
         "organs" => "органи",
         other => other,
     }
+}
+
+/// Aligned `dict --fresh` report lines: one per kind in input order,
+/// `  {k}: {n} записів` for a populated table and `  {k}: порожньо` for an
+/// empty one; an empty slice renders no lines.
+fn dict_fresh_lines(counts: &[(&str, i64)]) -> Vec<String> {
+    counts
+        .iter()
+        .map(|(k, n)| {
+            if *n == 0 {
+                format!("  {k}: порожньо")
+            } else {
+                format!("  {k}: {n} записів")
+            }
+        })
+        .collect()
 }
 
 fn cmd_search(
@@ -1540,8 +1624,9 @@ fn fmt_date(d: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        annot_out_note, arrivals_out_note, card_out_note, dict_matches, facet_lines, new_nregs,
-        normalize_fmt, out_note, resolve_out_note, stats_lines, StatsReport,
+        annot_out_note, arrivals_out_note, card_out_note, dict_fresh_lines, dict_matches,
+        facet_lines, new_nregs, normalize_fmt, out_note, resolve_out_note, stats_lines,
+        StatsReport,
     };
 
     #[test]
@@ -1743,5 +1828,30 @@ mod tests {
         );
         // empty live ⇒ nothing new
         assert!(new_nregs(&[], &["a".into()]).is_empty());
+    }
+
+    #[test]
+    fn dict_fresh_lines_renders_counts_empty_and_order() {
+        // non-zero renders the count, zero renders «порожньо», input order is
+        // preserved even when it is not the default stan/typs/organs order
+        assert_eq!(
+            dict_fresh_lines(&[("organs", 4213), ("stan", 8), ("typs", 0)]),
+            vec![
+                "  organs: 4213 записів".to_string(),
+                "  stan: 8 записів".to_string(),
+                "  typs: порожньо".to_string(),
+            ]
+        );
+        // every kind empty ⇒ every line «порожньо»
+        assert_eq!(
+            dict_fresh_lines(&[("stan", 0), ("typs", 0), ("organs", 0)]),
+            vec![
+                "  stan: порожньо".to_string(),
+                "  typs: порожньо".to_string(),
+                "  organs: порожньо".to_string(),
+            ]
+        );
+        // empty slice ⇒ empty vec
+        assert!(dict_fresh_lines(&[]).is_empty());
     }
 }

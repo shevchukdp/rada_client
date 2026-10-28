@@ -303,6 +303,18 @@
     border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
   }
   #active-filters .chip:hover { color: var(--text); border-color: var(--accent); }
+  /* «недавні запити» row (the GUI search page parity): one chip per stored
+     search term + «очистити», same chip language as the filter rows. */
+  #recent-q .chip {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #recent-q .chip:hover { color: var(--text); border-color: var(--accent); }
+  #recent-q .clear {
+    background: transparent; border: none; color: var(--muted);
+    cursor: pointer; padding: 0 4px;
+  }
+  #recent-q .clear:hover { color: var(--err); }
   #doc-text {
     background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
     padding: 14px; font-size: 15px; max-height: 60vh; overflow: auto;
@@ -509,6 +521,7 @@
       <button id="btn-cache-search" type="button" title="Повнотекстовий пошук у кешованих тілах документів (офлайн, без мережі)">Пошук у тексті</button>
     </form>
     <div id="active-filters" class="row" hidden></div>
+    <div id="recent-q" class="row" hidden></div>
     <div class="row">
       <input id="resolve-input" placeholder="Назва документа для пошуку реєстр. номера…" size="32" autocomplete="off">
       <button id="btn-resolve" type="button">Знайти nreg</button>
@@ -790,6 +803,7 @@ async function init() {
   fillDict("f-typ", "typs");
   fillDict("f-org", "organs");
   renderRecent();
+  renderRecentQ();
   const dl = readDeepLink();
   if (dl.doc) { openDoc(dl.doc); } else { doSearch(0); }
   // Re-attach to jobs that are still running after a page reload.
@@ -960,9 +974,80 @@ function renderActiveFilters() {
   row.appendChild(all);
 }
 
+// ---- recent search terms («недавні запити» row, the GUI search page parity) --
+// localStorage key holding the last RECENT_Q_MAX search terms (trimmed
+// non-empty strings, newest first, deduped by term; JSON errors are
+// tolerated silently, the same idiom as the arrivals seen-set).
+const RECENT_Q_KEY = "rada-recent-q";
+const RECENT_Q_MAX = 10;
+
+function getRecentQ() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(RECENT_Q_KEY) || "[]");
+    return Array.isArray(arr) ? arr.filter(t => typeof t === "string") : [];
+  } catch (_) { return []; }
+}
+
+/// Pure shape helper: `term` (trimmed) goes to the front of `list`, older
+/// copies are dropped (re-searching a term moves it to front); an empty term
+/// leaves the list unchanged; the result is capped at RECENT_Q_MAX.
+function pushRecentQ(list, term) {
+  const t = (term || "").trim();
+  if (!t) return list;
+  return [t].concat(list.filter(x => x !== t)).slice(0, RECENT_Q_MAX);
+}
+
+/// Persist `term` as the newest recent query and repaint the row.
+function rememberRecentQ(term) {
+  const t = (term || "").trim();
+  if (!t) return;
+  try { localStorage.setItem(RECENT_Q_KEY, JSON.stringify(pushRecentQ(getRecentQ(), t))); }
+  catch (_) {}
+  renderRecentQ();
+}
+
+function clearRecentQ() {
+  try { localStorage.removeItem(RECENT_Q_KEY); } catch (_) {}
+  renderRecentQ();
+}
+
+/// Repaint the «недавні запити» row: hint label + one chip per stored term
+/// (click re-runs that search from the first page) + «очистити»; the whole
+/// row hides while nothing is stored.
+function renderRecentQ() {
+  const row = $("recent-q");
+  row.innerHTML = "";
+  const items = getRecentQ().filter(t => t).slice(0, RECENT_Q_MAX);
+  row.hidden = items.length === 0;
+  if (!items.length) return;
+  const hint = document.createElement("span");
+  hint.className = "hint";
+  hint.textContent = "недавні запити:";
+  row.appendChild(hint);
+  for (const t of items) {
+    const chip = document.createElement("button");
+    chip.className = "chip";
+    chip.type = "button";
+    chip.title = t;
+    chip.textContent = t.length > 40 ? t.slice(0, 40) + "…" : t;
+    chip.onclick = () => { $("q").value = t; doSearch(0); };
+    row.appendChild(chip);
+  }
+  const clr = document.createElement("button");
+  clr.className = "clear";
+  clr.type = "button";
+  clr.textContent = "очистити";
+  clr.title = "очистити історію запитів";
+  clr.onclick = clearRecentQ;
+  row.appendChild(clr);
+}
+
 async function doSearch(offset) {
   state.offset = offset;
   const q = $("q").value.trim();
+  // Remember the term before the fetch: a failed search still keeps it in
+  // the «недавні запити» row (the GUI does the same).
+  if (q) rememberRecentQ(q);
   // Relevance (FTS rank) is only meaningful for a text query.
   if (!q && state.sort === "relevance") state.sort = "date_desc";
   const p = new URLSearchParams();

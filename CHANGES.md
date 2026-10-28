@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.20: історія запитів у веб, словники з файла та скорочення в «Про програму» / web query history, dictionary from file & shortcut docs
+
+- **UKR:** 1) **«Недавні запити» у веб**: під рядком фільтрів чипи останніх 10 запитів (сховище браузера); клік повторює пошук, «очистити» чистить історію. 2) **CLI `dict --from-file ФАЙЛ --kind K`**: завантаження словника з локального дамп-файла (той самий формат, що й portal .txt: id + табуляція + назва в Windows-1251) без жодного запиту до мережі; **`dict --fresh`** — швидкий звіт «stan: 10 записів / …: порожньо» без перевантаження (і `{"fresh":{…}}` з `--json`). 3) **«Про програму»**: розділ «Гарячі клавіші» — Ctrl+F, Enter, Alt+стрілки, Alt+PageUp/PageDown. 4) Тести: 182/182.
+- **ENG:** 1) **«Недавні запити» in the web UI**: chips of the last 10 queries under the filter row (browser storage); a click re-runs the search, «очистити» clears the history. 2) **CLI `dict --from-file FILE --kind K`**: seeds a dictionary from a local dump file (the portal's own .txt format: id + tab + Windows-1251 label) with zero network; **`dict --fresh`** prints a quick «stan: 10 записів / …: порожньо» report without refetching (plus `{"fresh":{…}}` with `--json`). 3) **«Про програму»** now has a «Гарячі клавіші» section — Ctrl+F, Enter, Alt+arrows, Alt+PageUp/PageDown. 4) Tests: 182/182.
+
+---
+
+## 2026-10-28
+
 ### 0.10.19: сортування Обраного, порівняння редакцій у веб та офлайн-resolve / favorites sorting, web edition compare & offline resolve
 
 - **UKR:** 1) **Сортування в Обраному**: чипи «новіші / старіші / за назвою» — рядки (і групи) переупорядковуються миттєво, без запитів. 2) **«Порівняти редакції» у веб-читалці**: кнопка біля «Текст» відкриває панель із двома редакціями; для кожної — «N слів · M симв. · ~K хв», нижче — «різниця: ±N слів». 3) **CLI `resolve` тепер офлайн перший**: точний nreg і FTS-пошук назви з локального індексу (сіра лінія «локально»), мережа — лише коли індекс нічого не знайшов; нові `--limit N`, `--json` та `--out FILE` (таблиця з BOM, JSON без BOM). 4) Тести: 179/179.

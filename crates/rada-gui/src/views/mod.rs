@@ -193,6 +193,30 @@ fn about_window(app: &mut App, ctx: &egui::Context) {
                     ui.label(format!("{sent}  ·  пауза {pace} с/запит"));
                     ui.end_row();
                 });
+            ui.collapsing("Гарячі клавіші", |ui| {
+                egui::Grid::new("about_keys")
+                    .num_columns(2)
+                    .spacing([12.0, 3.0])
+                    .show(ui, |ui| {
+                        let key = |ui: &mut egui::Ui, k: &str, what: &str| {
+                            ui.label(egui::RichText::new(k).monospace().small());
+                            ui.label(egui::RichText::new(what).small());
+                            ui.end_row();
+                        };
+                        key(ui, "Ctrl+F", "поле «Знайти в тексті» (читалка) або поле запиту (пошук)");
+                        key(ui, "Enter", "виконати пошук / перейти до документа за номером");
+                        key(
+                            ui,
+                            "Alt+Left / Alt+Right",
+                            "попередній / наступний документ списку в читалці",
+                        );
+                        key(
+                            ui,
+                            "Alt+PageUp / Alt+PageDown",
+                            "те саме, що й Alt+стрілки (зручніше правою рукою)",
+                        );
+                    });
+            });
             ui.separator();
             ui.label(
                 egui::RichText::new(

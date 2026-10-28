@@ -2961,4 +2961,30 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("$(\"cmp-result\").innerHTML = \"\";"));
         assert!(ui::INDEX_HTML.contains("$(\"edition-compare\").hidden = true;"));
     }
+
+    #[test]
+    fn ui_page_has_recent_queries() {
+        // «недавні запити» row under the search filters (the GUI search page
+        // parity): the persisted newest-first term list (cap 10, deduped,
+        // JSON errors tolerated), the row right after #active-filters, the
+        // hint label + «очистити», and the pure push helper.
+        assert!(ui::INDEX_HTML.contains("id=\"recent-q\" class=\"row\" hidden"));
+        assert!(ui::INDEX_HTML.contains("\u{043D}\u{0435}\u{0434}\u{0430}\u{0432}\u{043D}\u{0456} \u{0437}\u{0430}\u{043F}\u{0438}\u{0442}\u{0438}:"));
+        assert!(ui::INDEX_HTML.contains("\u{043E}\u{0447}\u{0438}\u{0441}\u{0442}\u{0438}\u{0442}\u{0438}"));
+        assert!(ui::INDEX_HTML.contains("function pushRecentQ(list, term)"));
+        assert!(ui::INDEX_HTML.contains("rada-recent-q"));
+    }
+
+    #[test]
+    fn ui_page_search_records_recent_queries() {
+        // Every search records the #q term into storage before the fetch (a
+        // failed search still remembers it), and a term chip puts the term
+        // back into #q and re-runs the search from the first page; the
+        // recorder repaints the row, «очистити» empties the row.
+        assert!(ui::INDEX_HTML.contains("if (q) rememberRecentQ(q);"));
+        assert!(ui::INDEX_HTML.contains("JSON.stringify(pushRecentQ(getRecentQ(), t))"));
+        assert!(ui::INDEX_HTML.contains(r##"$("q").value = t; doSearch(0);"##));
+        assert!(ui::INDEX_HTML.contains("renderRecentQ();"));
+        assert!(ui::INDEX_HTML.contains("row.hidden = items.length === 0;"));
+    }
 }
