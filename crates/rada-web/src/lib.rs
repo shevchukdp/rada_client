@@ -3276,4 +3276,41 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("$(\"arr-auto\").classList.toggle(\"active\", on);"));
         assert!(ui::INDEX_HTML.contains("$(\"arr-auto-hint\").hidden = !on;"));
     }
+
+    #[test]
+    fn ui_page_has_citation_button() {
+        // «цилата» chip in the reader toolbar beside the copy-text/print
+        // buttons (the GUI reader's context-menu copy-citation parity): no
+        // document open keeps it disabled in the markup, openDoc re-disables
+        // it while the card loads (a stale title must never be citable) and
+        // the card success re-enables it; the click feeds the live doc's
+        // citation through the shared copyText, which flashes «скопійовано»
+        // on the button and restores the label.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-cite\" type=\"button\" disabled"));
+        assert!(ui::INDEX_HTML.contains(">цилата</button>"));
+        assert!(ui::INDEX_HTML.contains("$(\"btn-cite\").disabled = true;"));
+        assert!(ui::INDEX_HTML.contains("$(\"btn-cite\").disabled = false;"));
+        assert!(ui::INDEX_HTML.contains("$(\"btn-cite\").onclick = () => {"));
+        assert!(ui::INDEX_HTML.contains("if (!state.curNreg || !state.curCard) return;"));
+        assert!(ui::INDEX_HTML.contains(
+            "citationText(state.curCard.nazva, state.curNreg, $(\"editions\").value)"
+        ));
+        assert!(ui::INDEX_HTML.contains("$(\"btn-cite\"), \"скопійовано\");"));
+    }
+
+    #[test]
+    fn ui_page_has_citation_helper() {
+        // Pure citationText builder: «title» // Офіційний вебпортал
+        // парламенту України. plus an optional «Редакція від dd.mm.yyyy, »
+        // part (the raw edition label runs through fmtArrDate, which formats
+        // 8-digit YYYYMMDD and passes anything else verbatim; an empty label
+        // omits the part) and a «URL: » line built by the shared siteUrlFor
+        // portal-URL builder, with trailing spaces trimmed off.
+        assert!(ui::INDEX_HTML.contains("function citationText(title, nreg, edition)"));
+        assert!(ui::INDEX_HTML.contains("Офіційний вебпортал парламенту України"));
+        assert!(ui::INDEX_HTML.contains("\"Редакція від \""));
+        assert!(ui::INDEX_HTML.contains("fmtArrDate(ed)"));
+        assert!(ui::INDEX_HTML.contains("\"URL: \" + siteUrlFor(nreg)"));
+        assert!(ui::INDEX_HTML.contains(".trimEnd()"));
+    }
 }

@@ -11,9 +11,13 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             let recents = app.settings.recents.clone();
             if !recents.is_empty() {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_secs())
+                    .unwrap_or(0);
                 ui.horizontal_wrapped(|ui| {
                     ui.label(egui::RichText::new("Останні документи:").strong());
-                    for (n, t) in recents.iter().take(6) {
+                    for (n, t, at) in recents.iter().take(6) {
                         let full: Vec<char> = t.chars().collect();
                         let short: String = full.iter().take(38).collect();
                         let title = if full.len() > 38 {
@@ -25,6 +29,12 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             n.clone()
                         } else {
                             format!("{n} — {title}")
+                        };
+                        // stamp with the relative open time when known
+                        let label = if *at > 0 {
+                            format!("{label} · {}", crate::views::arrivals::fmt_since(now, *at))
+                        } else {
+                            label
                         };
                         if ui.button(egui::RichText::new(label).small()).clicked() {
                             app.open_reader_by_nreg(n, t, 0, "", "", "");

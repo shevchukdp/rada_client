@@ -772,6 +772,7 @@
       <button id="btn-print" type="button" title="Відкрити друковану версію у новій вкладці">🖨 Друк</button>
       <button id="btn-raw" type="button" title="Простий текст без стилів заголовків/статей">Простий</button>
       <button id="btn-copy-text" type="button" title="Скопіювати весь текст акту в буфер обміну">Копіювати текст</button>
+      <button id="btn-cite" type="button" disabled title="Скопіювати реквізити посилання на акт">цилата</button>
       <span id="copy-hint" class="hint"></span>
       <span id="doc-stats" class="hint"></span>
       <a id="site-link" class="hint" target="_blank">на zakon.rada.gov.ua ↗</a>
@@ -1405,6 +1406,7 @@ async function openDoc(nreg) {
   history.replaceState(null, "", "?doc=" + encodeURIComponent(nreg));
   state.curText = "";
   state.annots = [];
+  state.curCard = null; // a stale title must never leak into the next citation
   findHits = []; findIdx = -1;
   $("find-input").value = "";
   $("find-count").textContent = "";
@@ -1418,6 +1420,7 @@ async function openDoc(nreg) {
   $("doc-nreg-val").textContent = nreg;
   $("editions").disabled = true;
   $("editions").innerHTML = "";
+  $("btn-cite").disabled = true; // needs the card title; enabled on card success
   $("doc-text").hidden = true;
   $("card-details").hidden = true;
   $("card-retry-row").hidden = true;
@@ -1464,6 +1467,7 @@ async function loadCard() {
     }
     sel.disabled = false;
     $("btn-compare-editions").disabled = sel.options.length < 2;
+    $("btn-cite").disabled = false;
     loadAnnotations(nreg);
     loadText("");
     $("related-row").hidden = false;
@@ -2127,6 +2131,18 @@ function fmtArrDate(v) {
   const s = v || "";
   if (/^\d{8}$/.test(s)) return s.slice(6, 8) + "." + s.slice(4, 6) + "." + s.slice(0, 4);
   return s;
+}
+
+/// Pure: Ukrainian citation of an act (the GUI reader's copy-citation parity):
+/// «title» // Офіційний вебпортал парламенту України. [Редакція від dd.mm.yyyy, ]
+/// URL: <portal page>. The edition label goes through fmtArrDate (8-digit
+/// YYYYMMDD → dd.mm.yyyy, any other raw label verbatim); an empty edition
+/// omits that part, and the result never keeps trailing spaces.
+function citationText(title, nreg, edition) {
+  const ed = String(edition || "").trim();
+  const edPart = ed ? "Редакція від " + fmtArrDate(ed) + ", " : "";
+  return ("«" + (title || "") + "» // Офіційний вебпортал парламенту України. " +
+    edPart + "URL: " + siteUrlFor(nreg)).trimEnd();
 }
 
 /// Group `items` by arrDateKey into [dateKey, items] pairs sorted newest
@@ -2884,6 +2900,16 @@ $("btn-copy-text").onclick = () => {
   } else {
     fallback();
   }
+};
+
+// «цилата»: copy the portal citation of the open act (the GUI reader's
+// context-menu copy-citation parity); copyText flashes «скопійовано» on the
+// button and restores the label. The button is only enabled once the card
+// (and with it the title) is loaded.
+$("btn-cite").onclick = () => {
+  if (!state.curNreg || !state.curCard) return;
+  copyText(citationText(state.curCard.nazva, state.curNreg, $("editions").value),
+    $("btn-cite"), "скопійовано");
 };
 
 $("btn-export").onclick = () => {

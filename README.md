@@ -140,7 +140,9 @@ official open-data API:
   - **Оновлення** — the live recently-updated feed (`r.tsv`), rows open the
     reader, with a «оновлено: щойно / N хв тому / N год тому / N дн тому»
     freshness label beside the document counter.
-  - **Головна** — index status (documents, size, dictionaries),
+  - **Головна** — index status (documents, size, dictionaries) and the **6
+    recently opened documents** (chips with a relative open time: «щойно /
+    N хв тому / N год тому / N дн тому»),
     one-click **live sync**, **snapshot download** with progress, **full
     index build** from the official `doc.txt` dump (or a local dump file),
     and local **backup / restore** of the index to a `.sqlite.gz` file
@@ -190,6 +192,8 @@ official open-data API:
   highlighting** in titles (whole-word, Unicode-aware, find-in-text colors),
   **reader prev/next stepping** («попередній / наступний» through the last
   results list with a «3 / 20» counter, Alt+Left/Right),
+  and a **«цилата» button** in the reader toolbar (copies «Title // Офіційний
+  вебпортал парламенту України. Редакція від дд.мм.рррр, URL: …»),
   **recent query chips** («недавні запити:» from browser storage, click to
   re-run, «очистити»),
   and a **Favorites page with desktop parity** (sort chips «новіші / старіші /
@@ -255,6 +259,7 @@ Launch arguments:
 
 # 3) Live lookups (respect the 5–7 s API pacing).
 .\rada-client.exe card 2755-17          # JSON card with all editions
+.\rada-client.exe card 2755-17 --out card.txt   # summary table to file (BOM); --json --out → BOM-less JSON
 .\rada-client.exe text 2755-17          # clean current text (offline cache fallback)
 .\rada-client.exe text 2755-17 --out zakon.txt   # write the text to a file (UTF-8)
 .\rada-client.exe text 2755-17 --edition 20101202

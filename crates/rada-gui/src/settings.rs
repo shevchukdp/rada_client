@@ -10,8 +10,9 @@ pub struct Settings {
     pub last_nreg: String,
     pub last_title: String,
     pub last_query: String,
-    /// Recently opened documents, newest first: `(nreg, title)`, max 10.
-    pub recents: Vec<(String, String)>,
+    /// Recently opened documents, newest first: `(nreg, title, opened-at in
+    /// unix seconds; 0 = unknown/legacy)`, max 10.
+    pub recents: Vec<(String, String, u64)>,
     /// Color theme id (see `themes::THEMES`); empty = "classical".
     pub theme: String,
     /// Reader body-text zoom in percent (0 = default 100%).
@@ -65,16 +66,30 @@ impl Settings {
     }
 }
 
+/// Unix seconds for recent-opened timestamps (0 on clock failure).
+pub fn now_unix() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// Push a document to the front of the recent list (dedup by nreg, cap 10)
-/// and refresh the "last opened" fields.
+/// and refresh the "last opened" fields, stamped with the current time.
 pub fn remember(s: &mut Settings, nreg: &str, title: &str) {
+    remember_at(s, nreg, title, now_unix());
+}
+
+/// Pure core of [`remember`]: the open time `at` (unix seconds, 0 = unknown)
+/// is injected so tests stay deterministic.
+pub fn remember_at(s: &mut Settings, nreg: &str, title: &str, at: u64) {
     if nreg.trim().is_empty() {
         return;
     }
     s.last_nreg = nreg.to_string();
     s.last_title = title.to_string();
-    s.recents.retain(|(n, _)| n != nreg);
-    s.recents.insert(0, (nreg.to_string(), title.to_string()));
+    s.recents.retain(|(n, _, _)| n != nreg);
+    s.recents.insert(0, (nreg.to_string(), title.to_string(), at));
     s.recents.truncate(10);
 }
 
@@ -163,8 +178,17 @@ fn parse(text: &str) -> Settings {
                 "org" => s.f_org = v.trim().parse().unwrap_or(0),
                 "orglabel" => s.f_org_label = v.trim().to_string(),
                 "recent" => {
-                    if let Some((n, t)) = v.split_once('\t') {
-                        s.recents.push((n.to_string(), t.to_string()));
+                    let mut f = v.split('\t');
+                    if let (Some(n), Some(t)) = (f.next(), f.next()) {
+                        if !n.is_empty() {
+                            // third field = opened-at unix seconds; absent
+                            // (pre-0.10.30 files) = 0 = unknown
+                            let at = f
+                                .next()
+                                .and_then(|x| x.trim().parse::<u64>().ok())
+                                .unwrap_or(0);
+                            s.recents.push((n.to_string(), t.to_string(), at));
+                        }
                     }
                 }
                 _ => {}
@@ -173,7 +197,8 @@ fn parse(text: &str) -> Settings {
     }
     // settings from v0.4 (only a "last" pair): seed the list from it
     if s.recents.is_empty() && !s.last_nreg.is_empty() {
-        s.recents.push((s.last_nreg.clone(), s.last_title.clone()));
+        s.recents
+            .push((s.last_nreg.clone(), s.last_title.clone(), 0));
     }
     // same for the query history: seed from the single remembered query
     if s.recent_q.is_empty() && !s.last_query.trim().is_empty() {
@@ -201,8 +226,12 @@ fn render(s: &Settings) -> String {
         s.f_org,
         clean(&s.f_org_label),
     );
-    for (n, t) in &s.recents {
-        out.push_str(&format!("recent={}\t{}\n", clean(n), clean(t)));
+    for (n, t, at) in &s.recents {
+        if *at > 0 {
+            out.push_str(&format!("recent={}\t{}\t{}\n", clean(n), clean(t), at));
+        } else {
+            out.push_str(&format!("recent={}\t{}\n", clean(n), clean(t)));
+        }
     }
     for q in &s.recent_q {
         out.push_str(&format!("recentq={}\n", clean(q)));
@@ -224,8 +253,8 @@ mod tests {
             last_title: "Про проведення слухань".into(),
             last_query: "податковий кодекс".into(),
             recents: vec![
-                ("2041-15".into(), "Про проведення слухань".into()),
-                ("16-15".into(), "Про доступ до публічної інформації".into()),
+                ("2041-15".into(), "Про проведення слухань".into(), 1_762_000_000),
+                ("16-15".into(), "Про доступ до публічної інформації".into(), 0),
             ],
             theme: "matrix".into(),
             zoom: 130,
@@ -364,7 +393,7 @@ mod tests {
     #[test]
     fn v04_settings_seed_one_recent() {
         let s = parse("last_nreg=2041-15\nlast_title=Title\nlast_query=q\n");
-        assert_eq!(s.recents, vec![("2041-15".into(), "Title".into())]);
+        assert_eq!(s.recents, vec![("2041-15".into(), "Title".into(), 0)]);
     }
 
     #[test]
@@ -378,16 +407,35 @@ mod tests {
     #[test]
     fn remember_dedupes_and_caps() {
         let mut s = Settings::default();
-        for i in 0..12 {
-            remember(&mut s, &format!("{i}-26"), "t");
+        for i in 0..12u64 {
+            remember_at(&mut s, &format!("{i}-26"), "t", 100 + i);
         }
         assert_eq!(s.recents.len(), 10);
-        assert_eq!(s.recents[0], ("11-26".into(), "t".into()));
-        remember(&mut s, "5-26", "t2");
+        assert_eq!(s.recents[0], ("11-26".into(), "t".into(), 111));
+        remember_at(&mut s, "5-26", "t2", 200);
         assert_eq!(s.recents.len(), 10);
-        assert_eq!(s.recents[0], ("5-26".into(), "t2".into()));
-        assert_eq!(s.recents.iter().filter(|(n, _)| n == "5-26").count(), 1);
+        assert_eq!(s.recents[0], ("5-26".into(), "t2".into(), 200));
+        assert_eq!(s.recents.iter().filter(|(n, _, _)| n == "5-26").count(), 1);
         assert_eq!(s.last_nreg, "5-26");
         assert_eq!(s.last_title, "t2");
+        // re-opening refreshes the stamp to the front
+        remember_at(&mut s, "11-26", "t", 300);
+        assert_eq!(s.recents[0], ("11-26".into(), "t".into(), 300));
+    }
+
+    #[test]
+    fn recents_timestamps_roundtrip_and_legacy_parse() {
+        // 3-field line keeps the stamp; a 2-field (pre-0.10.30) line = 0.
+        let s = parse("recent=16-15\tТитл\t1762000000\nrecent=1-1\tСтарий\n");
+        assert_eq!(s.recents[0], ("16-15".into(), "Титл".into(), 1_762_000_000));
+        assert_eq!(s.recents[1], ("1-1".into(), "Старий".into(), 0));
+        // render writes the third field only when it is known
+        let text = render(&s);
+        assert!(text.contains("recent=16-15\tТитл\t1762000000"), "{text}");
+        assert!(text.contains("recent=1-1\tСтарий\n"), "{text}");
+        assert_eq!(parse(&text), s);
+        // garbage stamps degrade to «unknown», never drop the row
+        let g = parse("recent=2-2\tX\tnotanumber\n");
+        assert_eq!(g.recents, vec![("2-2".into(), "X".into(), 0)]);
     }
 }

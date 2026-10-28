@@ -110,6 +110,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
         /// Write to this file instead of stdout (parent dirs created).
+        /// Plain summary table gets a UTF-8 BOM (Excel-friendly); with
+        /// `--json` the file is written BOM-less.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -914,43 +916,47 @@ fn search_out_note(n: usize, file: &Path) -> String {
     format!("[search] записано {n} результатів → {}", file.display())
 }
 
-/// Live card of one document: human-readable summary by default, the full
-/// JSON card with `--json`. With `--out` the exact stdout body is written to
-/// the file (UTF-8, parent dirs created) and nothing is printed to stdout;
-/// a live fetch failure is a hard error (the card has no offline cache).
+/// Live card of one document: human-readable field table on stdout by
+/// default, the full pretty JSON card with `--json`. With `--out` the exact
+/// stdout body goes to the file (parent dirs created) and nothing prints to
+/// stdout: the human table is written UTF-8 with a BOM (Excel-friendly, like
+/// search/arrivals/resolve/related), the `--json` body BOM-less. The fetch
+/// stays live (one paced request): a fetch failure is a hard error (the
+/// card has no offline cache) and so is a write failure («запис {file}»).
 fn cmd_card(nreg: &str, json: bool, out: Option<&Path>, pace: u64) -> Result<()> {
     let c = client(pace);
     let j = c.card(nreg)?;
-    let body = if json {
-        serde_json::to_string_pretty(&j)?
-    } else {
-        card_summary(&j)
-    };
+    let body = card_body(&j, json)?;
     match out {
         Some(p) => {
-            if let Some(parent) = p.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("create dir {}", parent.display()))?;
-                }
-            }
-            std::fs::write(p, format!("{body}\n"))
-                .with_context(|| format!("запис {}", p.display()))?;
             if json {
-                eprintln!("{}", card_out_note(p));
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
             } else {
-                eprintln!(
-                    "[card] записано {} симв. → {}",
-                    body.chars().count(),
-                    p.display()
-                );
+                // human table: UTF-8 BOM prefix, the same Excel-friendly
+                // convention as search/arrivals/resolve/related
+                write_out_file(p, format!("\u{FEFF}{body}\n").as_bytes())?;
             }
+            eprintln!("{}", card_out_note(nreg, p));
             Ok(())
         }
         None => {
             println!("{body}");
             Ok(())
         }
+    }
+}
+
+/// The card body (shared by stdout and `--out` so the two cannot drift):
+/// the pretty JSON card with `--json`, otherwise the human-readable field
+/// table from [`card_summary`]. Both modes print exactly this string plus a
+/// trailing newline on stdout, and the `--out` file receives the same bytes
+/// (plus the BOM in summary mode).
+fn card_body(j: &rada_core::models::LawCardJson, json: bool) -> Result<String> {
+    if json {
+        serde_json::to_string_pretty(j).map_err(anyhow::Error::from)
+    } else {
+        Ok(card_summary(j))
     }
 }
 
@@ -1001,10 +1007,10 @@ fn card_summary(j: &rada_core::models::LawCardJson) -> String {
     lines.join("\n")
 }
 
-/// The stderr note printed after `card --out --json` has written `file`
-/// (the summary mode prints the out_note-style char-count line instead).
-fn card_out_note(file: &Path) -> String {
-    format!("[card] записано JSON → {}", file.display())
+/// The stderr note printed after `card --out` has written `file`, shared by
+/// both the `--json` and the human-table mode (`[card] {nreg} → {file}`).
+fn card_out_note(nreg: &str, file: &Path) -> String {
+    format!("[card] {nreg} → {}", file.display())
 }
 
 fn cmd_text(
@@ -2415,12 +2421,13 @@ mod tests {
     }
 
     #[test]
-    fn card_out_note_formats_json_written_line() {
+    fn card_out_note_formats_nreg_and_path() {
         // double separator keeps the test path-separator-stable via display()
         let file = std::path::Path::new("out//c.json");
-        let line = card_out_note(file);
-        assert!(line.starts_with("[card] записано "));
-        assert!(line.contains("JSON"));
+        let line = card_out_note("2755-17", file);
+        assert_eq!(line, format!("[card] 2755-17 → {}", file.display()));
+        assert!(line.starts_with("[card] "));
+        assert!(line.contains("2755-17"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
     }
