@@ -61,6 +61,21 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     {
                         open_calendar(app, PickKind::To);
                     }
+                    for (label, days, tip) in [
+                        ("7 днів", 7u32, "останні 7 днів від найсвіжіших даних"),
+                        ("місяць", 30, "останні 30 днів"),
+                        ("рік", 365, "останні 365 днів"),
+                    ] {
+                        if ui
+                            .add(egui::Button::new(egui::RichText::new(label).small()))
+                            .on_hover_text(tip)
+                            .clicked()
+                        {
+                            let (from, to) = preset_range(data_today(app), days);
+                            app.search.f_date_from = from;
+                            app.search.f_date_to = to;
+                        }
+                    }
                 });
                 ui.end_row();
 
@@ -1310,8 +1325,7 @@ pub fn parse_ymd(s: &str) -> Option<(u32, u32, u32)> {
 
 /// Freshest data actually fetched from rada: the newest card date in the
 /// index, falling back to the last successful import/sync, then real today.
-pub fn data_today(app: &App) -> (u32, u32, u32) {
-    if let Some(st) = app.index_status.as_ref() {
+pub fn data_today(app: &App) -> (u32, u32, u32) {    if let Some(st) = app.index_status.as_ref() {
         if let Some(md) = st.max_date.as_deref().and_then(parse_ymd) {
             return md;
         }
@@ -1324,6 +1338,18 @@ pub fn data_today(app: &App) -> (u32, u32, u32) {
         }
     }
     today_ymd()
+}
+
+/// Date range for the quick preset chip «останні N днів»: `from` is `days`
+/// calendar days before `today` (YYYYMMDD), `to` stays empty (no upper
+/// bound). Clamped: dates before 1900 yield an empty `from` (no filter).
+pub fn preset_range(today: (u32, u32, u32), days: u32) -> (String, String) {
+    let z = days_from_civil(today.0 as i64, today.1, today.2) - days as i64;
+    let (y, m, d) = civil_from_days(z);
+    if y < 1900 {
+        return (String::new(), String::new());
+    }
+    (format!("{y:04}{m:02}{d:02}"), String::new())
 }
 
 /// Open the calendar for `kind`, scrolled to its value or the data month.
@@ -1466,6 +1492,40 @@ fn calendar_popup(app: &mut App, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preset_range_shifts_by_days_and_clamps() {
+        // Same-day bound when days = 0, empty upper bound always.
+        assert_eq!(
+            preset_range((2026, 10, 28), 0),
+            ("20261028".to_string(), String::new())
+        );
+        // Crosses the month boundary.
+        assert_eq!(
+            preset_range((2026, 3, 5), 7),
+            ("20260226".to_string(), String::new())
+        );
+        // Crosses the year boundary.
+        assert_eq!(
+            preset_range((2026, 1, 3), 10),
+            ("20251224".to_string(), String::new())
+        );
+        // Leap day is reachable backwards from March 1.
+        assert_eq!(
+            preset_range((2028, 3, 1), 1),
+            ("20280229".to_string(), String::new())
+        );
+        // A year window lands on the previous year's same date.
+        assert_eq!(
+            preset_range((2027, 6, 15), 365),
+            ("20260615".to_string(), String::new())
+        );
+        // Clamped below 1900: no filter at all.
+        assert_eq!(
+            preset_range((1900, 1, 2), 400),
+            (String::new(), String::new())
+        );
+    }
 
     #[test]
     fn facet_chips_resolve_labels_cap_and_order() {

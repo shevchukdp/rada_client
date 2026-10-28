@@ -168,6 +168,13 @@ enum Cmd {
         /// Max rows to print (default 30, capped at 1000).
         #[arg(long, default_value_t = 30)]
         limit: usize,
+        /// Keep only docs whose derived edition date is within the last N
+        /// days (today inclusive): the `edYYYYMMDD` in the `link`, else the
+        /// first `YYYYMMDD` in the publication text. Docs with no derivable
+        /// date are KEPT (better too many than silently dropped). The filter
+        /// runs after the fetch, so `--json` and `--out` honor it too.
+        #[arg(long)]
+        since: Option<u32>,
         /// Write to this file instead of stdout (parent dirs created).
         /// Plain table gets a UTF-8 BOM (Excel-friendly); with `--json` the
         /// file is written BOM-less.
@@ -375,8 +382,9 @@ fn run() -> Result<()> {
             save,
             json,
             limit,
+            since,
             out,
-        } => cmd_arrivals(&cli.db, save, json, limit, out.as_deref(), cli.pace),
+        } => cmd_arrivals(&cli.db, save, json, limit, since, out.as_deref(), cli.pace),
         Cmd::Dict {
             kind,
             search,
@@ -1273,19 +1281,41 @@ fn new_nregs(live: &[String], seen: &[String]) -> Vec<String> {
 /// With `--out` the exact stdout body goes to the file (parent dirs created)
 /// and nothing prints to stdout: the plain table is written UTF-8 with a BOM
 /// (Excel-friendly, like the GUI CSV), the `--json` body BOM-less. `--save`
-/// persists the feed regardless of `--out` (after the diff, before returning).
+/// persists the feed regardless of `--out` (after the diff, before returning)
+/// and regardless of `--since` (the snapshot always stores the full feed).
+/// With `--since N` only the docs whose derived date falls within the last
+/// N days (today inclusive) or that have no derivable date are rendered;
+/// the diff, `--json` and `--out` all honor the filter.
 fn cmd_arrivals(
     db: &PathBuf,
     save: bool,
     json: bool,
     limit: usize,
+    since: Option<u32>,
     out: Option<&Path>,
     pace: u64,
 ) -> Result<()> {
     let c = client(pace);
-    let feed = c
+    let full_feed = c
         .updated_docs()
         .with_context(|| "failed to fetch the updated-documents feed (r.tsv)")?;
+
+    // `--since`: filter AFTER the fetch, BEFORE the diff / rendering /
+    // serialization, so the table, `--json` and `--out` all honor it.
+    // `--save` still persists the FULL feed (the snapshot is the diff state).
+    let feed = match since {
+        Some(days) => {
+            let today = today_yyyymmdd();
+            let pairs: Vec<(&str, &str)> = full_feed
+                .iter()
+                .map(|d| (d.link.as_str(), d.publics.as_str()))
+                .collect();
+            let kept = filter_since(&pairs, days, &today);
+            eprintln!("{}", since_note(full_feed.len(), kept.len(), days));
+            kept.into_iter().map(|i| full_feed[i].clone()).collect()
+        }
+        None => full_feed.clone(),
+    };
 
     // Diff against the last saved snapshot BEFORE persisting the new one.
     let snapshot = rada_db::open(db)
@@ -1302,10 +1332,10 @@ fn cmd_arrivals(
     if save {
         let conn = rada_db::open(db)
             .with_context(|| format!("open db {}", db.display()))?;
-        rada_db::sync::save_arrivals(&conn, &feed)?;
+        rada_db::sync::save_arrivals(&conn, &full_feed)?;
         eprintln!(
             "[arrivals] збережено {} документів — наступний запуск порівняє з цим фідом",
-            feed.len()
+            full_feed.len()
         );
     }
 
@@ -1370,6 +1400,140 @@ fn cmd_arrivals(
 /// table (`rows` document rows) to `file`.
 fn arrivals_out_note(rows: usize, file: &Path) -> String {
     format!("[arrivals] записано {rows} рядків → {}", file.display())
+}
+
+/// Derive the YYYYMMDD edition date of an arrivals row the way the web UI
+/// does: the 8 digits right after `/ed` in `link` win; otherwise the first
+/// well-formed `YYYYMMDD` token in the publication text `publics` (a token
+/// not glued to other digits, e.g. `від 14.11.2024` or `20241115`); `None`
+/// when neither carries a plausible calendar date.
+fn arrivals_date_key(link: &str, publics: &str) -> Option<String> {
+    fn valid(d: &str) -> bool {
+        let b = d.as_bytes();
+        b.len() == 8
+            && b.iter().all(|c| c.is_ascii_digit())
+            && ymd_to_days(d).is_some()
+    }
+    // link: the last `/edYYYYMMDD` marker (the edition segment of the URL).
+    if let Some(pos) = link.rfind("/ed") {
+        let cand = &link[pos + 3..];
+        if valid(&cand[..cand.len().min(8)]) {
+            return Some(cand[..8].to_string());
+        }
+    }
+    // publics fallback: first standalone 8-digit run forming a real date.
+    let bytes = publics.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i].is_ascii_digit() {
+            let start = i;
+            while i < bytes.len() && bytes[i].is_ascii_digit() {
+                i += 1;
+            }
+            if i - start == 8 && valid(&publics[start..i]) {
+                return Some(publics[start..i].to_string());
+            }
+        } else {
+            i += 1;
+        }
+    }
+    None
+}
+
+/// Indices of `docs` (as `(link, publics)` pairs) whose derived date is
+/// within the last `days` days counted back from `today` (YYYYMMDD, today
+/// inclusive); rows with no derivable date are KEPT (better too many than
+/// silently dropped). Pure — the caller maps feed rows to pairs so the
+/// filter is testable without the network.
+fn filter_since(docs: &[(&str, &str)], days: u32, today: &str) -> Vec<usize> {
+    let today_days = ymd_to_days(today);
+    docs.iter()
+        .enumerate()
+        .filter(|(_, (link, publics))| match arrivals_date_key(link, publics) {
+            None => true,
+            Some(key) => match (&today_days, ymd_to_days(&key)) {
+                (Some(t), Some(d)) => t.saturating_sub(d) <= days as i64,
+                // unparseable today: keep everything rather than drop docs
+                _ => true,
+            },
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+/// The muted stderr line printed after `arrivals --since` has filtered the
+/// feed: kept / total / window.
+fn since_note(total: usize, kept: usize, days: u32) -> String {
+    format!("[arrivals] {kept} з {total} за останні {days} дн.")
+}
+
+/// Today's date as `YYYYMMDD` (local time via `SystemTime` + days-since-epoch
+/// math — this crate has no chrono dependency).
+fn today_yyyymmdd() -> String {
+    let secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    days_to_ymd(secs.div_euclid(86_400))
+}
+
+/// Proleptic-Gregorian `YYYYMMDD` → days since 1970-01-01 (Howard Hinnant's
+/// `days_from_civil`); `None` for non-8-digit input or an impossible
+/// calendar date (bad month, out-of-range day, non-leap Feb 29).
+fn ymd_to_days(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() != 8 || !b.iter().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let y: i64 = s[0..4].parse().ok()?;
+    let m: i64 = s[4..6].parse().ok()?;
+    let d: i64 = s[6..8].parse().ok()?;
+    if !(1..=12).contains(&m) || d < 1 {
+        return None;
+    }
+    let days_in_month = |y: i64, m: i64| -> i64 {
+        match m {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            _ => {
+                if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                    29
+                } else {
+                    28
+                }
+            }
+        }
+    };
+    if d > days_in_month(y, m) {
+        return None;
+    }
+    let a = (14 - m) / 12;
+    let yy = y + 4800 - a;
+    let mm = m + 12 * a - 3;
+    Some(
+        d - 1
+            + 365 * yy
+            + yy / 4
+            - yy / 100
+            + yy / 400
+            + (367 * mm - 719) / 12
+            - 32075,
+    )
+}
+
+/// Days since 1970-01-01 → `YYYYMMDD` (inverse of [`ymd_to_days`]).
+fn days_to_ymd(z: i64) -> String {
+    let z = z + 719468;
+    let era = if z >= 0 { z } else { z - 146096 } / 146097;
+    let doe = (z - era * 146097) as u64; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = if m <= 2 { y + 1 } else { y };
+    format!("{y:04}{m:02}{d:02}")
 }
 
 /// Name → nreg resolver. Offline-first: the local index is consulted before
@@ -1820,9 +1984,10 @@ fn fmt_date(d: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        annot_out_note, annot_text_file_note, arrivals_out_note, backfill_summary, card_out_note,
-        dict_fresh_lines, dict_matches, facet_lines, new_nregs, normalize_fmt, out_note,
-        related_out_note, resolve_out_note, stats_lines, StatsReport,
+        annot_out_note, annot_text_file_note, arrivals_date_key, arrivals_out_note,
+        backfill_summary, card_out_note, dict_fresh_lines, dict_matches, facet_lines, filter_since,
+        new_nregs, normalize_fmt, out_note, related_out_note, resolve_out_note, since_note,
+        stats_lines, today_yyyymmdd, StatsReport,
     };
 
     #[test]
@@ -2093,5 +2258,72 @@ mod tests {
         assert!(line.contains("вже в кеші 1"));
         assert!(line.contains("помилок 0"));
         assert!(line.contains("; кеш тепер: 42 тіл"));
+    }
+
+    #[test]
+    fn arrivals_date_key_prefers_link_then_publics() {
+        // the /edYYYYMMDD in the link wins over any date in publics
+        assert_eq!(
+            arrivals_date_key(
+                "https://zakon.rada.gov.ua/laws/show/1178-2022-%D0%BF/ed20241115#Text",
+                "Відомості Верховної Ради (ВРУ), 2022, № 30, ст.180 від 20220701"
+            )
+            .as_deref(),
+            Some("20241115")
+        );
+        // no /ed marker ⇒ the first plausible 8-digit run in publics wins
+        assert_eq!(
+            arrivals_date_key(
+                "https://zakon.rada.gov.ua/go/1178-2022-п",
+                "Урядовий кур'єр, 2024, № 211; 20241115 опубліковано"
+            )
+            .as_deref(),
+            Some("20241115")
+        );
+        // an /ed marker with garbage does NOT shadow a good publics date
+        assert_eq!(
+            arrivals_date_key("https://zakon.rada.gov.ua/go/x/edabcd", "20231231").as_deref(),
+            Some("20231231")
+        );
+        // neither side carries a date ⇒ None
+        assert_eq!(
+            arrivals_date_key("https://zakon.rada.gov.ua/go/1178-2022-п", "без дати").as_deref(),
+            None
+        );
+        // digit runs that are not 8 long or not a real calendar date are no dates
+        assert_eq!(arrivals_date_key("", "2024 № 30, ст.180").as_deref(), None);
+        assert_eq!(arrivals_date_key("", "123456789").as_deref(), None);
+        assert_eq!(arrivals_date_key("", "20230230").as_deref(), None); // Feb 30
+        assert_eq!(arrivals_date_key("", "13.45.6789").as_deref(), None);
+    }
+
+    #[test]
+    fn filter_since_keeps_recent_and_undated() {
+        let today = "20261028";
+        let docs: Vec<(&str, &str)> = vec![
+            ("/ed20261028", ""),           // 0: today — kept
+            ("/ed20261025", ""),           // 1: boundary day (3 days back) — kept
+            ("/ed20261024", ""),           // 2: one day older — dropped
+            ("", "опубліковано 20261026"), // 3: publics date, inside — kept
+            ("", "опубліковано 20200101"), // 4: publics date, old — dropped
+            ("no-date-here", "нічого"),    // 5: undated — kept
+        ];
+        assert_eq!(filter_since(&docs, 3, today), vec![0, 1, 3, 5]);
+        // days = 0 keeps only today plus undated
+        assert_eq!(filter_since(&docs, 0, today), vec![0, 5]);
+        // a wide window keeps everything, feed order preserved
+        assert_eq!(filter_since(&docs, 3650, today), vec![0, 1, 2, 3, 4, 5]);
+        // empty input ⇒ empty output
+        assert!(filter_since(&[], 30, today).is_empty());
+        // the note the CLI prints after filtering (kept / total / window)
+        assert_eq!(
+            since_note(6, 4, 3),
+            "[arrivals] 4 з 6 за останні 3 дн."
+        );
+        // today's-date helper: a real YYYYMMDD the filter itself accepts
+        let t = today_yyyymmdd();
+        assert_eq!(t.len(), 8);
+        assert!(t.chars().all(|c| c.is_ascii_digit()));
+        assert!(super::ymd_to_days(&t).is_some());
     }
 }

@@ -3072,4 +3072,38 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("$(\"related-list\").dataset.loaded = \"\";"));
         assert!(ui::INDEX_HTML.contains("$(\"btn-related\").disabled = false;"));
     }
+
+    #[test]
+    fn ui_page_has_hit_copy_button() {
+        // Per-hit «копія» quick action on the regular-search rows (the GUI's
+        // copy-nreg parity): a chip button inside the row's .hit-actions
+        // wrapper that copies nreg through the clipboard API (the textarea/
+        // execCommand fallback lives in copyText) and briefly flashes
+        // «скопійовано» before restoring, all without opening the document.
+        assert!(ui::INDEX_HTML.contains("actions.className = \"hit-actions\";"));
+        assert!(ui::INDEX_HTML.contains(".hit-actions {"));
+        assert!(ui::INDEX_HTML.contains("cp.textContent = \"копія\""));
+        assert!(ui::INDEX_HTML.contains("copyText(h.nreg, cp, \"скопійовано\")"));
+        assert!(ui::INDEX_HTML.contains("navigator.clipboard.writeText(text)"));
+        assert!(ui::INDEX_HTML.contains("setTimeout(() => { btn.textContent = old;"));
+        assert!(ui::INDEX_HTML.contains("ev.stopPropagation(); copyText(h.nreg, cp"));
+    }
+
+    #[test]
+    fn ui_page_has_hit_site_button() {
+        // Per-hit «сайт» quick action (the GUI's open-on-portal parity): the
+        // pure siteUrlFor builder feeding a chip anchor in the hit renderer
+        // that opens the portal page in a new tab, stopPropagation keeping
+        // the row's openDoc click untouched.
+        assert!(ui::INDEX_HTML.contains("function siteUrlFor(nreg)"));
+        assert!(ui::INDEX_HTML.contains(
+            "\"https://zakon.rada.gov.ua/laws/show/\" + encNreg(nreg)"
+        ));
+        assert!(ui::INDEX_HTML.contains("site.href = siteUrlFor(h.nreg);"));
+        assert!(ui::INDEX_HTML.contains("site.target = \"_blank\";"));
+        assert!(ui::INDEX_HTML.contains("site.rel = \"noopener\";"));
+        assert!(ui::INDEX_HTML.contains("site.textContent = \"сайт\""));
+        assert!(ui::INDEX_HTML.contains("target=\"_blank\""));
+        assert!(ui::INDEX_HTML.contains("actions.append(cp, site);"));
+    }
 }

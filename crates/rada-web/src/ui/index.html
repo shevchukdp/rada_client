@@ -259,6 +259,15 @@
   .hit:hover { background: var(--panel); border-color: var(--accent); }
   .hit a { color: var(--link); text-decoration: none; font-weight: 500; }
   .hit .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  /* Per-hit quick actions (the GUI's «копія»/«сайт» buttons): a chip-styled
+     pair in its own row under the meta line, outside the title link. */
+  .hit-actions { display: flex; gap: 6px; margin-top: 4px; }
+  .hit-actions .chip {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+    text-decoration: none;
+  }
+  .hit-actions .chip:hover { color: var(--text); border-color: var(--accent); }
   /* «Оновлення» page: gold «НОВЕ» pill on unseen feed items + the «лише
      нові» chip toggle (same chip language as sort/favorites, accent look). */
   .arr-new-pill {
@@ -758,16 +767,20 @@ function api(path, opts) {
 
 function encNreg(nreg) { return nreg.split("/").map(encodeURIComponent).join("/"); }
 
+/// Portal page of a document (the GUI hit's «сайт» target): the portal URL
+/// built from the same escaped nreg the reader's site link uses.
+function siteUrlFor(nreg) { return "https://zakon.rada.gov.ua/laws/show/" + encNreg(nreg); }
+
 function escHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
 /// Copy `text` to clipboard (clipboard API, with textarea/execCommand fallback
-/// for plain http), flashing ✓/✕ on `btn`.
-function copyText(text, btn) {
+/// for plain http), flashing ✓/✕ (or `doneText` on success) on `btn`.
+function copyText(text, btn, doneText) {
   const flash = (ok) => {
     const old = btn.textContent;
-    btn.textContent = ok ? "✓" : "✕";
+    btn.textContent = ok ? (doneText || "✓") : "✕";
     btn.classList.toggle("ok", ok);
     setTimeout(() => { btn.textContent = old; btn.classList.toggle("ok", false); }, 1200);
   };
@@ -1126,14 +1139,26 @@ async function doSearch(offset) {
         h.nreg + " · [" + statusLabel(h.status) + "] · №" + (h.org_num || "—") +
         " від " + (h.org_date ? fmtEd(h.org_date) : "—") + " · ред. " +
         (h.poddat ? fmtEd(h.poddat) : "—"));
+      // Per-hit quick actions (the GUI's «копія»/«сайт»): own row outside
+      // the title <a>, both stopping propagation so they never open the doc.
+      const actions = document.createElement("div");
+      actions.className = "hit-actions";
       const cp = document.createElement("button");
-      cp.className = "copy";
+      cp.className = "chip";
       cp.type = "button";
       cp.title = "Скопіювати реєстраційний номер";
-      cp.textContent = "⧉";
-      cp.onclick = (ev) => { ev.stopPropagation(); copyText(h.nreg, cp); };
-      sub.appendChild(cp);
-      div.appendChild(a); div.appendChild(sub);
+      cp.textContent = "копія";
+      cp.onclick = (ev) => { ev.stopPropagation(); copyText(h.nreg, cp, "скопійовано"); };
+      const site = document.createElement("a");
+      site.className = "chip";
+      site.textContent = "сайт";
+      site.title = "відкрити акт на порталі zakon.rada.gov.ua";
+      site.href = siteUrlFor(h.nreg);
+      site.target = "_blank";
+      site.rel = "noopener";
+      site.onclick = (ev) => { ev.stopPropagation(); };
+      actions.append(cp, site);
+      div.appendChild(a); div.appendChild(sub); div.appendChild(actions);
       list.appendChild(div);
     }
     $("page-info").textContent = "сторінка " + (Math.floor(offset / state.limit) + 1);

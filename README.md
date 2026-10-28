@@ -28,7 +28,9 @@ official open-data API:
   - **Пошук** — local FTS5 search with filters (status/type/date/number/publisher),
     AND-narrowing with last-word prefix matching (automatic OR fallback),
     a **date-range calendar** (Ukrainian months, dates beyond the freshest data
-    fetched from rada are disabled), **clickable column sorting**
+    fetched from rada are disabled) with **quick presets** («7 днів / місяць /
+    рік» set «Дата з» relative to the freshest fetched data),
+    **clickable column sorting**
     (Назва ▲▼ / Дата ▲▼ / Редакція ▼ / Релевантність — the choice is
      remembered across launches),
     paging, live name resolver; a **«Розширений пошук на порталі»** button that
@@ -177,6 +179,8 @@ official open-data API:
   collapsible **date headers** («дд.мм.рррр», dateless docs last under «без дати»),
   **edition comparison** («Порівняти редакції» — word/char/time stats per
   edition plus «різниця: ±N слів»),
+  **per-hit «копія»/«сайт» buttons** (nreg to clipboard with a «скопійовано»
+  flash; the act opens on zakon.rada.gov.ua in a new tab),
   **recent query chips** («недавні запити:» from browser storage, click to
   re-run, «очистити»),
   and the same 17 themes (CSS variables, localStorage).
@@ -248,6 +252,7 @@ Launch arguments:
 .\rada-client.exe backfill --query "податковий кодекс" --limit 5   # pre-cache top hits' texts for offline reading (--dry-run lists without network)
 .\rada-client.exe cache --search "освіту" --limit 10   # offline full-text over cached bodies
 .\rada-client.exe arrivals --save            # live updated-docs feed, diffed vs the saved snapshot
+.\rada-client.exe arrivals --since 7         # only docs dated in the last 7 days (undated ones kept)
 .\rada-client.exe resolve "податковий кодекс"   # name → nreg (offline index first, live only as fallback)
 .\rada-client.exe resolve "кодекс" --limit 5 --out var.txt   # candidate table to file (BOM); --json too
 .\rada-client.exe export 2755-17 --fmt md --out zakon.md   # cache-first export

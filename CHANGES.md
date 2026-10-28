@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.24: швидкі періоди дати, кнопки на рядках видачі у веб та свіжі фіди за днями / date presets, web hit buttons & dated arrivals filter
+
+- **UKR:** 1) **Швидкі періоди в пошуку**: чипи «7 днів / місяць / рік» біля полів дати ставлять «Дата з» від найсвіжіших завантажених даних без відкриття календаря. 2) **Кнопки на результатах у веб**: у кожному рядку видачі — «копія» (реєстраційний номер у буфер, «скопійовано» на мить) і «сайт» (акт на zakon.rada.gov.ua в новій вкладці). 3) **CLI `arrivals --since N`**: лише документи за останні N днів (дата береться з `edYYYYMMDD` посилання, інакше з тексту публікації; без дати — залишаються); працює з `--json` та `--out`. 4) Тести: 200/200.
+- **ENG:** 1) **Quick date presets in search**: «7 днів / місяць / рік» chips by the date fields set «Дата з» relative to the freshest fetched data, no calendar needed. 2) **Per-hit buttons in the web results**: each row gets «копія» (nreg to clipboard, brief «скопійовано» flash) and «сайт» (the act on zakon.rada.gov.ua in a new tab). 3) **CLI `arrivals --since N`**: only documents from the last N days (date derived from the link's `edYYYYMMDD`, else the publication text; undated docs are kept); honors `--json` and `--out`. 4) Tests: 200/200.
+
+---
+
+## 2026-10-28
+
 ### 0.10.23: згортання груп в Обраному, режим кеш-пошуку у веб та посилання у файл / favorites group collapse, web cache mode & related to file
 
 - **UKR:** 1) **Згортання груп в Обраному**: клік по золотому заголовку групи (або кнопка «згорнути») ховає рядки цієї групи; з'являється «розгорнути всі». 2) **Режим кеш-пошуку у веб**: після «Пошук у тексті» під полями горить смуга «пошук у кешованому тексті · документів: N» з кнопкою «× звичайний пошук», що повертає звичайну видачу зі сортуванням; звичайний пошук і помилки завжди вимикають режим. 3) **CLI `related <nreg> --out FILE`**: таблиця посилань у файл (з BOM), з `--json` — JSON без BOM; stdout без `--out` не змінився. 4) Тести: 195/195.
