@@ -379,6 +379,8 @@
     background: var(--find-cur-bg); color: var(--find-fg);
     outline: 1px solid var(--find-fg);
   }
+  /* query words painted in search-result titles (same palette as reader find) */
+  mark.qhl { background: var(--find-bg); color: var(--find-fg); border-radius: 2px; }
   #find-input { min-width: 180px; }
   /* «Зміст» panel: ghost toggle above the text + collapsible outline list
      (entries indent 0 for «Розділ/Глава», 14px for «Стаття»). */
@@ -817,6 +819,36 @@ function escHtml(s) {
   return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
 
+/// Highlight query words in ALREADY-ESCAPED html (browser-find style): each
+/// whole-word occurrence of a `terms` entry (lowercased, first 8 kept, each
+/// at least 3 chars, regex-escaped) is wrapped in <mark class="qhl">. The
+/// text is first split on &-led entity sequences so a match can never split
+/// one (escaped titles only carry & as part of an entity); the case-insensitive
+/// match runs against the original text, and Unicode lookarounds keep Cyrillic
+/// neighbours from counting as word breaks.
+function markTerms(textHtml, terms) {
+  const words = (terms || []).filter((t) => t.length >= 3).slice(0, 8);
+  if (!words.length) return textHtml;
+  const pattern = words
+    .slice()
+    .sort((a, b) => b.length - a.length)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"))
+    .join("|");
+  const re = new RegExp(
+    "(?<![\\p{L}\\p{N}_])(?:" + pattern + ")(?![\\p{L}\\p{N}_])",
+    "giu"
+  );
+  let out = "";
+  const parts = String(textHtml).split(/(&[a-zA-Z][a-zA-Z0-9]*;|&#[0-9]+;|&#x[0-9a-fA-F]+;)/);
+  for (let i = 0; i < parts.length; i++) {
+    const seg = parts[i];
+    if (!seg) continue;
+    if (i % 2 === 1) { out += seg; continue; } // entity run: never touched
+    out += seg.replace(re, (m) => '<mark class="qhl">' + m + "</mark>");
+  }
+  return out;
+}
+
 /// Copy `text` to clipboard (clipboard API, with textarea/execCommand fallback
 /// for plain http), flashing ✓/✕ (or `doneText` on success) on `btn`.
 function copyText(text, btn, doneText) {
@@ -1170,11 +1202,16 @@ async function doSearch(offset) {
     meta.textContent = "Знайдено: " + d.total + " (показано " + d.hits.length + ")";
     renderSortBar(q, d.hits.length > 0);
     const list = $("results");
+    // Query words to paint in the titles (browser-find style): #q split on
+    // whitespace, lowercased, filler (<3 chars) dropped; computed once per
+    // render, not per row.
+    const queryTerms = q.toLowerCase().split(/\s+/).filter((t) => t.length >= 3);
     for (const h of d.hits) {
       const div = document.createElement("div");
       div.className = "hit";
       const a = document.createElement("a");
-      a.textContent = h.nazva;
+      if (queryTerms.length) a.innerHTML = markTerms(escHtml(h.nazva || h.nreg), queryTerms);
+      else a.textContent = h.nazva || h.nreg;
       a.onclick = (ev) => { ev.preventDefault(); openDoc(h.nreg); };
       const sub = document.createElement("div");
       sub.className = "sub";

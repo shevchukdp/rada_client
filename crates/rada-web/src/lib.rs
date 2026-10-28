@@ -3176,4 +3176,41 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("$(\"nav-prev\").onclick = () => readerNavStep(-1);"));
         assert!(ui::INDEX_HTML.contains("$(\"nav-next\").onclick = () => readerNavStep(1);"));
     }
+
+    #[test]
+    fn ui_page_has_query_highlight_helper() {
+        // Pure markTerms builder (browser-find style painting of query words in
+        // ALREADY-ESCAPED title html): terms capped at 8 with a 3-char minimum,
+        // regex-escaped longest-first alternation, case-insensitive Unicode
+        // whole-word match ("giu" + \p{L}/\p{N} lookarounds), and a split on
+        // &-led entity runs so a hit can never cut inside e.g. &amp;.
+        assert!(ui::INDEX_HTML.contains("function markTerms(textHtml, terms)"));
+        assert!(ui::INDEX_HTML.contains("mark class=\"qhl\""));
+        assert!(ui::INDEX_HTML.contains(".filter((t) => t.length >= 3).slice(0, 8)"));
+        assert!(ui::INDEX_HTML.contains(
+            ".replace(/[.*+?^${}()|[\\]\\\\]/g, \"\\\\$&\")"
+        ));
+        assert!(ui::INDEX_HTML.contains("\"giu\""));
+        assert!(ui::INDEX_HTML.contains("if (i % 2 === 1) { out += seg; continue; }"));
+        assert!(ui::INDEX_HTML.contains(
+            "mark.qhl { background: var(--find-bg); color: var(--find-fg);"
+        ));
+    }
+
+    #[test]
+    fn ui_page_has_query_highlight_in_renderer() {
+        // The regular-search hit renderer paints titles through markTerms: the
+        // terms derive from #q once per render (trimmed value lowercased, split
+        // on whitespace, filler <3 chars dropped), the title is escaped before
+        // wrapping, and the plain textContent path stays for queries without a
+        // usable term.
+        assert!(ui::INDEX_HTML.contains("const q = $(\"q\").value.trim();"));
+        assert!(ui::INDEX_HTML.contains(
+            "const queryTerms = q.toLowerCase().split(/\\s+/).filter((t) => t.length >= 3);"
+        ));
+        assert!(ui::INDEX_HTML.contains(
+            "if (queryTerms.length) a.innerHTML = markTerms(escHtml(h.nazva || h.nreg), queryTerms);"
+        ));
+        assert!(ui::INDEX_HTML.contains("else a.textContent = h.nazva || h.nreg;"));
+    }
 }

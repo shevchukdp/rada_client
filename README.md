@@ -25,7 +25,8 @@ official open-data API:
   catppuccin/github-dark, header picker, persisted) — the default «Класична» is a
   light classic Windows theme (gray face, white panels, Windows-blue accent),
   Ukrainian labels:
-  - **Пошук** — local FTS5 search with filters (status/type/date/number/publisher),
+  - **Пошук** — local FTS5 search with filters (status/type/date/number/publisher;
+    the chosen status/type/publisher + sort are remembered across launches),
     AND-narrowing with last-word prefix matching (automatic OR fallback),
     a **date-range calendar** (Ukrainian months, dates beyond the freshest data
     fetched from rada are disabled) with **quick presets** («7 днів / місяць /
@@ -181,7 +182,8 @@ official open-data API:
   **edition comparison** («Порівняти редакції» — word/char/time stats per
   edition plus «різниця: ±N слів»),
   **per-hit «копія»/«сайт» buttons** (nreg to clipboard with a «скопійовано»
-  flash; the act opens on zakon.rada.gov.ua in a new tab),
+  flash; the act opens on zakon.rada.gov.ua in a new tab) with **query-word
+  highlighting** in titles (whole-word, Unicode-aware, find-in-text colors),
   **reader prev/next stepping** («попередній / наступний» through the last
   results list with a «3 / 20» counter, Alt+Left/Right),
   **recent query chips** («недавні запити:» from browser storage, click to
@@ -276,6 +278,7 @@ Launch arguments:
 .\rada-client.exe annot list                         # every saved annotation
 .\rada-client.exe annot export --out annots.json      # all annotations as JSON (BOM-less)
 .\rada-client.exe annot list 2041-15 --json
+.\rada-client.exe annot list --out annots.txt    # table to file (BOM); --json → BOM-less JSON array
 .\rada-client.exe annot add 2041-15 highlight "текст виділення"
 .\rada-client.exe annot add 2341-14 comment "увага на розділ 3"
 .\rada-client.exe annot add 2341-14 comment --text-file note.txt   # long UTF-8 comment from a file

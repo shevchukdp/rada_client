@@ -34,6 +34,15 @@ pub struct Settings {
     /// Chosen search sort as the stable id from `rada_db::search::Sort::as_str()`
     /// («relevance» / «date_desc» / …); empty = default. Parsed leniently.
     pub sort: String,
+    /// Last searched-with dictionary filters (0 = unset), restored on launch
+    /// so a saved domain filter (e.g. «чинний» + «Міністерство юстиції»)
+    /// survives restarts.
+    pub f_status: i64,
+    pub f_typ: i64,
+    pub f_org: i64,
+    /// Publisher label belonging to `f_org` (shown on the active-filter chip
+    /// before the dictionaries are loaded).
+    pub f_org_label: String,
 }
 
 impl Settings {
@@ -149,6 +158,10 @@ fn parse(text: &str) -> Settings {
                 }
                 "arrfilter" => s.arr_filter = v.trim().to_string(),
                 "sort" => s.sort = v.trim().to_string(),
+                "status" => s.f_status = v.trim().parse().unwrap_or(0),
+                "typ" => s.f_typ = v.trim().parse().unwrap_or(0),
+                "org" => s.f_org = v.trim().parse().unwrap_or(0),
+                "orglabel" => s.f_org_label = v.trim().to_string(),
                 "recent" => {
                     if let Some((n, t)) = v.split_once('\t') {
                         s.recents.push((n.to_string(), t.to_string()));
@@ -172,7 +185,7 @@ fn parse(text: &str) -> Settings {
 fn render(s: &Settings) -> String {
     let clean = |v: &str| v.replace(['\r', '\n', '\t'], " ");
     let mut out = format!(
-        "last_nreg={}\nlast_title={}\nlast_query={}\ntheme={}\nzoom={}\nraw={}\nexport_dir={}\npace={}\narrfilter={}\nsort={}\n",
+        "last_nreg={}\nlast_title={}\nlast_query={}\ntheme={}\nzoom={}\nraw={}\nexport_dir={}\npace={}\narrfilter={}\nsort={}\nstatus={}\ntyp={}\norg={}\norglabel={}\n",
         clean(&s.last_nreg),
         clean(&s.last_title),
         clean(&s.last_query),
@@ -183,6 +196,10 @@ fn render(s: &Settings) -> String {
         s.pace,
         clean(&s.arr_filter),
         clean(&s.sort),
+        s.f_status,
+        s.f_typ,
+        s.f_org,
+        clean(&s.f_org_label),
     );
     for (n, t) in &s.recents {
         out.push_str(&format!("recent={}\t{}\n", clean(n), clean(t)));
@@ -219,6 +236,10 @@ mod tests {
             arr_seen: vec!["1556-18".into(), "16-15".into()],
             arr_filter: "податков".into(),
             sort: "nazva_desc".into(),
+            f_status: 5,
+            f_typ: 12,
+            f_org: 45,
+            f_org_label: "Міністерство юстиції".into(),
         };
         let p = std::env::temp_dir().join("rada-settings-test.ini");
         save_to(&p, &s).unwrap();
@@ -251,6 +272,21 @@ mod tests {
         let mut s = Settings::default();
         s.sort = rada_db::search::Sort::NazvaAsc.as_str().to_string();
         assert_eq!(parse(&render(&s)).sort, "nazva_asc");
+    }
+
+    #[test]
+    fn filter_ids_roundtrip_and_garbage_defaults_zero() {
+        let mut s = Settings::default();
+        s.f_status = 5;
+        s.f_typ = 0;
+        s.f_org = 45;
+        s.f_org_label = "Кабінет Міністрів".into();
+        let got = parse(&render(&s));
+        assert_eq!((got.f_status, got.f_typ, got.f_org), (5, 0, 45));
+        assert_eq!(got.f_org_label, "Кабінет Міністрів");
+        // garbage ids fall back to «unset»
+        let g = parse("status=abc\ntyp=12x\norg=\n");
+        assert_eq!((g.f_status, g.f_typ, g.f_org), (0, 0, 0));
     }
 
     #[test]

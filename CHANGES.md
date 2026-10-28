@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.27: підсвічування запиту у видачі, запам'ятьовані фільтри та анотації у файл / query highlighting, remembered filters & annotations to file
+
+- **UKR:** 1) **Підсвічування слів запиту у веб-пошуку**: збіги в назвах результатів набувають фону пошуку в тексті («giu» + цілі слова, кирилиця враховується); короткі службові слова ігноруються. 2) **Фільтри пам'ятаються**: стан, тип і видавець останнього пошуку відновлюються при наступному запуску (разом із сортуванням). 3) **CLI `annot list --out FILE`**: таблиця анотацій у файл (з BOM; порожній результат — лише BOM), `--json` — масив без BOM; stdout мовчить. 4) Тести: 212/212.
+- **ENG:** 1) **Query-word highlighting in the web results**: matches inside result titles get the find-in-text background (whole-word, Unicode-aware; short filler words are ignored). 2) **Filters are remembered**: the status, type and publisher of the last search are restored on the next launch (alongside the sort). 3) **CLI `annot list --out FILE`**: the annotation table written to a file (with BOM; empty result leaves only the BOM), `--json` writes a BOM-less array; stdout stays silent. 4) Tests: 212/212.
+
+---
+
+## 2026-10-28
+
 ### 0.10.26: навігація по видачі у веб-читалці, словники у файл та пошук за номером в Обраному / reader result navigation, dictionaries to file & favorites nreg filter
 
 - **UKR:** 1) **«попередній / наступний» у веб-читалці**: документи крокуються списком останньої видачі (і кеш-пошуку) з лічильником «3 / 20»; Alt+ліворуч/праворуч — те саме з клавіатури; кнопки вимикаються на краях. 2) **CLI `dict --out FILE`**: таблиця словників у файл (з BOM), `--json` — без BOM; без `--kind` — усі три словники з окремим рядком-нотаткою на кожен; звіт `--fresh` лишається у stdout. 3) **Фільтр Обраного шукає й за номером**: введіть `1556` — і залишаються анотації документа з цим nreg (текст, назва та nreg — три поверхні пошуку). 4) Тести: 208/208.

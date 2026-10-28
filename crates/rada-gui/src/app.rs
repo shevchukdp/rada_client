@@ -239,6 +239,11 @@ impl App {
         app.arrivals.filter = app.settings.arr_filter.clone();
         // So does the chosen result sort («date_desc» etc., lenient parse).
         app.search.sort = rada_db::search::Sort::parse(&app.settings.sort);
+        // And the dictionary filters of the last searched query (0 = unset).
+        app.search.f_status = (app.settings.f_status != 0).then_some(app.settings.f_status);
+        app.search.f_typ = (app.settings.f_typ != 0).then_some(app.settings.f_typ);
+        app.search.f_org = (app.settings.f_org != 0).then_some(app.settings.f_org);
+        app.search.f_org_label = app.settings.f_org_label.clone();
         app.theme_sig = String::new();
         app.refresh_theme(&cc.egui_ctx);
         app.refresh_index_state();
@@ -416,6 +421,12 @@ impl App {
         self.search.loading = true;
         self.search.searched = true;
         crate::settings::remember_query(&mut self.settings, &self.search.query);
+        // Snapshot the dictionary filters actually used in this search so the
+        // next launch starts with the same domain (0 = unset).
+        self.settings.f_status = self.search.f_status.unwrap_or(0);
+        self.settings.f_typ = self.search.f_typ.unwrap_or(0);
+        self.settings.f_org = self.search.f_org.unwrap_or(0);
+        self.settings.f_org_label = self.search.f_org_label.clone();
         crate::settings::save(&self.settings);
         let nreg_guess = self.search.query.trim().to_string();
         let facets_q = q.clone();

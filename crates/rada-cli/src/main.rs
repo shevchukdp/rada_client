@@ -322,6 +322,13 @@ enum AnnCmd {
         /// Emit JSON.
         #[arg(long)]
         json: bool,
+        /// Write the annotation table (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain table gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less. The «немає анотацій» message stays on stdout: an
+        /// empty result writes only the BOM, like `search --out`.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Add an annotation; `kind` is bookmark | highlight | comment.
     Add {
@@ -1936,7 +1943,8 @@ fn cmd_snapshot_fetch(name: Option<&str>, out: &Path) -> Result<()> {
 fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
     let conn = rada_db::open(db)?;
     match what {
-        AnnCmd::List { nreg, json } => {
+        AnnCmd::List { nreg, json, out } => {
+            let out = out.as_deref();
             let items = match &nreg {
                 Some(n) => rada_db::annotations::list(&conn, n)?, // already newest first
                 None => {
@@ -1946,20 +1954,42 @@ fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
                 }
             };
             if json {
-                println!("{}", serde_json::to_string_pretty(&items)?);
+                let body = serde_json::to_string_pretty(&items)?;
+                match out {
+                    Some(p) => {
+                        // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                        write_out_file(p, format!("{body}\n").as_bytes())?;
+                        eprintln!("[annot] записано JSON → {}", p.display());
+                    }
+                    None => println!("{body}"),
+                }
                 return Ok(());
             }
-            if items.is_empty() {
-                println!("немає анотацій");
-                return Ok(());
-            }
-            for a in items {
-                let span = match (a.span_start, a.span_end) {
-                    (Some(s), Some(e)) => format!(" [{s}..{e}]"),
-                    _ => String::new(),
-                };
-                let t: String = a.text.chars().take(60).collect();
-                println!("#{:<4} {:<9} {:<12} {}  {}{}", a.id, a.kind, a.nreg, a.created_at, span, t);
+            let lines = annot_table_lines(&items);
+            match out {
+                Some(p) => {
+                    // UTF-8 BOM prefix: the same Excel-friendly convention as
+                    // search/arrivals/resolve/related; the bytes are exactly
+                    // the stdout table, so an empty result (no rows) carries
+                    // no trailing newline either — just the BOM.
+                    let text = if lines.is_empty() {
+                        "\u{FEFF}".to_string()
+                    } else {
+                        format!("\u{FEFF}{}\n", lines.join("\n"))
+                    };
+                    write_out_file(p, text.as_bytes())?;
+                    eprintln!("{}", annot_list_out_note(items.len(), p));
+                }
+                None => {
+                    if lines.is_empty() {
+                        // stdout-only «no annotations» message (the
+                        // `search --facets` rule): it never enters the file.
+                        println!("немає анотацій");
+                    }
+                    for line in lines {
+                        println!("{line}");
+                    }
+                }
             }
         }
         AnnCmd::Add { nreg, kind, text, text_file, start, end } => {
@@ -2035,6 +2065,35 @@ fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The plain-table body of `annot list` (shared by stdout and `--out`):
+/// one `#{id:<4} {kind:<9} {nreg:<12} {created_at}  {span}{text}` row per
+/// annotation — span ` [{start}..{end}]` only when both ends are present,
+/// text truncated to 60 chars. The stdout-only «немає анотацій» message is
+/// not part of this body: an empty result renders as no lines, so the
+/// `--out` file carries the BOM alone (the established `search --out` rule).
+fn annot_table_lines(items: &[rada_db::Annotation]) -> Vec<String> {
+    items
+        .iter()
+        .map(|a| {
+            let span = match (a.span_start, a.span_end) {
+                (Some(s), Some(e)) => format!(" [{s}..{e}]"),
+                _ => String::new(),
+            };
+            let t: String = a.text.chars().take(60).collect();
+            format!(
+                "#{:<4} {:<9} {:<12} {}  {}{}",
+                a.id, a.kind, a.nreg, a.created_at, span, t
+            )
+        })
+        .collect()
+}
+
+/// The stderr note printed after `annot list --out` has written the plain
+/// table (`n` annotations) to `file`.
+fn annot_list_out_note(n: usize, file: &Path) -> String {
+    format!("[annot] записано {n} анотацій → {}", file.display())
 }
 
 /// The stderr note printed after `annot export --out` has written `file`.
@@ -2122,10 +2181,11 @@ fn fmt_date(d: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        annot_out_note, annot_text_file_note, arrivals_date_key, arrivals_out_note,
-        backfill_summary, card_out_note, dict_fresh_lines, dict_matches, dict_out_note,
-        facet_lines, filter_since, new_nregs, normalize_fmt, out_note, related_out_note,
-        resolve_out_note, search_out_note, since_note, stats_lines, today_yyyymmdd, StatsReport,
+        annot_list_out_note, annot_out_note, annot_text_file_note, arrivals_date_key,
+        arrivals_out_note, backfill_summary, card_out_note, dict_fresh_lines, dict_matches,
+        dict_out_note, facet_lines, filter_since, new_nregs, normalize_fmt, out_note,
+        related_out_note, resolve_out_note, search_out_note, since_note, stats_lines,
+        today_yyyymmdd, StatsReport,
     };
 
     #[test]
@@ -2219,6 +2279,18 @@ mod tests {
         let line = out_note(1234, file);
         assert!(line.starts_with("[text] записано "));
         assert!(line.contains("1234"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn annot_list_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//a.txt");
+        let line = annot_list_out_note(5, file);
+        assert!(line.starts_with("[annot] записано "));
+        assert!(line.contains("5"));
+        assert!(line.contains("анотацій"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
     }
