@@ -7,7 +7,8 @@
 //! - [`dict`]   — reference dictionaries (status/type/publisher);
 //! - [`sync`]   — incremental updates from `/laws/main/r.tsv`;
 //! - [`snapshot`] — gzip snapshot export/import for offline distribution;
-//! - [`annotations`] — user bookmarks / highlights / comments.
+//! - [`annotations`] — user bookmarks / highlights / comments;
+//! - [`textcache`] — offline cache of document bodies (`docs_text`).
 //!
 //! Measured performance (295 340 docs, 2026-10-26):
 //! - full dump parse ≈ 1 s, raw file 51.7 MB;
@@ -21,6 +22,7 @@ pub mod schema;
 pub mod search;
 pub mod snapshot;
 pub mod sync;
+pub mod textcache;
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;

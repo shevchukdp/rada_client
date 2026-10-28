@@ -1218,6 +1218,10 @@ mod tests {
         // Print: the reader's «Друк» button opens the auto-print view.
         assert!(ui::INDEX_HTML.contains("id=\"btn-print\""));
         assert!(ui::INDEX_HTML.contains("?print=1"));
+        // Plain-text mode: the «Простий» toggle and its flattened styles.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-raw\""));
+        assert!(ui::INDEX_HTML.contains("#doc-text.raw"));
+        assert!(ui::INDEX_HTML.contains("rada-raw"));
     }
 
     // ---- background data jobs («Дані») ---------------------------------------

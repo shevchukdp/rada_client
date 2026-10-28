@@ -37,7 +37,8 @@ pub enum Msg {
     },
     Text {
         run: u64,
-        res: Outcome<String>,
+        /// `(text, from_cache)` — the offline cache answers when live fails.
+        res: Outcome<(String, bool)>,
     },
     Annotations {
         nreg: String,
@@ -457,10 +458,32 @@ impl App {
             r.text_loading = true;
             r.cur_edition = edition.clone();
         }
+        let db = self.db_path.clone();
         self.spawn(move |tx| {
-            let res = match &edition {
+            let key = edition.as_deref().unwrap_or("");
+            let fetched = match &edition {
                 Some(ed) => client.show_edition_text(&nreg, ed).map_err(|e| e.to_string()),
                 None => client.show_text(&nreg).map_err(|e| e.to_string()),
+            };
+            // Success refreshes the offline cache; failure falls back to it.
+            let res = match fetched {
+                Ok(text) => {
+                    if let Ok(conn) = rada_db::open(&db) {
+                        let _ = rada_db::textcache::put(&conn, &nreg, key, &text);
+                    }
+                    Ok((text, false))
+                }
+                Err(e) => {
+                    let hit = rada_db::open(&db)
+                        .ok()
+                        .and_then(|conn| {
+                            rada_db::textcache::get(&conn, &nreg, key).ok().flatten()
+                        });
+                    match hit {
+                        Some(text) => Ok((text, true)),
+                        None => Err(e),
+                    }
+                }
             };
             let _ = tx.send(Msg::Text { run, res });
         });
@@ -1145,12 +1168,14 @@ impl App {
                 }
                 r.text_loading = false;
                 match res {
-                    Ok(t) => {
+                    Ok((t, cached)) => {
                         r.text = Some(t);
+                        r.text_cached = cached;
                         r.text_error = None;
                     }
                     Err(e) => {
                         r.text = None;
+                        r.text_cached = false;
                         r.text_error = Some(e);
                     }
                 }

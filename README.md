@@ -33,6 +33,11 @@ official open-data API:
     query (`%LOCALAPPDATA%\rada-client\settings.ini`); Home shows clickable
     chips of the **last opened documents**, and the search field pre-loads the
     last query.
+  - **Offline text cache** — every live document read is stored per edition
+    (`docs_text`, schema v3); when the network fails the reader serves the
+    cached copy with a «кешовано» chip. CLI: `cache` / `cache --purge [nreg]`.
+  - **Plain-text mode** — «Форматований/Простий» toggle (GUI) and «Простий»
+    (web) switch off structural styling of titles/sections/articles.
   - **Printing** — «Друк» in the reader (and «🖨 Друк» in the web UI) opens a
     print-ready HTML view in the browser (web: auto-opens the print dialog).
   - **About dialog («Про програму»)** — version, index path/size/docs, freshest
@@ -142,8 +147,10 @@ Launch arguments:
 
 # 3) Live lookups (respect the 5–7 s API pacing).
 .\rada-client.exe card 2755-17          # JSON card with all editions
-.\rada-client.exe text 2755-17          # clean current text
+.\rada-client.exe text 2755-17          # clean current text (offline cache fallback)
 .\rada-client.exe text 2755-17 --edition 20101202
+.\rada-client.exe cache                 # offline text-cache stats
+.\rada-client.exe cache --purge 2755-17 # drop one document's cached text
 .\rada-client.exe resolve "податковий кодекс"   # name → nreg
 .\rada-client.exe dict                   # load dictionaries (stan/typs/organs)
 .\rada-client.exe dict --kind typs

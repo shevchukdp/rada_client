@@ -305,6 +305,12 @@
   #doc-text .p-plain {
     text-indent: 24px; margin: 3px 0;
   }
+  /* Plain-text mode («Простий» toggle): flatten all structural styling. */
+  #doc-text.raw [class^="p-"] {
+    text-align: left; color: inherit; font-weight: 400;
+    font-size: inherit; letter-spacing: normal;
+    padding-left: 0; text-indent: 0; margin: 3px 0;
+  }
   mark.hl { background: var(--hl-bg); color: var(--hl-fg); border-radius: 2px; }
   mark.find { background: var(--find-bg); color: var(--find-fg); border-radius: 2px; }
   mark.find.cur {
@@ -578,6 +584,7 @@
       </select>
       <button id="btn-export" type="button">Завантажити файл</button>
       <button id="btn-print" type="button" title="Відкрити друковану версію у новій вкладці">🖨 Друк</button>
+      <button id="btn-raw" type="button" title="Простий текст без стилів заголовків/статей">Простий</button>
       <a id="site-link" class="hint" target="_blank">на zakon.rada.gov.ua ↗</a>
     </div>
     <ul id="annotations"></ul>
@@ -1638,6 +1645,22 @@ $("btn-print").onclick = () => {
     "?print=1" +
     ($("editions").value ? "&edition=" + encodeURIComponent($("editions").value) : ""), "_blank");
 };
+
+// Plain-text mode: flatten structural styles (persisted in localStorage).
+function applyRawBtn(on) {
+  const b = $("btn-raw");
+  b.style.background = on ? "var(--accent)" : "";
+  b.style.color = on ? "var(--accent-text)" : "";
+}
+$("btn-raw").onclick = () => {
+  const on = $("doc-text").classList.toggle("raw");
+  localStorage.setItem("rada-raw", on ? "1" : "0");
+  applyRawBtn(on);
+};
+if (localStorage.getItem("rada-raw") === "1") {
+  $("doc-text").classList.add("raw");
+  applyRawBtn(true);
+}
 
 $("bulk-export").onclick = async () => {
   if (!state.nregs.length) { alert("Спочатка виконайте пошук."); return; }

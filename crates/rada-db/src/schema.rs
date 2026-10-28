@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 /// Bring the database to the current schema (idempotent).
 pub fn migrate(conn: &Connection) -> Result<()> {
@@ -69,6 +69,17 @@ pub fn migrate(conn: &Connection) -> Result<()> {
             created_at TEXT NOT NULL DEFAULT ''
         );
         CREATE INDEX IF NOT EXISTS idx_ann_nreg ON annotations(nreg);
+
+        -- Offline cache of document bodies (full text fetched on demand).
+        -- `edition` is opaque: '' for the current text, an edition id
+        -- (e.g. 'ed20241115') for a specific historical edition.
+        CREATE TABLE IF NOT EXISTS docs_text(
+            nreg       TEXT NOT NULL,
+            edition    TEXT NOT NULL DEFAULT '',
+            fetched_at TEXT NOT NULL,
+            body       TEXT NOT NULL,
+            PRIMARY KEY (nreg, edition)
+        );
         "#,
     )
     .context("apply schema")?;

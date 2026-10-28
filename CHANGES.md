@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.9.7: офлайн-кеш текстів і простий режим читання / 0.9.7: offline text cache & plain-text mode
+
+- **UKR:** 1) **Офлайн-кеш текстів** (схема БД v3, таблиця `docs_text`): успішне live-завантаження зберігає текст документа (за редакціями); якщо живий доступ не вдався — читалка та CLI `text` віддають кешовану копію з позначкою «кешовано». 2) **CLI**: `cache` — статистика (рядки, розмір), `cache --purge [nreg]` — очищення. 3) **Простий текст**: перемикач «Форматований/Простий» у читалці (GUI) і кнопка «Простий» у веб — вимикає стилізацію заголовків/розділів/статей; вибір зберігається. 4) Тести: 77/77 (+6 кеш, +.round-trip `raw`, +перевірки веб-кнопки).
+- **ENG:** 1) **Offline text cache** (DB schema v3, `docs_text` table): every successful live fetch stores the document text (per edition); when the live fetch fails, the reader and CLI `text` serve the cached copy with a «кешовано» chip. 2) **CLI**: `cache` prints stats (rows, size), `cache --purge [nreg]` clears it. 3) **Plain-text mode**: a «Форматований/Простий» toggle in the GUI reader and a «Простий» button in the web UI disable heading/section/article styling; the choice persists. 4) Tests: 77/77 (+6 cache, +`raw` round-trip, +web button checks).
+
+---
+
+## 2026-10-28
+
 ### 0.9.6: друк документів / document printing
 
 - **UKR:** 1) **Друк у читалці**: кнопка «Друк» у панелі експорту створює друковану HTML-версію документа у тимчасовому файлі й відкриває її у системному браузері (друк — Ctrl+P там; в egui немає принтера). 2) **Веб**: кнопка «🖨 Друк» у читалці відкриває `/api/export/{nreg}?print=1` — той самий документ інлайн, з друкованими полями (`@page 18/16 мм`) і авто-викликом вікна друку після завантаження. 3) Тести: 71/71 (+web: print-wrap і перевірка кнопки на сторінці).

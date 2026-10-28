@@ -84,12 +84,20 @@ enum Cmd {
     },
     /// Show the live JSON card of a document.
     Card { nreg: String },
-    /// Show the clean text of a document.
+    /// Show the clean text of a document (offline cache fallback when live fails).
     Text {
         nreg: String,
         /// Specific edition date YYYYMMDD (default: current).
         #[arg(long)]
         edition: Option<String>,
+    },
+    /// Offline text cache: statistics, or purge (`--purge [nreg]`).
+    Cache {
+        /// Delete cached texts (all, or only the given nreg).
+        #[arg(long)]
+        purge: bool,
+        /// Restrict to one document.
+        nreg: Option<String>,
     },
     /// Load the reference dictionaries (stan / typs / organs) from the live API.
     Dict {
@@ -205,7 +213,8 @@ fn run() -> Result<()> {
             json,
         } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, sort, json),
         Cmd::Card { nreg } => cmd_card(&nreg, cli.pace),
-        Cmd::Text { nreg, edition } => cmd_text(&nreg, edition.as_deref(), cli.pace),
+        Cmd::Text { nreg, edition } => cmd_text(&cli.db, &nreg, edition.as_deref(), cli.pace),
+        Cmd::Cache { purge, nreg } => cmd_cache(&cli.db, purge, nreg.as_deref()),
         Cmd::Dict { kind } => cmd_dict(&cli.db, cli.pace, kind.as_deref()),
         Cmd::Resolve { text } => cmd_resolve(&text.join(" "), cli.pace),
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
@@ -377,13 +386,61 @@ fn cmd_card(nreg: &str, pace: u64) -> Result<()> {
     Ok(())
 }
 
-fn cmd_text(nreg: &str, edition: Option<&str>, pace: u64) -> Result<()> {
+fn cmd_text(db: &PathBuf, nreg: &str, edition: Option<&str>, pace: u64) -> Result<()> {
     let c = client(pace);
-    let text = match edition {
-        Some(ed) => c.show_edition_text(nreg, ed)?,
-        None => c.show_text(nreg)?,
+    let key = edition.unwrap_or("");
+    let fetched = match edition {
+        Some(ed) => c.show_edition_text(nreg, ed),
+        None => c.show_text(nreg),
     };
-    println!("{text}");
+    match fetched {
+        Ok(text) => {
+            // Refresh the offline cache on every successful fetch.
+            if let Ok(conn) = rada_db::open(db) {
+                let _ = rada_db::textcache::put(&conn, nreg, key, &text);
+            }
+            println!("{text}");
+            Ok(())
+        }
+        Err(e) => {
+            // Offline fallback: serve the cached copy when we have one.
+            let hit = rada_db::open(db)
+                .ok()
+                .and_then(|conn| rada_db::textcache::get(&conn, nreg, key).ok().flatten());
+            match hit {
+                Some(text) => {
+                    eprintln!("[text] live fetch failed ({e}); served from offline cache");
+                    println!("{text}");
+                    Ok(())
+                }
+                None => Err(anyhow::anyhow!("text {nreg}: {e} (no cached copy)")),
+            }
+        }
+    }
+}
+
+fn cmd_cache(db: &PathBuf, purge: bool, nreg: Option<&str>) -> Result<()> {
+    let conn = rada_db::open(db)?;
+    if purge {
+        let n = rada_db::textcache::purge(&conn, nreg)?;
+        eprintln!("[cache] видалено рядків: {n}");
+        return Ok(());
+    }
+    let (rows, bytes) = rada_db::textcache::stats(&conn)?;
+    let docs: i64 = match nreg {
+        Some(n) => conn
+            .query_row(
+                "SELECT COUNT(*) FROM docs_text WHERE nreg = ?1",
+                [n],
+                |r| r.get(0),
+            )
+            .unwrap_or(0),
+        None => rows,
+    };
+    println!(
+        "rows={docs}  total_rows={rows}  size={:.2} MB",
+        bytes as f64 / 1_048_576.0
+    );
     Ok(())
 }
 

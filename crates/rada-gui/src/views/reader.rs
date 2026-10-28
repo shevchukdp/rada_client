@@ -16,6 +16,8 @@ pub struct ReaderState {
     pub editions: Vec<rada_core::models::Edition>,
     pub cur_edition: Option<String>,
     pub text: Option<String>,
+    /// True when `text` came from the offline cache (live fetch failed).
+    pub text_cached: bool,
     pub text_loading: bool,
     pub text_error: Option<String>,
     pub annotations: Vec<rada_db::Annotation>,
@@ -50,6 +52,7 @@ impl ReaderState {
             editions: Vec::new(),
             cur_edition: None,
             text: None,
+            text_cached: false,
             text_loading: false,
             text_error: None,
             annotations: Vec::new(),
@@ -276,6 +279,16 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
         if !org_date.is_empty() {
             ui.label(egui::RichText::new(format!("від {}", fmt_date(&org_date))).small());
         }
+        if app.reader.as_ref().map(|r| r.text_cached).unwrap_or(false) {
+            ui.label(
+                egui::RichText::new(" кешовано ")
+                    .small()
+                    .strong()
+                    .color(egui::Color32::BLACK)
+                    .background_color(egui::Color32::from_rgb(120, 170, 255)),
+            )
+            .on_hover_text("живе завантаження не вдалося — текст з офлайн-кешу");
+        }
         // paging through the results list this document was opened from
         if let Some((len, pos)) = nav_info {
             if len > 1 {
@@ -403,6 +416,7 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
         .map(|a| a.text.clone())
         .collect();
     let zoom_scale = app.settings.text_scale();
+    let raw_mode = app.settings.raw;
 
     // card details (from live card)
     if let Some(c) = app.reader.as_ref().unwrap().card.clone() {
@@ -482,6 +496,28 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
         {
             let cur = if z == 0 { 100 } else { z };
             app.settings.zoom = (cur + 10).min(250);
+            crate::settings::save(&app.settings);
+        }
+        if ui
+            .add(
+                egui::Button::new(egui::RichText::new("Форматований").small())
+                    .selected(!app.settings.raw),
+            )
+            .on_hover_text("вимкнути — простий текст без стилів заголовків/статей")
+            .clicked()
+        {
+            app.settings.raw = false;
+            crate::settings::save(&app.settings);
+        }
+        if ui
+            .add(
+                egui::Button::new(egui::RichText::new("Простий").small())
+                    .selected(app.settings.raw),
+            )
+            .on_hover_text("усі абзаци одним стилем")
+            .clicked()
+        {
+            app.settings.raw = true;
             crate::settings::save(&app.settings);
         }
         if loading {
@@ -579,10 +615,14 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
         egui::ScrollArea::vertical().show(ui, |ui| {
             for (pi, para) in paras.iter().enumerate() {
                 // breathing room: extra before structural headings.
-                let gap = match para.kind {
-                    PKind::DocTitle | PKind::Section | PKind::Article => 14.0,
-                    PKind::Subtitle | PKind::Meta => 4.0,
-                    _ => 2.0,
+                let gap = if raw_mode {
+                    2.0
+                } else {
+                    match para.kind {
+                        PKind::DocTitle | PKind::Section | PKind::Article => 14.0,
+                        PKind::Subtitle | PKind::Meta => 4.0,
+                        _ => 2.0,
+                    }
                 };
                 ui.add_space(gap);
                 let y_before = ui.cursor().min.y;
@@ -605,7 +645,7 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
                     }
                 }
                 let ann = ann_spans(&para.text, &snippets);
-                let kind = para.kind;
+                let kind = if raw_mode { PKind::Plain } else { para.kind };
                 let centered = matches!(kind, PKind::DocTitle | PKind::Subtitle);
                 let scale = zoom_scale;
                 let body = |ui: &mut egui::Ui| {

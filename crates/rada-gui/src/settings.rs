@@ -16,6 +16,9 @@ pub struct Settings {
     pub theme: String,
     /// Reader body-text zoom in percent (0 = default 100%).
     pub zoom: u32,
+    /// Plain (unformatted) reader text: disables structural styling of
+    /// titles/sections/articles (default false = formatted).
+    pub raw: bool,
 }
 
 impl Settings {
@@ -85,6 +88,7 @@ fn parse(text: &str) -> Settings {
                 "last_query" => s.last_query = v.trim().to_string(),
                 "theme" => s.theme = v.trim().to_string(),
                 "zoom" => s.zoom = v.trim().parse().unwrap_or(0),
+                "raw" => s.raw = v.trim() == "1",
                 "recent" => {
                     if let Some((n, t)) = v.split_once('\t') {
                         s.recents.push((n.to_string(), t.to_string()));
@@ -104,12 +108,13 @@ fn parse(text: &str) -> Settings {
 fn render(s: &Settings) -> String {
     let clean = |v: &str| v.replace(['\r', '\n', '\t'], " ");
     let mut out = format!(
-        "last_nreg={}\nlast_title={}\nlast_query={}\ntheme={}\nzoom={}\n",
+        "last_nreg={}\nlast_title={}\nlast_query={}\ntheme={}\nzoom={}\nraw={}\n",
         clean(&s.last_nreg),
         clean(&s.last_title),
         clean(&s.last_query),
         clean(&s.theme),
         s.zoom,
+        if s.raw { 1 } else { 0 },
     );
     for (n, t) in &s.recents {
         out.push_str(&format!("recent={}\t{}\n", clean(n), clean(t)));
@@ -133,6 +138,7 @@ mod tests {
             ],
             theme: "matrix".into(),
             zoom: 130,
+            raw: true,
         };
         let p = std::env::temp_dir().join("rada-settings-test.ini");
         save_to(&p, &s).unwrap();
@@ -143,6 +149,15 @@ mod tests {
         let got2 = parse(&render(&s));
         assert_eq!(got2.last_query, "row1 row2");
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn raw_toggle_roundtrip() {
+        assert!(!parse("").raw, "formatted is the default");
+        assert!(parse("raw=1\n").raw);
+        assert!(!parse("raw=0\n").raw);
+        let s = parse("raw=1\n");
+        assert_eq!(parse(&render(&s)).raw, true);
     }
 
     #[test]
