@@ -11,7 +11,7 @@ official open-data API:
 | Executable | Role |
 |---|---|
 | `rada-client-gui.exe` | **The app.** One egui window: full-text search, document reader with structured act rendering (live card/text/editions), annotations & favorites, live arrivals feed, 17 color themes, one-click snapshot download, live sync and local backup/restore. |
-| `rada-client.exe` | CLI: build/sync the index, search, live lookups, snapshots (create/restore/fetch), annotations, the local web UI. |
+| `rada-client.exe` | CLI: build/sync the index, search, live lookups, snapshots (create/restore/fetch), annotations, an offline `stats` report, the local web UI. |
 
 > Status: **v0.9.0** — GUI, CLI, web UI, snapshot release automation all
 > built, tested and verified against the live API. Releases:
@@ -140,8 +140,9 @@ official open-data API:
   - **Оновлення** — the live recently-updated feed (`r.tsv`), rows open the
     reader, with a «оновлено: щойно / N хв тому / N год тому / N дн тому»
     freshness label beside the document counter.
-  - **Головна** — index status (documents, size, dictionaries) and the **6
-    recently opened documents** (chips with a relative open time: «щойно /
+  - **Головна** — index status (documents, size, dictionaries) with a **quick
+    dictionary search** (substring over stan/typs/organs, matches listed with
+    their ids) and the six **recently opened documents** (chips with a relative open time: «щойно /
     N хв тому / N год тому / N дн тому»),
     one-click **live sync**, **snapshot download** with progress, **full
     index build** from the official `doc.txt` dump (or a local dump file),
@@ -169,7 +170,8 @@ official open-data API:
   (`POST /api/jobs/sync|snapshot|backup|restore|init`, `GET /api/jobs`, `GET /api/backups`),
   including a **full index rebuild from the official dump** as a background job,
   **offline full-text search over cached bodies** («Пошук у тексті»,
-  `GET /api/cache/search?q=`, with a «× звичайний пошук» cache-mode banner), **date-range filters** (`date_from`/`date_to`,
+  `GET /api/cache/search?q=`, with a «× звичайний пошук» cache-mode banner and
+  query-word highlighting in hit titles and snippets), **date-range filters** (`date_from`/`date_to`,
   validated 8-digit YYYYMMDD, never blocking),
   **dict facets** (the status/type/publisher dropdowns show per-option result
   counts after each search), **theme-colored printing** (the print view keeps
@@ -256,6 +258,10 @@ Launch arguments:
 .\rada-client.exe search "кодекс" --sort nazva_asc   # date_desc|date_asc|nazva_asc|nazva_desc|podd_desc|relevance
 .\rada-client.exe search "кодекс" --out hits.txt     # table to file (BOM); --json gives BOM-less JSON; --facets stays on stdout
 .\rada-client.exe search "освіта" --facets           # + per-option counts: Статус/Тип/Видавник (top-6, dict labels)
+
+# 2b) Offline health report: index file/size/sync, documents, annotations, dictionaries, cache.
+.\rada-client.exe stats                    # one aligned line per source
+.\rada-client.exe stats --json --out s.json  # machine-readable, BOM-less
 
 # 3) Live lookups (respect the 5–7 s API pacing).
 .\rada-client.exe card 2755-17          # JSON card with all editions

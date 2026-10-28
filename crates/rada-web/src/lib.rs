@@ -3246,6 +3246,49 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_cache_search_highlight() {
+        // Cache-search rows paint the searched term browser-find style just
+        // like the regular hits: the terms derive from the captured cacheTerm
+        // (lowercased, split on whitespace, filler <3 chars dropped, the
+        // 8-term cap living inside markTerms), title and snippet go through
+        // markTerms over escaped html, the plain textContent paths stay for
+        // queries without a usable term, and the row's openDoc click handler
+        // is untouched by the innerHTML swap.
+        assert!(ui::INDEX_HTML.contains("let cacheTerm = \"\";"));
+        assert!(ui::INDEX_HTML.contains(
+            "const queryTerms = cacheTerm.toLowerCase().split(/\\s+/).filter((t) => t.length >= 3);"
+        ));
+        assert!(ui::INDEX_HTML.contains(
+            "if (queryTerms.length) a.innerHTML = markTerms(escHtml(it.title || it.nreg), queryTerms);"
+        ));
+        assert!(ui::INDEX_HTML.contains("else a.textContent = it.title || it.nreg;"));
+        assert!(ui::INDEX_HTML.contains(
+            "if (queryTerms.length) snip.innerHTML = markTerms(escHtml(it.snippet), queryTerms);"
+        ));
+        assert!(ui::INDEX_HTML.contains("else snip.textContent = it.snippet;"));
+        assert!(ui::INDEX_HTML.contains(
+            "a.onclick = (ev) => { ev.preventDefault(); openDoc(it.nreg); };"
+        ));
+    }
+
+    #[test]
+    fn ui_page_has_cache_search_term_capture() {
+        // doCacheSearch captures the trimmed #q value into cacheTerm right
+        // after reading it and before the fetch goes out, so rows rendered
+        // after the response still highlight the term the search actually ran
+        // with even when the input changes meanwhile.
+        let body = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function doCacheSearch()")
+            .expect("doCacheSearch")..];
+        let capture = body.find("cacheTerm = q;").expect("cacheTerm capture");
+        assert!(body
+            .find("const q = $(\"q\").value.trim();")
+            .expect("#q read")
+            < capture);
+        assert!(capture < body.find("/api/cache/search?q=").expect("cache endpoint"));
+    }
+
+    #[test]
     fn ui_page_has_arrivals_auto_refresh() {
         // «автооновлення» chip on the arrivals controls row: the choice is
         // persisted in "rada-arr-auto" ("1"/"0", privacy-mode errors

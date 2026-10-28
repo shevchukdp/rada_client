@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.31: словниковий пошук на Головна, підсвічування в кеш-пошуку та звіт «stats» / home dictionary search, cache-hit highlighting & stats report
+
+- **UKR:** 1) **Пошук у словниках на Головна**: поле під лічильниками словників миттєво знаходить значення стану/типу/видавця за підрядком і показує їх з ідентифікаторами (««Міністерство юстиції» (45)», до 8 на словник + «… ще N»). 2) **Підсвічування у «Пошук у тексті»**: слова запиту тепер виділені й у назвах, і у фрагментах кешованих тіл — тією самою позначкою, що і у звичайній видачі. 3) **CLI `stats`**: офлайн звіт стану одним рядком на джерело — індекс (файл, розмір, імпорт/синк), документи, анотації, три словники, кеш текстів; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 4) Тести: 231/231.
+- **ENG:** 1) **Dictionary search on the Home page**: a box under the dictionary counters instantly finds status/type/publisher values by substring and lists them with their ids (««Міністерство юстиції» (45)», up to 8 per dictionary plus «… ще N»). 2) **Highlighting in «Пошук у тексті»**: query words are now marked in cache-hit titles *and* snippets, with the same find-in-text marker the results list uses. 3) **CLI `stats`**: a one-line-per-source offline health report — index file/size/last sync, documents, annotations, the three dictionaries, the text cache; plus `--json` and `--out FILE` (BOM table / BOM-less JSON). 4) Tests: 231/231.
+
+---
+
+## 2026-10-28
+
 ### 0.10.30: кнопка «цилата» у веб-читалці, час перегляду в «Останніх документах» та картка у файл / citation button, home visit times & card to file
 
 - **UKR:** 1) **«Цилата» у веб-читалці**: кнопка копіює повне посилання — ««Назва» // Офіційний вебпортал парламенту України. Редакція від дд.мм.рррр, URL: …»; для поточної редакції рядок редакції пропускається. 2) **«Останні документи» на Головна показують час відкриття**: «… · щойно / N хв тому / N год тому / N дн тому» (старі записи без мітки лишаються як є). 3) **CLI `card --out FILE`** тепер за спільним стандартом: таблиця — з BOM, `--json` — без BOM, тіло файла й stdout будуються одним кодом, нотатка «[card] {nreg} → {file}». 4) Тести: 225/225.

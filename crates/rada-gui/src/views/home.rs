@@ -148,6 +148,66 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
             }
 
+            // ---- dictionary quick search ------------------------------------
+            ui.add_space(10.0);
+            let (dq, stan, typs, organs) = (
+                app.home.dict_query.clone(),
+                app.dicts.stan.clone(),
+                app.dicts.typs.clone(),
+                app.dicts.organs.clone(),
+            );
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Пошук у словниках:").strong());
+                ui.add_sized(
+                    [260.0, 24.0],
+                    egui::TextEdit::singleline(&mut app.home.dict_query)
+                        .hint_text("міністерство, постанова, чинний…"),
+                );
+                if !app.home.dict_query.is_empty()
+                    && ui
+                        .small_button("×")
+                        .on_hover_text("очистити пошук у словниках")
+                        .clicked()
+                {
+                    app.home.dict_query.clear();
+                }
+            });
+            let needle = dq.trim().to_lowercase();
+            if !needle.is_empty() {
+                let show = 8usize;
+                let mut total = 0usize;
+                for (name, list) in [("stan", &stan), ("typs", &typs), ("organs", &organs)] {
+                    let hits = dict_hits(list, &needle, usize::MAX);
+                    if hits.is_empty() {
+                        continue;
+                    }
+                    total += hits.len();
+                    ui.horizontal_wrapped(|ui| {
+                        ui.label(egui::RichText::new(format!("{name}:")).small().strong());
+                        for (id, label) in hits.iter().take(show) {
+                            let short: String = label.chars().take(60).collect();
+                            ui.label(
+                                egui::RichText::new(format!("«{short}» ({id})")).small().weak(),
+                            );
+                        }
+                        if hits.len() > show {
+                            ui.label(
+                                egui::RichText::new(format!("… ще {}", hits.len() - show))
+                                    .small()
+                                    .weak(),
+                            );
+                        }
+                    });
+                }
+                if total == 0 {
+                    ui.label(
+                        egui::RichText::new("у словниках нічого не знайдено")
+                            .small()
+                            .weak(),
+                    );
+                }
+            }
+
             ui.add_space(14.0);
             ui.separator();
             ui.heading("Оновлення даних");
@@ -499,4 +559,64 @@ pub struct HomeState {
     pub confirm_init: bool,
     /// «Очистити кеш текстів» confirmation window is open.
     pub confirm_purge: bool,
+    /// Quick substring query over the three dictionaries (session-only).
+    pub dict_query: String,
+}
+
+/// Case-insensitive substring search over dictionary entries
+/// (`(id, label)` pairs): returns matching entries in their original order,
+/// at most `cap` of them. An empty/whitespace needle matches nothing —
+/// the UI only searches when the user typed something.
+pub fn dict_hits(dicts: &[(i64, String)], needle: &str, cap: usize) -> Vec<(i64, String)> {
+    let q = needle.trim().to_lowercase();
+    if q.is_empty() {
+        return Vec::new();
+    }
+    dicts
+        .iter()
+        .filter(|(_, label)| label.to_lowercase().contains(&q))
+        .take(cap)
+        .cloned()
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::dict_hits;
+
+    fn d(id: i64, label: &str) -> (i64, String) {
+        (id, label.to_string())
+    }
+
+    #[test]
+    fn dict_hits_matches_case_insensitively_and_trims() {
+        let dicts = vec![
+            d(1, "чинний"),
+            d(2, "недіючий"),
+            d(3, "Міністерство юстиції України"),
+            d(4, "Міністерство освіти і науки"),
+        ];
+        // plain substring, case-insensitive both ways
+        assert_eq!(dict_hits(&dicts, "ЧИННИЙ", 10), vec![d(1, "чинний")]);
+        assert_eq!(
+            dict_hits(&dicts, "міністерство", 10),
+            vec![d(3, "Міністерство юстиції України"), d(4, "Міністерство освіти і науки")]
+        );
+        // surrounding spaces are trimmed before matching
+        assert_eq!(dict_hits(&dicts, "  недію  ", 10), vec![d(2, "недіючий")]);
+    }
+
+    #[test]
+    fn dict_hits_empty_needle_matches_nothing_and_cap_applies() {
+        let dicts = vec![d(1, "a"), d(2, "ab"), d(3, "abc")];
+        // blank query = no search at all (the UI hides results anyway)
+        assert!(dict_hits(&dicts, "", 10).is_empty());
+        assert!(dict_hits(&dicts, "   ", 10).is_empty());
+        // cap keeps the first matches in dictionary order
+        assert_eq!(dict_hits(&dicts, "a", 2), vec![d(1, "a"), d(2, "ab")]);
+        assert_eq!(dict_hits(&dicts, "a", 0), Vec::new());
+        // no match = empty
+        assert!(dict_hits(&dicts, "zzz", 10).is_empty());
+        assert!(dict_hits(&[], "a", 10).is_empty());
+    }
 }

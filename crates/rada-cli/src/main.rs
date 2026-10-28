@@ -15,8 +15,9 @@
 //! - `arrivals`  live updated-documents feed with a diff against the saved snapshot;
 //! - `snapshot`  create / restore gzip snapshots;
 //! - `status`    index statistics;
-//! - `stats`     offline report on the local index (file, dicts, text cache,
-//!               arrivals snapshot; `--json` for machine-readable output);
+//! - `stats`     offline report on the local index (file, documents,
+//!               annotations, dicts, text cache; `--json` for
+//!               machine-readable output, `--out` to write the report);
 //! - `export`    offline export of a cached document body as md / txt / html
 //!               (text cache only — never touches the network);
 //! - `web`       local web UI (search, reader, annotations, export).
@@ -170,13 +171,19 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Offline report on the local index: file, documents, last import,
-    /// dictionaries, text cache, saved arrivals snapshot (`--json` for
-    /// machine-readable output).
+    /// Offline report on the local index: file, documents, annotations,
+    /// dictionaries, text cache, last import (`--json` for machine-readable
+    /// output). Pure offline: the command never touches the network.
     Stats {
         /// Emit JSON instead of the aligned report.
         #[arg(long)]
         json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Show the live updated-documents feed (r.tsv) and diff it against the
     /// last saved snapshot; `--save` persists the feed for the next run.
@@ -416,7 +423,7 @@ fn run() -> Result<()> {
         Cmd::Backfill { query, limit, dry_run, json } => {
             cmd_backfill(&cli.db, &query, limit, dry_run, json, cli.pace)
         }
-        Cmd::Stats { json } => cmd_stats(&cli.db, json),
+        Cmd::Stats { json, out } => cmd_stats(&cli.db, json, out.as_deref()),
         Cmd::Arrivals {
             save,
             json,
@@ -1431,137 +1438,159 @@ fn cmd_backfill(
     Ok(())
 }
 
-/// Plain-data snapshot behind `stats`: everything read from the local index,
-/// ready for both renderers (aligned lines / JSON).
-struct StatsReport {
+/// Plain-data snapshot behind `stats`: everything read offline from the
+/// local index, ready for both renderers (aligned lines / JSON). Every
+/// source except the db path is optional: a source that is absent, empty
+/// at the file level or fails to read stays `None` and is skipped from
+/// both outputs. The JSON body mirrors these field names 1:1.
+struct StatsInfo {
     db: String,
-    docs: i64,
-    size_bytes: u64,
+    docs: Option<i64>,
+    size_bytes: Option<u64>,
     last_import: Option<String>,
-    /// Newest `org_date` (YYYYMMDD) among indexed cards.
-    max_date: Option<String>,
-    dict_stan: i64,
-    dict_typs: i64,
-    dict_organs: i64,
-    cache_rows: i64,
-    cache_bytes: i64,
-    arrivals_at: Option<String>,
-    arrivals_docs: i64,
+    annotations: Option<i64>,
+    dict_stan: Option<i64>,
+    dict_typs: Option<i64>,
+    dict_organs: Option<i64>,
+    cache_rows: Option<i64>,
+    cache_bytes: Option<u64>,
 }
 
 /// Aligned `key : value` report lines for `stats` (human mode), card_summary
-/// style: empty dict tables and an empty text cache render as «порожньо»,
-/// missing timestamps as «—», dates go through [`fmt_date`].
-fn stats_lines(r: &StatsReport) -> Vec<String> {
+/// style: the index file always renders, every `None` source contributes no
+/// line, empty dict tables and an empty text cache render as «порожньо»,
+/// sizes group bytes into `{:.1} MB` like the `cache` report does.
+fn stats_lines(info: &StatsInfo) -> Vec<String> {
     let mb = |b: u64| format!("{:.1}", b as f64 / 1_048_576.0);
     let dict = |n: i64| if n == 0 { "порожньо".to_string() } else { n.to_string() };
-    let cache = if r.cache_rows == 0 {
-        "порожньо".to_string()
-    } else {
-        format!("{} тіл · {} MB", r.cache_rows, mb(r.cache_bytes as u64))
-    };
-    let rows: Vec<(String, String)> = vec![
-        ("файл індексу".into(), r.db.clone()),
-        (
-            "документів".into(),
-            format!("{}  ·  розмір: {} MB", r.docs, mb(r.size_bytes)),
-        ),
-        (
-            "останній імпорт/синк".into(),
-            r.last_import.clone().unwrap_or_else(|| "—".into()),
-        ),
-        (
-            "найновіші дані".into(),
-            r.max_date.as_deref().map(fmt_date).unwrap_or_else(|| "—".into()),
-        ),
-        (
-            "словники".into(),
-            format!(
-                "stan {} · typs {} · organs {}",
-                dict(r.dict_stan),
-                dict(r.dict_typs),
-                dict(r.dict_organs)
-            ),
-        ),
-        ("кеш текстів".into(), cache),
-        (
-            "знімок оновлень".into(),
-            format!(
-                "{} ({} документів)",
-                r.arrivals_at.clone().unwrap_or_else(|| "немає".into()),
-                r.arrivals_docs
-            ),
-        ),
-    ];
+    let mut rows: Vec<(String, String)> = vec![("файл індексу".into(), info.db.clone())];
+    if let Some(b) = info.size_bytes {
+        rows.push(("розмір індексу".into(), format!("{} MB", mb(b))));
+    }
+    if let Some(t) = &info.last_import {
+        rows.push(("останній імпорт/синк".into(), t.clone()));
+    }
+    if let Some(n) = info.docs {
+        rows.push(("документів".into(), n.to_string()));
+    }
+    if let Some(n) = info.annotations {
+        rows.push(("анотацій".into(), n.to_string()));
+    }
+    if let Some(n) = info.dict_stan {
+        rows.push(("словник stan".into(), dict(n)));
+    }
+    if let Some(n) = info.dict_typs {
+        rows.push(("словник typs".into(), dict(n)));
+    }
+    if let Some(n) = info.dict_organs {
+        rows.push(("словник organs".into(), dict(n)));
+    }
+    if let Some(n) = info.cache_rows {
+        let value = if n == 0 {
+            "порожньо".to_string()
+        } else {
+            format!("{} тіл · {} MB", n, mb(info.cache_bytes.unwrap_or(0)))
+        };
+        rows.push(("кеш текстів".into(), value));
+    }
     let w = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
     rows.into_iter().map(|(k, v)| format!("{k:<w$} : {v}")).collect()
 }
 
-/// Offline index report (`stats`): never touches the network. A missing
-/// index file is a normal exit-0 report («індекс відсутній: …»); a file that
-/// exists but fails to open is a hard error.
-fn cmd_stats(db: &PathBuf, json: bool) -> Result<()> {
+/// The `--json` body of `stats` (shared by stdout and `--out` so the two
+/// cannot drift): the [`StatsInfo`] fields serialized 1:1, pretty, in the
+/// same style as the other commands' JSON bodies; unavailable sources are
+/// `null`.
+fn stats_json(info: &StatsInfo) -> String {
+    let value = serde_json::json!({
+        "db": info.db,
+        "docs": info.docs,
+        "size_bytes": info.size_bytes,
+        "last_import": info.last_import,
+        "annotations": info.annotations,
+        "dict_stan": info.dict_stan,
+        "dict_typs": info.dict_typs,
+        "dict_organs": info.dict_organs,
+        "cache_rows": info.cache_rows,
+        "cache_bytes": info.cache_bytes,
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `stats --out` has written `file`
+/// (`[stats] записано → {file}`), shared by the table and the `--json` mode.
+fn stats_out_note(file: &Path) -> String {
+    format!("[stats] записано → {}", file.display())
+}
+
+/// Offline index report (`stats`): never builds a client, never touches the
+/// network. A missing index file is a hard error («індекс не знайдено: …»),
+/// mirroring the `open(db)?` failures of the other offline commands. Each
+/// source is gathered independently and a source that cannot be read is
+/// skipped from the report. With `--out` the exact stdout body goes to the
+/// file (parent dirs created) and nothing prints to stdout: the plain
+/// report is written UTF-8 with a BOM (Excel-friendly, like
+/// search/arrivals/resolve/related), the `--json` body BOM-less; one
+/// `[stats] записано → {file}` note goes to stderr.
+fn cmd_stats(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
     if !db.exists() {
-        println!("індекс відсутній: {}", db.display());
-        return Ok(());
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
     }
     let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
-    let docs = rada_db::doc_count(&conn)?;
-    let size_bytes = std::fs::metadata(db).map(|m| m.len()).unwrap_or(0);
-    let max_date = conn
-        .query_row("SELECT MAX(NULLIF(org_date,'')) FROM docs", [], |r| {
-            r.get::<_, Option<String>>(0)
-        })
-        .ok()
-        .flatten();
-    let dict_count = |kind: &str| -> i64 {
-        conn.query_row("SELECT COUNT(*) FROM dict WHERE kind=?1", [kind], |r| r.get(0))
-            .unwrap_or(0)
-    };
-    let (cache_rows, cache_bytes) = rada_db::textcache::stats(&conn).unwrap_or((0, 0));
-    let (arrivals_at, arrivals_docs) = match rada_db::sync::load_arrivals(&conn) {
-        Some((snap_docs, at)) => {
-            let at = if at.trim().is_empty() { None } else { Some(at) };
-            (at, snap_docs.len() as i64)
-        }
-        None => (None, 0),
-    };
-    let report = StatsReport {
+    // Every source degrades to `None` on failure: the report shows what exists.
+    let cache = rada_db::textcache::stats(&conn).ok();
+    let info = StatsInfo {
         db: db.display().to_string(),
-        docs,
-        size_bytes,
-        last_import: rada_db::last_import(&conn),
-        max_date,
-        dict_stan: dict_count("stan"),
-        dict_typs: dict_count("typs"),
-        dict_organs: dict_count("organs"),
-        cache_rows,
-        cache_bytes,
-        arrivals_at,
-        arrivals_docs,
+        docs: rada_db::doc_count(&conn).ok(),
+        size_bytes: std::fs::metadata(db).ok().map(|m| m.len()),
+        last_import: rada_db::last_import(&conn)
+            .map(|t| {
+                let t = t.trim().to_string();
+                if t.is_empty() {
+                    None
+                } else {
+                    Some(t)
+                }
+            })
+            .flatten(),
+        annotations: rada_db::annotations::all(&conn).ok().map(|v| v.len() as i64),
+        dict_stan: Some(rada_db::dict::all_labels(&conn, "stan").len() as i64),
+        dict_typs: Some(rada_db::dict::all_labels(&conn, "typs").len() as i64),
+        dict_organs: Some(rada_db::dict::all_labels(&conn, "organs").len() as i64),
+        cache_rows: cache.map(|(rows, _)| rows),
+        cache_bytes: cache.map(|(_, bytes)| bytes.max(0) as u64),
     };
     if json {
-        let out = serde_json::json!({
-            "db": report.db,
-            "docs": report.docs,
-            "size_bytes": report.size_bytes,
-            "last_import": report.last_import,
-            "max_date": report.max_date,
-            "dicts": {
-                "stan": report.dict_stan,
-                "typs": report.dict_typs,
-                "organs": report.dict_organs,
-            },
-            "cache_rows": report.cache_rows,
-            "cache_bytes": report.cache_bytes,
-            "arrivals_at": report.arrivals_at,
-            "arrivals_docs": report.arrivals_docs,
-        });
-        println!("{}", serde_json::to_string_pretty(&out).map_err(anyhow::Error::from)?);
+        let body = stats_json(&info);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", stats_out_note(p));
+            }
+            None => println!("{body}"),
+        }
         return Ok(());
     }
-    for line in stats_lines(&report) {
-        println!("{line}");
+    let lines = stats_lines(&info);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/resolve/related; the bytes are exactly the
+            // stdout report, so an empty report carries the BOM alone.
+            let text = if lines.is_empty() {
+                "\u{FEFF}".to_string()
+            } else {
+                format!("\u{FEFF}{}\n", lines.join("\n"))
+            };
+            write_out_file(p, text.as_bytes())?;
+            eprintln!("{}", stats_out_note(p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
     }
     Ok(())
 }
@@ -2344,68 +2373,141 @@ mod tests {
         dict_matches, dict_out_note, export_html,
         export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
         normalize_fmt, out_note, related_out_note, resolve_out_note, search_out_note, since_note,
-        stats_lines, today_yyyymmdd, StatsReport,
+        stats_lines, stats_out_note, today_yyyymmdd, StatsInfo,
     };
 
     #[test]
     fn stats_lines_renders_aligned_keys_and_placeholders() {
-        // Full report: every key present, values formatted, keys column-aligned.
-        let full = StatsReport {
+        // Full report: every source present, values formatted, keys
+        // column-aligned.
+        let full = StatsInfo {
             db: "data/zakon-index.sqlite".into(),
-            docs: 295340,
-            size_bytes: 104_857_600, // exactly 100 MB
+            docs: Some(295340),
+            size_bytes: Some(104_857_600), // exactly 100 MB
             last_import: Some("2026-10-28 07:30:00".into()),
-            max_date: Some("20261027".into()),
-            dict_stan: 8,
-            dict_typs: 40,
-            dict_organs: 4213,
-            cache_rows: 1234,
-            cache_bytes: 10_485_760, // exactly 10 MB
-            arrivals_at: Some("20261028-0730".into()),
-            arrivals_docs: 25,
+            annotations: Some(12),
+            dict_stan: Some(8),
+            dict_typs: Some(40),
+            dict_organs: Some(4213),
+            cache_rows: Some(1234),
+            cache_bytes: Some(10_485_760), // exactly 10 MB
         };
         let lines = stats_lines(&full);
-        assert_eq!(lines.len(), 7);
+        assert_eq!(lines.len(), 9);
         // keys are padded to one width: the separator ':' sits at the same
         // character column in every line (byte offsets would differ — keys
         // are multi-byte Cyrillic)
         let colon_col = |l: &str| l.chars().position(|c| c == ':').unwrap();
         assert_eq!(colon_col(&lines[0]), "останній імпорт/синк".chars().count() + 1);
-        assert!(lines[0].contains("файл індексу"));
         assert!(lines.iter().all(|l| colon_col(l) == colon_col(&lines[0])));
         assert!(lines[0].starts_with("файл індексу") && lines[0].contains("data/zakon-index.sqlite"));
-        assert!(lines[1].starts_with("документів") && lines[1].contains("295340"));
-        assert!(lines[1].contains("розмір: 100.0 MB"));
+        assert!(lines[1].starts_with("розмір індексу") && lines[1].contains("100.0 MB"));
         assert!(lines[2].starts_with("останній імпорт/синк") && lines[2].contains("2026-10-28 07:30:00"));
-        // YYYYMMDD goes through fmt_date → DD.MM.YYYY
-        assert!(lines[3].starts_with("найновіші дані") && lines[3].contains("27.10.2026"));
-        assert!(lines[4].starts_with("словники") && lines[4].contains("stan 8 · typs 40 · organs 4213"));
-        assert!(lines[5].starts_with("кеш текстів") && lines[5].contains("1234 тіл · 10.0 MB"));
-        assert!(lines[6].starts_with("знімок оновлень") && lines[6].contains("20261028-0730"));
-        assert!(lines[6].contains("25 документів"));
-        // Empty report: zero dict tables and an empty cache render «порожньо»,
-        // missing timestamps render «—», a missing snapshot renders «немає».
-        let empty = StatsReport {
+        assert!(lines[3].starts_with("документів") && lines[3].contains("295340"));
+        assert!(lines[4].starts_with("анотацій") && lines[4].contains("12"));
+        assert!(lines[5].starts_with("словник stan") && lines[5].contains("8"));
+        assert!(lines[6].starts_with("словник typs") && lines[6].contains("40"));
+        assert!(lines[7].starts_with("словник organs") && lines[7].contains("4213"));
+        assert!(lines[8].starts_with("кеш текстів") && lines[8].contains("1234 тіл · 10.0 MB"));
+        // Zero sources: empty dict tables and an empty cache render «порожньо».
+        let zeros = StatsInfo {
             db: "data/none.sqlite".into(),
-            docs: 0,
-            size_bytes: 0,
-            last_import: None,
-            max_date: None,
-            dict_stan: 0,
-            dict_typs: 0,
-            dict_organs: 0,
-            cache_rows: 0,
-            cache_bytes: 0,
-            arrivals_at: None,
-            arrivals_docs: 0,
+            docs: Some(0),
+            size_bytes: Some(0),
+            last_import: Some("".into()),
+            annotations: Some(0),
+            dict_stan: Some(0),
+            dict_typs: Some(0),
+            dict_organs: Some(0),
+            cache_rows: Some(0),
+            cache_bytes: Some(0),
         };
-        let lines = stats_lines(&empty);
-        assert_eq!(lines.len(), 7);
-        assert!(lines[2].contains('—'), "last_import None → «—»");
-        assert!(lines[3].contains('—'), "max_date None → «—»");
-        assert!(lines[4].contains("stan порожньо · typs порожньо · organs порожньо"));
-        assert!(lines[5].contains("порожньо"), "empty cache → «порожньо»");
-        assert!(lines[6].contains("немає (0 документів)"));
+        let lines = stats_lines(&zeros);
+        assert_eq!(lines.len(), 9);
+        assert!(lines[5].contains("порожньо") && lines[6].contains("порожньо")
+            && lines[7].contains("порожньо"), "empty dict tables → «порожньо»");
+        assert!(lines[8].contains("порожньо"), "empty cache → «порожньо»");
+    }
+
+    #[test]
+    fn stats_out_note_formats_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//s.txt");
+        let line = stats_out_note(file);
+        assert_eq!(line, format!("[stats] записано → {}", file.display()));
+        assert!(line.starts_with("[stats] "));
+        assert!(line.contains("записано"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn stats_lines_include_all_sources_and_skip_missing() {
+        // All sources Some: every line renders, cache bytes grouped into MB
+        // the same way the `cache` report formats them («4.8 MB» style).
+        let all = StatsInfo {
+            db: "data/full.sqlite".into(),
+            docs: Some(10),
+            size_bytes: Some(2_097_152), // exactly 2 MB
+            last_import: Some("2026-10-01 10:00:00".into()),
+            annotations: Some(3),
+            dict_stan: Some(8),
+            dict_typs: Some(40),
+            dict_organs: Some(4213),
+            cache_rows: Some(7),
+            cache_bytes: Some(5_033_165), // ≈ 4.8 MB
+        };
+        let lines = stats_lines(&all);
+        assert_eq!(lines.len(), 9);
+        let joined = lines.join("\n");
+        for label in [
+            "файл індексу",
+            "розмір індексу",
+            "останній імпорт/синк",
+            "документів",
+            "анотацій",
+            "словник stan",
+            "словник typs",
+            "словник organs",
+            "кеш текстів",
+        ] {
+            assert!(joined.contains(label), "missing source line: {label}");
+        }
+        assert!(joined.contains("2.0 MB"), "index size grouped into MB");
+        assert!(joined.contains("7 тіл · 4.8 MB"), "cache bytes grouped like `cache`");
+        // Missing sources (None): their lines are absent; only what exists
+        // renders, alignment still holds across the surviving lines.
+        let sparse = StatsInfo {
+            db: "data/partial.sqlite".into(),
+            docs: Some(5),
+            size_bytes: None,
+            last_import: None,
+            annotations: None,
+            dict_stan: None,
+            dict_typs: None,
+            dict_organs: None,
+            cache_rows: None,
+            cache_bytes: None,
+        };
+        let lines = stats_lines(&sparse);
+        assert_eq!(lines.len(), 2, "only the file line and the docs line survive");
+        assert!(lines[0].starts_with("файл індексу") && lines[0].contains("data/partial.sqlite"));
+        assert!(lines[1].starts_with("документів") && lines[1].contains("5"));
+        let joined = lines.join("\n");
+        for label in [
+            "розмір індексу",
+            "останній імпорт/синк",
+            "анотацій",
+            "словник stan",
+            "словник typs",
+            "словник organs",
+            "кеш текстів",
+        ] {
+            assert!(!joined.contains(label), "None source must render no line: {label}");
+        }
+        // Even the minimal report keeps the two ':' separators in one column.
+        let colon_col = |l: &str| l.chars().position(|c| c == ':').unwrap();
+        assert_eq!(colon_col(&lines[0]), colon_col(&lines[1]));
     }
 
     #[test]
