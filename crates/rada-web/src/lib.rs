@@ -252,6 +252,9 @@ fn status_handler(st: &State) -> Resp {
         "typs": all_labels(&conn, "typs").len(),
         "organs": all_labels(&conn, "organs").len(),
     });
+    // Offline text-cache size for the footer; status must never fail
+    // because of cache stats, so an error here degrades to 0/0.
+    let (cache_rows, cache_bytes) = rada_db::textcache::stats(&conn).unwrap_or((0, 0));
     json_ok(&json!({
         "version": env!("CARGO_PKG_VERSION"),
         "docs": docs,
@@ -259,6 +262,8 @@ fn status_handler(st: &State) -> Resp {
         "db_path": st.db_path.display().to_string(),
         "annotations": annotations,
         "dicts": dicts,
+        "cache_rows": cache_rows,
+        "cache_bytes": cache_bytes,
     }))
 }
 
@@ -2402,6 +2407,38 @@ mod tests {
             env!("CARGO_PKG_VERSION"),
             "/api/status must expose the crate version for the footer"
         );
+    }
+
+    /// Offline text-cache stats on /api/status for the footer: an empty
+    /// cache reports 0/0, a seeded `docs_text` row reports its row count
+    /// and body length (ASCII body ⇒ SQLite LENGTH equals the byte count).
+    /// No network.
+    #[test]
+    fn status_reports_cache_rows_and_bytes() {
+        let st = favorites_state("cache-stats");
+        let (code, v) = call(&st, Method::Get, "/api/status", "");
+        assert_eq!(code, 200);
+        assert_eq!(v["cache_rows"], 0, "empty cache: {v}");
+        assert_eq!(v["cache_bytes"], 0, "empty cache: {v}");
+        let body = "body text for cache stats";
+        {
+            let conn = db_open(&st.db_path).unwrap();
+            rada_db::textcache::put(&conn, "2341-14", "", body).unwrap();
+        }
+        let (code, v) = call(&st, Method::Get, "/api/status", "");
+        assert_eq!(code, 200);
+        assert_eq!(v["cache_rows"], 1, "{v}");
+        assert_eq!(v["cache_bytes"], body.len() as i64, "{v}");
+    }
+
+    #[test]
+    fn ui_page_has_cache_foot() {
+        // Footer cache segment: the wiring to the new /api/status keys and
+        // the exact Ukrainian label must be present in the embedded page.
+        assert!(ui::INDEX_HTML.contains("cache_rows"), "footer reads cache_rows");
+        assert!(ui::INDEX_HTML.contains("cache_bytes"), "footer reads cache_bytes");
+        assert!(ui::INDEX_HTML.contains("кеш текстів"), "footer cache label");
+        assert!(ui::INDEX_HTML.contains("1048576"), "bytes are formatted as MB");
     }
 
     #[test]

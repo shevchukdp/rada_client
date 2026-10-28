@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.13: пошук у словниках, кеш у підвалі та чищення кеша / dictionary search, footer cache stats & cache purge
+
+- **UKR:** 1) **CLI `dict --search TERM`** (і `--json`): фільтр назв словників stan/typs/organs без мережі — локально заповнені словники не перевантажуються (сіра лінія «локально»), групувальні заголовки «stan (стани):» та ін. 2) **Кеш у підвалі веб**: статус-рядок сторінки тепер показує «кеш текстів: N тіл · X.X MB». 3) **Чищення кеша в GUI**: на головній біля рядка «кеш текстів» — кнопка «очистити» з вікном підтвердження (анотації й індекс не чіпаються). 4) Тести: 151/151.
+- **ENG:** 1) **CLI `dict --search TERM`** (plus `--json`): a label filter over the stan/typs/organs dictionaries with no network — locally populated dictionaries are not refetched (a muted «локально» line), with «stan (стани):» group headers. 2) **Cache in the web footer**: the page status line now shows «кеш текстів: N тіл · X.X MB». 3) **GUI cache purge**: next to the home «кеш текстів» row, an «очистити» button with a confirmation dialog (annotations and the index are untouched). 4) Tests: 151/151.
+
+---
+
+## 2026-10-28
+
 ### 0.10.12: зміст у веб-читалці, файл із CLI та кеш на головній / web reader TOC, CLI text --out, home cache row
 
 - **UKR:** 1) **«Зміст» у веб-читалці**: кнопка «Зміст (N)» над текстом акту; список «Розділ/Глава/Стаття» будується з уже відмальованих заголовків і плавно прокручується до вибраного (схована, якщо заголовків менше двух). 2) **CLI `text --out FILE`**: запис тексту акту (живого чи з кешу) у файл UTF-8 з створенням тек; у консоль — «записано N симв. → файл». 3) **«Кеш текстів» на головній**: рядок із кількістю кешованих тіл і їх об'ємом (кеш поповнюється при читанні). 4) Тести: 148/148.

@@ -128,11 +128,19 @@ enum Cmd {
         #[arg(long, default_value_t = 30)]
         limit: usize,
     },
-    /// Load the reference dictionaries (stan / typs / organs) from the live API.
+    /// Load the reference dictionaries (stan / typs / organs) from the live API
+    /// and print them as `id  label` rows; `--search TERM` filters the printed
+    /// labels by a case-insensitive substring (zero matches is not an error).
     Dict {
         /// Load only this kind (`stan`, `typs`, `organs`). Default: all three.
         #[arg(long)]
         kind: Option<String>,
+        /// Print only labels containing this term (case-insensitive).
+        #[arg(long)]
+        search: Option<String>,
+        /// Emit JSON instead of the plain listing.
+        #[arg(long)]
+        json: bool,
     },
     /// Resolve a human name to an nreg via the live `find/a` endpoint.
     /// Prints the nreg when the query is unambiguous, else an error.
@@ -272,7 +280,9 @@ fn run() -> Result<()> {
             cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref())
         }
         Cmd::Arrivals { save, json, limit } => cmd_arrivals(&cli.db, save, json, limit, cli.pace),
-        Cmd::Dict { kind } => cmd_dict(&cli.db, cli.pace, kind.as_deref()),
+        Cmd::Dict { kind, search, json } => {
+            cmd_dict(&cli.db, cli.pace, kind.as_deref(), search.as_deref(), json)
+        }
         Cmd::Resolve { text } => cmd_resolve(&text.join(" "), cli.pace),
         Cmd::Related { nreg, json } => cmd_related(&cli.db, &nreg, json, cli.pace),
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
@@ -363,20 +373,111 @@ fn cmd_sync(db: &PathBuf, pace: u64) -> Result<()> {
     Ok(())
 }
 
-fn cmd_dict(db: &PathBuf, pace: u64, kind: Option<&str>) -> Result<()> {
+fn cmd_dict(
+    db: &PathBuf,
+    pace: u64,
+    kind: Option<&str>,
+    search: Option<&str>,
+    json: bool,
+) -> Result<()> {
     let c = client(pace);
     let mut conn = rada_db::open(db)?;
     let kinds: Vec<String> = match kind {
         Some(k) => vec![k.to_string()],
         None => vec!["stan".into(), "typs".into(), "organs".into()],
     };
+    // Lookup mode (`--search`/`--json`) is offline-first: only kinds whose
+    // local table is still empty get a live fetch. A plain `dict` refreshes
+    // all three live as always.
+    let lookup = search.is_some() || json;
     for k in &kinds {
+        if lookup && !rada_db::dict::all_labels(&conn, k).is_empty() {
+            eprintln!("[dict] {k}: локально");
+            continue;
+        }
         eprintln!("[dict] fetching {k} ...");
         let raw = c.dictionary(k)?;
         let n = rada_db::dict::load_simple_dict(&mut conn, k, &raw)?;
         eprintln!("[dict] {k}: {n} entries");
     }
+    // Read the freshly loaded rows back from the index and apply the optional
+    // `--search` filter; zero matches is a normal (exit-0) empty filter result.
+    let groups: Vec<(String, Vec<(i64, String)>)> = kinds
+        .iter()
+        .map(|k| {
+            let rows = rada_db::dict::all_labels(&conn, k);
+            let rows = match search {
+                Some(term) => rows
+                    .into_iter()
+                    .filter(|(_, label)| dict_matches(label, term))
+                    .collect(),
+                None => rows,
+            };
+            (k.clone(), rows)
+        })
+        .collect();
+    if json {
+        let dicts: Vec<serde_json::Value> = groups
+            .iter()
+            .map(|(k, rows)| {
+                serde_json::json!({
+                    "kind": k,
+                    "items": rows
+                        .iter()
+                        .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
+                        .collect::<Vec<_>>(),
+                })
+            })
+            .collect();
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "dicts": dicts }))
+                .map_err(anyhow::Error::from)?
+        );
+        return Ok(());
+    }
+    let multi = kind.is_none();
+    if search.is_some() && groups.iter().all(|(_, rows)| rows.is_empty()) {
+        println!("нічого не знайдено");
+        return Ok(());
+    }
+    for (k, rows) in &groups {
+        if rows.is_empty() {
+            continue;
+        }
+        if multi {
+            // group header only in all-dicts mode, only before non-empty groups
+            println!("{k} ({}):", dict_caption(k));
+        }
+        for (id, label) in rows {
+            println!("  {id}  {label}");
+        }
+    }
     Ok(())
+}
+
+/// Case-insensitive substring test behind `dict --search`. The needle is
+/// trimmed once (`" чинн "` behaves as `"чинн"`); an empty or whitespace-only
+/// needle matches every label; otherwise the plain `to_lowercase` forms are
+/// compared, which folds Ukrainian letters (І/і, Ї/ї, Є/є, ...).
+fn dict_matches(label: &str, needle: &str) -> bool {
+    let needle = needle.trim();
+    if needle.is_empty() {
+        return true;
+    }
+    label.to_lowercase().contains(&needle.to_lowercase())
+}
+
+/// Ukrainian group caption printed in the all-dicts `--search` header
+/// (`stan (стани):` / `typs (типи):` / `organs (органи):`); unknown kinds
+/// repeat their own name.
+fn dict_caption(kind: &str) -> &str {
+    match kind {
+        "stan" => "стани",
+        "typs" => "типи",
+        "organs" => "органи",
+        other => other,
+    }
 }
 
 fn cmd_search(
@@ -982,7 +1083,7 @@ fn fmt_date(d: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{facet_lines, new_nregs, normalize_fmt, out_note};
+    use super::{dict_matches, facet_lines, new_nregs, normalize_fmt, out_note};
 
     #[test]
     fn out_note_formats_chars_arrow_and_path() {
@@ -1035,6 +1136,25 @@ mod tests {
         assert!(normalize_fmt("pdf").is_err());
         assert!(normalize_fmt("").is_err());
         assert!(normalize_fmt("markdown").is_err());
+    }
+
+    #[test]
+    fn dict_matches_is_case_insensitive_and_trims_needle_once() {
+        // Ukrainian case folding: uppercase label vs lowercase partial needle
+        assert!(dict_matches("Чинний", "чинн"));
+        // …and the mirrored pair, plus full-string case-insensitive equality
+        assert!(dict_matches("чинний", "Чинн"));
+        assert!(dict_matches("ЧИННИЙ", "чинний"));
+        // non-match (substring must be contiguous, case does not matter)
+        assert!(!dict_matches("Чинний", "не чинн"));
+        assert!(!dict_matches("Втратив чинність", "Орган"));
+        // empty and whitespace-only needles match everything
+        assert!(dict_matches("Чинний", ""));
+        assert!(dict_matches("Чинний", "   \t "));
+        // needle with surrounding spaces is trimmed once, then matched
+        assert!(dict_matches("Чинний", "  чинн  "));
+        // interior spaces survive the single trim ⇒ no match
+        assert!(!dict_matches("Чинний", " чин ний "));
     }
 
     #[test]

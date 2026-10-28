@@ -717,9 +717,16 @@ function setLive(msg) { $("live-note").textContent = msg; }
 async function refreshFoot() {
   try {
     const s = await api("/api/status");
-    $("foot").textContent =
+    let foot =
       "rada_client v" + (s.version || "?") + " · локальний індекс · " + s.docs + " документів · імпорт: " +
       (s.last_import || "—") + " · анотацій: " + s.annotations;
+    // Offline text cache (docs_text); the segment is hidden while empty.
+    const rows = s.cache_rows || 0;
+    if (rows > 0) {
+      const mb = ((s.cache_bytes || 0) / 1048576).toFixed(1);
+      foot += " · кеш текстів: " + rows + " тіл · " + mb + " MB";
+    }
+    $("foot").textContent = foot;
   } catch (e) {
     $("foot").textContent = "не вдалося з’єднатися з індексом: " + e.message;
   }

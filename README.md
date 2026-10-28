@@ -77,7 +77,8 @@ official open-data API:
   - **Cache full-text search («Знайти в кеші»)** — offline scan of every cached
     document body (Unicode case-insensitive, ranked, context snippets); rows
     open in the reader. Also `--cache-search TERM` on launch, CLI
-    `cache --search TERM`, and web «Пошук у тексті».
+    `cache --search TERM`, and web «Пошук у тексті». The home page shows the
+    cache size («кеш текстів») with an «очистити» button (confirm dialog).
   - **Reader outline («Зміст»)** — a collapsible panel listing every
     «Розділ/Глава/Стаття» heading; one click scrolls straight to it (shown for
     acts with at least two headings, e.g. 604 entries in the Criminal Code).
@@ -224,6 +225,7 @@ Launch arguments:
 .\rada-client.exe export 2755-17 --fmt md --out zakon.md   # cache-first export
 .\rada-client.exe dict                   # load dictionaries (stan/typs/organs)
 .\rada-client.exe dict --kind typs
+.\rada-client.exe dict --search "чинн"   # offline label filter («локально» — no refetch)
 
 # 4) Keep the index current.
 .\rada-client.exe sync                   # dictionaries + updated-documents feed

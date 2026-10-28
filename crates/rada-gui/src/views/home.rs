@@ -66,19 +66,39 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
                                 ui.label("кеш текстів");
                                 match app.cache_stats {
-                                    Some((rows, bytes)) if rows > 0 => ui.label(format!(
-                                        "{} тіл · {:.1} MB",
-                                        crate::views::reader::group_thousands(rows as usize),
-                                        bytes as f64 / KB
-                                    )),
-                                    Some(_) => ui.label(
-                                        egui::RichText::new("порожньо — тіла кешуються при читанні")
+                                    Some((rows, bytes)) if rows > 0 => {
+                                        ui.horizontal(|ui| {
+                                            ui.label(format!(
+                                                "{} тіл · {:.1} MB",
+                                                crate::views::reader::group_thousands(rows as usize),
+                                                bytes as f64 / KB
+                                            ));
+                                            if ui
+                                                .button(egui::RichText::new("очистити").small())
+                                                .on_hover_text(
+                                                    "видалити всі кешовані тіла документів \
+                                                     (анотації та індекс не чіпаються)",
+                                                )
+                                                .clicked()
+                                            {
+                                                app.home.confirm_purge = true;
+                                            }
+                                        });
+                                    }
+                                    Some(_) => {
+                                        ui.label(
+                                            egui::RichText::new(
+                                                "порожньо — тіла кешуються при читанні",
+                                            )
                                             .small()
                                             .weak(),
-                                    ),
-                                    None => ui.label(
-                                        egui::RichText::new("зчитую …").small().weak(),
-                                    ),
+                                        );
+                                    }
+                                    None => {
+                                        ui.label(
+                                            egui::RichText::new("зчитую …").small().weak(),
+                                        );
+                                    }
                                 };
                                 ui.end_row();
 
@@ -319,6 +339,32 @@ fn backup_controls(app: &mut App, ui: &mut egui::Ui) {
         },
     );
 
+    if app.home.confirm_purge {
+        egui::Window::new("Очистити кеш текстів?")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ui.ctx(), |ui| {
+                ui.label(
+                    "Буде видалено всі кешовані тіла документів (вони завантажуватимуться \
+                     повторно при читанні).\nІндекс, словники та анотації НЕ чіпаються.",
+                );
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Скасувати").clicked() {
+                        app.home.confirm_purge = false;
+                    }
+                    if ui
+                        .button(egui::RichText::new("Очистити").strong().color(err()))
+                        .clicked()
+                    {
+                        app.home.confirm_purge = false;
+                        app.purge_text_cache();
+                    }
+                });
+            });
+    }
+
     if app.home.confirm_restore && !app.home.backup_busy {
         egui::Window::new("Відновити індекс з файлу?")
             .collapsible(false)
@@ -441,4 +487,6 @@ pub struct HomeState {
     pub init_running: bool,
     /// Full-dump init confirmation window is open.
     pub confirm_init: bool,
+    /// «Очистити кеш текстів» confirmation window is open.
+    pub confirm_purge: bool,
 }

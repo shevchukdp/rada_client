@@ -24,6 +24,8 @@ pub enum Msg {
     Status(IndexStatus),
     /// `(rows, body bytes)` from the offline text cache (home page row).
     CacheStats((i64, i64)),
+    /// Result of the home page cache purge: deleted rows.
+    CachePurged(Outcome<usize>),
     Dicts {
         stan: Vec<(i64, String)>,
         typs: Vec<(i64, String)>,
@@ -344,8 +346,19 @@ impl App {
         });
     }
 
-    pub fn refresh_dicts(&mut self) {
+    /// Delete every cached document body (home page «очистити кеш»), then
+    /// refresh the cache row. Annotations and the index are untouched.
+    pub fn purge_text_cache(&mut self) {
         let db = self.db_path.clone();
+        self.spawn(move |tx| {
+            let res = rada_db::open(&db)
+                .and_then(|conn| rada_db::textcache::purge(&conn, None))
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Msg::CachePurged(res));
+        });
+    }
+
+    pub fn refresh_dicts(&mut self) {        let db = self.db_path.clone();
         self.spawn(move |tx| {
             let msg = match rada_db::open(&db) {
                 Ok(conn) => Msg::Dicts {
@@ -1407,6 +1420,13 @@ impl App {
             Msg::CacheStats(pair) => {
                 self.cache_stats = Some(pair);
             }
+            Msg::CachePurged(res) => match res {
+                Ok(n) => {
+                    self.cache_stats = Some((0, 0));
+                    self.toast(format!("кеш очищено: видалено {n} тіл"), ok());
+                }
+                Err(e) => self.toast(format!("не вдалося очистити кеш: {e}"), err()),
+            },
             Msg::Status(st) => {
                 let dicts_empty = st.dicts.iter().all(|(_, c)| *c == 0);
                 let auto_fetch = st.docs > 0 && dicts_empty;
