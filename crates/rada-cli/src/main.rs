@@ -264,8 +264,14 @@ enum AnnCmd {
     },
     /// Delete an annotation by id.
     Del { id: i64 },
-    /// Export all annotations as a portable JSON file.
-    Export { out: PathBuf },
+    /// Export all annotations as a portable JSON file (default: stdout).
+    Export {
+        /// Legacy positional target file (same effect as `--out`).
+        file: Option<PathBuf>,
+        /// Write the JSON to this file instead of stdout (parent dirs created).
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Import annotations from a JSON file (array or {"annotations":[...]}).
     Import { file: PathBuf },
 }
@@ -1287,16 +1293,32 @@ fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
                 println!("анотація #{id} не знайдена");
             }
         }
-        AnnCmd::Export { out } => {
+        AnnCmd::Export { file, out } => {
             let json = rada_db::annotations::export_json(&conn)?;
-            if let Some(p) = out.parent() {
-                if !p.as_os_str().is_empty() {
-                    std::fs::create_dir_all(p).ok();
+            if let Some(p) = out.as_deref() {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                if let Some(parent) = p.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent)
+                            .with_context(|| format!("create dir {}", parent.display()))?;
+                    }
                 }
+                std::fs::write(p, &json).with_context(|| format!("запис {}", p.display()))?;
+                let n = rada_db::annotations::all(&conn)?.len();
+                eprintln!("{}", annot_out_note(n, p));
+            } else if let Some(p) = file.as_deref() {
+                // legacy positional form: unchanged behaviour
+                if let Some(parent) = p.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent).ok();
+                    }
+                }
+                std::fs::write(p, json)?;
+                let n = rada_db::annotations::all(&conn)?.len();
+                println!("експортовано {n} анотацій у {}", p.display());
+            } else {
+                println!("{json}");
             }
-            std::fs::write(&out, json)?;
-            let n = rada_db::annotations::all(&conn)?.len();
-            println!("експортовано {n} анотацій у {}", out.display());
         }
         AnnCmd::Import { file } => {
             let raw = std::fs::read_to_string(&file)
@@ -1306,6 +1328,11 @@ fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// The stderr note printed after `annot export --out` has written `file`.
+fn annot_out_note(n: usize, file: &Path) -> String {
+    format!("[annot] записано {n} анотацій → {}", file.display())
 }
 
 fn cmd_status(db: &PathBuf) -> Result<()> {
@@ -1382,8 +1409,8 @@ fn fmt_date(d: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        arrivals_out_note, card_out_note, dict_matches, facet_lines, new_nregs, normalize_fmt,
-        out_note, stats_lines, StatsReport,
+        annot_out_note, arrivals_out_note, card_out_note, dict_matches, facet_lines, new_nregs,
+        normalize_fmt, out_note, stats_lines, StatsReport,
     };
 
     #[test]
@@ -1477,6 +1504,18 @@ mod tests {
         let line = out_note(1234, file);
         assert!(line.starts_with("[text] записано "));
         assert!(line.contains("1234"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn annot_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//a.json");
+        let line = annot_out_note(7, file);
+        assert!(line.starts_with("[annot] записано "));
+        assert!(line.contains("7"));
+        assert!(line.contains("анотацій"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
     }

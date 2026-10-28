@@ -259,6 +259,22 @@
   .hit:hover { background: var(--panel); border-color: var(--accent); }
   .hit a { color: var(--link); text-decoration: none; font-weight: 500; }
   .hit .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  /* «Оновлення» page: gold «НОВЕ» pill on unseen feed items + the «лише
+     нові» chip toggle (same chip language as sort/favorites, accent look). */
+  .arr-new-pill {
+    display: inline-block; font-size: 11px; font-weight: 700;
+    background: var(--accent); color: var(--accent-text);
+    border-radius: 5px; padding: 1px 6px; margin-right: 6px;
+    vertical-align: 1px;
+  }
+  #arr-only-new {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #arr-only-new:hover { color: var(--text); border-color: var(--accent); }
+  #arr-only-new.selected-look {
+    background: var(--accent); color: var(--accent-text); border-color: var(--accent);
+  }
   .pager { display: flex; gap: 10px; align-items: center; margin: 12px 0; }
   /* Sortable column headers above the results list: same chip language as
      the «Обране» filters, the active column takes the accent. */
@@ -538,6 +554,9 @@
       <input id="arr-filter" placeholder="назва, номер чи публікація…" autocomplete="off">
       <button id="arr-filter-clear" type="button" title="Очистити фільтр" hidden>×</button>
       <span id="arr-shown" class="hint" hidden></span>
+      <span id="arr-new-count" class="hint" hidden></span>
+      <button id="arr-only-new" type="button" aria-pressed="false" hidden
+        title="показати лише документи, яких ви ще не бачили">лише нові</button>
     </div>
     <div id="arrivals"></div>
   </section>
@@ -679,6 +698,8 @@ let findHits = [];   // mark.find elements of the current find query
 let findIdx = -1;    // index of the current hit
 let arrivalsLoaded = false; // «нові документи» already fetched once
 let arrivalsDocs = [];      // fetched feed items; the text filter re-renders from here
+let arrNewSet = new Set();  // nregs unseen at the last successful load («НОВЕ» badges)
+let arrOnlyNew = false;     // «лише нові» toggle: renderArrivals shows only arrNewSet docs
 
 function api(path, opts) {
   return fetch(path, opts).then(async (r) => {
@@ -1642,16 +1663,67 @@ function arrFilterMatch(d, needle) {
     || (d.publics || "").toLowerCase().includes(f);
 }
 
+// localStorage key with the arrivals nregs the user has already seen
+// (array of strings, newest last, capped at ARR_SEEN_MAX; GUI parity).
+const ARR_SEEN_KEY = "rada-arr-seen";
+const ARR_SEEN_MAX = 500;
+
+function getArrSeen() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(ARR_SEEN_KEY) || "[]");
+    return Array.isArray(arr) ? arr.filter(n => typeof n === "string") : [];
+  } catch (_) { return []; }
+}
+
+// Merge `nregs` into the seen set (dedup, cap 500, newest last).
+function markArrivalsSeen(nregs) {
+  const seen = getArrSeen();
+  for (const n of nregs) {
+    if (n && !seen.includes(n)) seen.push(n);
+  }
+  try { localStorage.setItem(ARR_SEEN_KEY, JSON.stringify(seen.slice(-ARR_SEEN_MAX))); }
+  catch (_) {}
+}
+
+/// Nregs of `docs` absent from `seen` (order preserved, deduped) — mirrors
+/// the GUI's unseen_docs used to badge arrivals that were not seen before.
+function unseenNregs(docs, seen) {
+  const known = new Set(seen);
+  const added = new Set();
+  const out = [];
+  for (const d of docs) {
+    const n = d.nreg;
+    if (!n || known.has(n) || added.has(n)) continue;
+    added.add(n);
+    out.push(n);
+  }
+  return out;
+}
+
 // One arrival card: title link (opens the document) + «nreg · status · publics».
+// Docs in the session newSet get a gold «НОВЕ» pill before the title; with
+// «лише нові» active only those docs are shown (on top of the text filter).
 function renderArrivals(items) {
   const el = $("arrivals");
   el.innerHTML = "";
-  if (!items.length) { el.textContent = "немає документів за фільтром"; return; }
+  if (arrOnlyNew) items = items.filter((d) => arrNewSet.has(d.nreg));
+  if (!items.length) {
+    el.textContent = arrOnlyNew
+      ? "нових документів немає — усі перечитані"
+      : "немає документів за фільтром";
+    return;
+  }
   for (const it of items) {
     const div = document.createElement("div");
     div.className = "hit";
     const a = document.createElement("a");
-    a.textContent = it.nazva;
+    if (arrNewSet.has(it.nreg)) {
+      const pill = document.createElement("span");
+      pill.className = "arr-new-pill";
+      pill.textContent = "НОВЕ";
+      a.appendChild(pill);
+    }
+    a.appendChild(document.createTextNode(it.nazva));
     a.onclick = (ev) => {
       ev.preventDefault();
       switchTab("search");
@@ -1670,13 +1742,21 @@ function applyArrFilter() {
   const needle = $("arr-filter").value;
   const items = arrivalsDocs.filter((d) => arrFilterMatch(d, needle));
   $("arr-filter-clear").hidden = needle.trim() === "";
+  const visible = arrOnlyNew ? items.filter((d) => arrNewSet.has(d.nreg)) : items;
   const shown = $("arr-shown");
-  if (items.length === arrivalsDocs.length) {
+  if (visible.length === arrivalsDocs.length) {
     shown.hidden = true;
   } else {
     shown.hidden = false;
-    shown.textContent = "показано " + items.length + " з " + arrivalsDocs.length;
+    shown.textContent = "показано " + visible.length + " з " + arrivalsDocs.length;
   }
+  const cnt = $("arr-new-count");
+  cnt.hidden = !(arrivalsLoaded && arrNewSet.size);
+  if (!cnt.hidden) cnt.textContent = "нових: " + arrNewSet.size;
+  const only = $("arr-only-new");
+  only.hidden = !arrivalsLoaded || !arrivalsDocs.length;
+  only.classList.toggle("selected-look", arrOnlyNew);
+  only.setAttribute("aria-pressed", arrOnlyNew ? "true" : "false");
   renderArrivals(items);
 }
 
@@ -1687,8 +1767,12 @@ async function loadArrivals() {
     const d = await api("/api/arrivals?limit=100");
     arrivalsLoaded = true;
     arrivalsDocs = d.items || [];
+    // Diff against the persisted seen-set: fresh docs get the «НОВЕ» badges
+    // for this session, then the whole feed becomes seen (persisted).
+    arrNewSet = new Set(unseenNregs(arrivalsDocs, getArrSeen()));
     if (!arrivalsDocs.length) { el.textContent = "Фід порожній."; return; }
     applyArrFilter();
+    markArrivalsSeen(arrivalsDocs.map((x) => x.nreg));
   } catch (e) {
     el.textContent = "Помилка: " + e.message;
   }
@@ -2223,6 +2307,7 @@ $("bulk-export").onclick = async () => {
 $("arrivals-load").onclick = loadArrivals;
 $("arr-filter").addEventListener("input", () => applyArrFilter());
 $("arr-filter-clear").onclick = () => { $("arr-filter").value = ""; applyArrFilter(); };
+$("arr-only-new").onclick = () => { arrOnlyNew = !arrOnlyNew; applyArrFilter(); };
 $("status-refresh").onclick = loadStatusTab;
 $("btn-jobs-sync").onclick = () => startDataJob("sync");
 $("btn-jobs-snapshot").onclick = () => startDataJob("snapshot");

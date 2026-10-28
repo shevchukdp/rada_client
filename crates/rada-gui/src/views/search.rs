@@ -538,12 +538,43 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 app.search.selected.retain(|n| n != &h.nreg);
                             }
                         }
-                        if ui
+                        let btn = ui
                             .add_sized([avail, 46.0], egui::Button::new(text).wrap())
-                            .clicked()
-                        {
+                            .on_hover_text("клік — відкрити; правий клік — дії з документом");
+                        if btn.clicked() {
                             app.open_reader_from(hits.clone(), i);
                         }
+                        // Right-click: quick actions for this hit.
+                        let was_sel = app.search.selected.contains(&h.nreg);
+                        btn.context_menu(|ui| {
+                            if ui.button("Відкрити в читалці").clicked() {
+                                app.open_reader_from(hits.clone(), i);
+                                ui.close_menu();
+                            }
+                            if ui.button("Відкрити на сайті").clicked() {
+                                ui.ctx().open_url(egui::OpenUrl::new_tab(
+                                    rada_core::RadaClient::site_url(&h.nreg),
+                                ));
+                                ui.close_menu();
+                            }
+                            if ui.button("Копіювати реєстраційний номер").clicked() {
+                                ui.ctx().copy_text(h.nreg.clone());
+                                ui.close_menu();
+                            }
+                            if ui.button("Копіювати назву").clicked() {
+                                ui.ctx().copy_text(h.nazva.clone());
+                                ui.close_menu();
+                            }
+                            let lbl = if was_sel { "Зняти позначку" } else { "Позначити для файлів" };
+                            if ui.button(lbl).clicked() {
+                                if was_sel {
+                                    app.search.selected.retain(|n| n != &h.nreg);
+                                } else {
+                                    app.search.selected.push(h.nreg.clone());
+                                }
+                                ui.close_menu();
+                            }
+                        });
                         if ui.button(egui::RichText::new("копія").small()).clicked() {
                             ui.ctx().copy_text(h.nreg.clone());
                         }

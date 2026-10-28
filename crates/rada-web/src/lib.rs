@@ -2907,4 +2907,31 @@ mod tests {
             "$(\"arr-filter-clear\").onclick = () => { $(\"arr-filter\").value = \"\"; applyArrFilter(); };"
         ));
     }
+
+    #[test]
+    fn ui_page_has_arrivals_new_badge() {
+        // Gold «НОВЕ» pill for unseen arrivals (the GUI arrivals parity): the
+        // pill class painted by the renderer, the «нових: N» counter next to
+        // the shown count, the pure unseen helper and the persisted seen-set
+        // key (cap 500, newest last, JSON errors tolerated).
+        assert!(ui::INDEX_HTML.contains("arr-new-pill"));
+        assert!(ui::INDEX_HTML.contains("\"\u{041d}\u{041e}\u{0412}\u{0415}\""));
+        assert!(ui::INDEX_HTML.contains("id=\"arr-new-count\" class=\"hint\""));
+        assert!(ui::INDEX_HTML.contains("\u{043d}\u{043e}\u{0432}\u{0438}\u{0445}: "));
+        assert!(ui::INDEX_HTML.contains("function unseenNregs(docs, seen)"));
+        assert!(ui::INDEX_HTML.contains("rada-arr-seen"));
+    }
+
+    #[test]
+    fn ui_page_has_arrivals_only_new_toggle() {
+        // Checkbox-style «лише нові» chip beside the counter: while active the
+        // shared renderer narrows the list to the session newSet on top of the
+        // text filter — the click handler flips the state var and repaints
+        // through applyArrFilter (which syncs aria-pressed / selected-look).
+        assert!(ui::INDEX_HTML.contains("id=\"arr-only-new\""));
+        assert!(ui::INDEX_HTML.contains("\u{043b}\u{0438}\u{0448}\u{0435} \u{043d}\u{043e}\u{0432}\u{0456}"));
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"arr-only-new\").onclick = () => { arrOnlyNew = !arrOnlyNew; applyArrFilter(); };"
+        ));
+    }
 }

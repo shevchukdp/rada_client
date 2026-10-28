@@ -61,7 +61,9 @@ official open-data API:
   - **Query history** — «недавні запити» chips under the search filters repeat
     a past search with one click (persisted, clearable); «копіювати текст» in
     the reader copies the whole act to the clipboard. Each search hit row has
-    «копія» (copy nreg) and «сайт» (open the act on zakon.rada.gov.ua).
+    «копія» (copy nreg) and «сайт» (open the act on zakon.rada.gov.ua), and
+    **right-click opens a context menu** (open reader / open site / copy
+    nreg / copy title / mark for file export).
   - **New-arrival badges** — the arrivals feed is diffed against what you have
     seen: fresh docs are gold, with a «нових» counter and a «лише нові» filter
     (the seen list persists across sessions); the text filter is remembered
@@ -163,6 +165,8 @@ official open-data API:
   «N слів · M симв. · ~K хв» label),
   **active-filter chips** («Активні фільтри»: one chip per set filter with a ×
   that clears it and re-searches, plus «скинути все»),
+  **arrivals feed with «НОВЕ» badges** (viewed nregs remembered in
+  localStorage, «нових: N» + «лише нові» + text filter),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -242,6 +246,7 @@ Launch arguments:
 
 #    Annotations live in the index (same store the GUI/web use).
 .\rada-client.exe annot list                         # every saved annotation
+.\rada-client.exe annot export --out annots.json      # all annotations as JSON (BOM-less)
 .\rada-client.exe annot list 2041-15 --json
 .\rada-client.exe annot add 2041-15 highlight "текст виділення"
 .\rada-client.exe annot add 2341-14 comment "увага на розділ 3"
