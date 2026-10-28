@@ -56,7 +56,14 @@ official open-data API:
     pages through the results list from inside the reader; **Shift+Enter** steps
     to the previous find match.
   - **Favorites (Обране)** — every saved annotation across all documents on one
-    page: kind filters, one-click open, delete.
+    page: kind filters, one-click open, delete; bare bookmarks show an italic
+    context snippet from the offline text cache (GUI and web).
+  - **Bandwidth-friendly** — repeated dictionary / arrivals-feed fetches use
+    conditional HTTP (`ETag`/`If-None-Match`, `Last-Modified`/`If-Modified-Since`);
+    the server's 304 means the body is never re-downloaded (≈200 MB/day limit).
+  - **Live pacing control** — «−»/«+» buttons in the top bar adjust the
+    request pause 1–60 s at runtime; the choice persists (CLI `--pace` wins).
+    Save/open dialogs remember the last used folder.
   - **Читалка** — live JSON card + clean text with an **edition switcher** and
     **structured rendering**: the act header/name line, publication & amendments
     blocks («(Відомості …)», `{Із змінами …}`), «РОЗДІЛ/ГЛАВА» and «Стаття N»

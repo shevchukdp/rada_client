@@ -75,6 +75,57 @@ pub fn purge(conn: &Connection, nreg: Option<&str>) -> Result<usize> {
     Ok(deleted)
 }
 
+/// Short context snippet of the cached current text for favorites/lists:
+/// a window centered (case-insensitively) on `needle` when it occurs,
+/// otherwise the document opening. Whitespace is collapsed. `None` when
+/// nothing is cached for `nreg`.
+pub fn preview(conn: &Connection, nreg: &str, needle: &str, max_chars: usize) -> Option<String> {
+    let body = get(conn, nreg, "").ok()??;
+    let flat: String = body.split_whitespace().collect::<Vec<_>>().join(" ");
+    let chars: Vec<char> = flat.chars().collect();
+    if chars.is_empty() {
+        return None;
+    }
+    let pos = if needle.trim().is_empty() {
+        None
+    } else {
+        let hay = flat.to_lowercase();
+        let ndl = needle.trim().to_lowercase();
+        let needle_chars: Vec<char> = ndl.chars().collect();
+        let hay_chars: Vec<char> = hay.chars().collect();
+        if needle_chars.is_empty() || needle_chars.len() > hay_chars.len() {
+            None
+        } else {
+            let mut found = None;
+            'outer: for i in 0..=hay_chars.len() - needle_chars.len() {
+                for j in 0..needle_chars.len() {
+                    if hay_chars[i + j] != needle_chars[j] {
+                        continue 'outer;
+                    }
+                }
+                found = Some(i);
+            }
+            found
+        }
+    };
+    let max = max_chars.clamp(20, 2000);
+    let (start, end) = match pos {
+        Some(p) => {
+            let start = p.saturating_sub(max / 3);
+            (start, (start + max).min(chars.len()))
+        }
+        None => (0, max.min(chars.len())),
+    };
+    let mut out: String = chars[start..end].iter().collect();
+    if start > 0 {
+        out = format!("…{out}");
+    }
+    if end < chars.len() {
+        out.push('…');
+    }
+    Some(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -97,6 +148,31 @@ mod tests {
         );
         assert_eq!(get(&conn, "1556-18", "ed20241115").unwrap(), None);
         assert_eq!(get(&conn, "0000-00", "").unwrap(), None);
+    }
+
+    /// preview(): needle window, opening fallback, whitespace collapse, miss.
+    #[test]
+    fn preview_windows_and_falls_back() {
+        let conn = conn();
+        assert_eq!(preview(&conn, "1-1", "", 50), None, "nothing cached");
+        let body = "Стаття 1.   Визначення\n\t понять.     ".to_string()
+            + &"Дуже довгий текст основи. ".repeat(20)
+            + "Ключова фраза тут. Далі ще текст.";
+        put(&conn, "1-1", "", &body).unwrap();
+        // No needle: document opening, collapsed, with a tail ellipsis.
+        let head = preview(&conn, "1-1", "", 60).unwrap();
+        assert!(head.starts_with("Стаття 1. Визначення понять."), "{head}");
+        assert!(head.ends_with('…'), "{head}");
+        // Needle found: window is centered near the match.
+        let win = preview(&conn, "1-1", "ключова фраза", 80).unwrap();
+        assert!(win.contains("Ключова фраза"), "{win}");
+        assert!(win.starts_with('…'), "window starts before the match: {win}");
+        // Needle absent: still the opening.
+        let miss = preview(&conn, "1-1", "голова не болить", 60).unwrap();
+        assert!(miss.starts_with("Стаття 1."), "{miss}");
+        // Short bodies have no ellipses at all.
+        put(&conn, "2-2", "", "короткий текст").unwrap();
+        assert_eq!(preview(&conn, "2-2", "", 60).unwrap(), "короткий текст");
     }
 
     /// Editions are distinct keys; re-putting the same key replaces the body.

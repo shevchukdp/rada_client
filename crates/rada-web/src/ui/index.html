@@ -1554,6 +1554,15 @@ function renderFavorites() {
     txt.textContent = a.text || "(закладка)";
     col.appendChild(title);
     col.appendChild(txt);
+    // Context snippet from the offline cache for bare bookmarks.
+    if (!a.text && a.preview) {
+      const prev = document.createElement("div");
+      prev.className = "txt";
+      prev.style.color = "var(--muted)";
+      prev.style.fontStyle = "italic";
+      prev.textContent = a.preview;
+      col.appendChild(prev);
+    }
     const ed = makeAnnEdit(a, txt, loadFavorites);
     // «→ текст» — open the reader and run the annotation text through the
     // find bar (bookmarks without text have nothing to find → hidden).

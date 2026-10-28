@@ -19,6 +19,10 @@ pub struct Settings {
     /// Plain (unformatted) reader text: disables structural styling of
     /// titles/sections/articles (default false = formatted).
     pub raw: bool,
+    /// Last folder used by save/open dialogs (remembered across sessions).
+    pub export_dir: String,
+    /// Live-request pause in seconds (0 = not configured, use CLI/default).
+    pub pace: u64,
 }
 
 impl Settings {
@@ -89,6 +93,8 @@ fn parse(text: &str) -> Settings {
                 "theme" => s.theme = v.trim().to_string(),
                 "zoom" => s.zoom = v.trim().parse().unwrap_or(0),
                 "raw" => s.raw = v.trim() == "1",
+                "export_dir" => s.export_dir = v.trim().to_string(),
+                "pace" => s.pace = v.trim().parse().unwrap_or(0),
                 "recent" => {
                     if let Some((n, t)) = v.split_once('\t') {
                         s.recents.push((n.to_string(), t.to_string()));
@@ -108,13 +114,15 @@ fn parse(text: &str) -> Settings {
 fn render(s: &Settings) -> String {
     let clean = |v: &str| v.replace(['\r', '\n', '\t'], " ");
     let mut out = format!(
-        "last_nreg={}\nlast_title={}\nlast_query={}\ntheme={}\nzoom={}\nraw={}\n",
+        "last_nreg={}\nlast_title={}\nlast_query={}\ntheme={}\nzoom={}\nraw={}\nexport_dir={}\npace={}\n",
         clean(&s.last_nreg),
         clean(&s.last_title),
         clean(&s.last_query),
         clean(&s.theme),
         s.zoom,
         if s.raw { 1 } else { 0 },
+        clean(&s.export_dir),
+        s.pace,
     );
     for (n, t) in &s.recents {
         out.push_str(&format!("recent={}\t{}\n", clean(n), clean(t)));
@@ -139,6 +147,8 @@ mod tests {
             theme: "matrix".into(),
             zoom: 130,
             raw: true,
+            export_dir: "C:\\temp".into(),
+            pace: 7,
         };
         let p = std::env::temp_dir().join("rada-settings-test.ini");
         save_to(&p, &s).unwrap();
@@ -158,6 +168,23 @@ mod tests {
         assert!(!parse("raw=0\n").raw);
         let s = parse("raw=1\n");
         assert_eq!(parse(&render(&s)).raw, true);
+    }
+
+    #[test]
+    fn export_dir_roundtrip() {
+        assert_eq!(parse("").export_dir, "");
+        let s = parse("export_dir=C:\\Users\\me\\Documents\\законодавство\n");
+        assert_eq!(s.export_dir, "C:\\Users\\me\\Documents\\законодавство");
+        assert_eq!(parse(&render(&s)).export_dir, s.export_dir);
+    }
+
+    #[test]
+    fn pace_roundtrip() {
+        assert_eq!(parse("").pace, 0, "unset by default");
+        assert_eq!(parse("pace=7\n").pace, 7);
+        assert_eq!(parse("pace=abc\n").pace, 0, "garbage falls back to unset");
+        let s = parse("pace=9\n");
+        assert_eq!(parse(&render(&s)).pace, 9);
     }
 
     #[test]

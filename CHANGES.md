@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.0: умовний HTTP-кеш, пауза наживо, тека експорту, передперегляд обраного / 0.10.0: conditional HTTP cache, live pacing control, export folder memory, favorites preview
+
+- **UKR:** 1) **Економія трафіку**: повторні запити словників і стрічки «Оновлення» використовують умовні HTTP-запити (ETag / If-None-Match, Last-Modified / If-Modified-Since) — сервер відповідає 304 і тіло не завантажується повторно; особливо важливо з урахуванням ліміту ~200 МБ/добу. 2) **Пауза live-запитів керована наживо**: кнопки «−»/«+» у верхній панелі (1–60 с) змінюють паузу без перезапуску й зберігаються між сесіями (CLI `--pace` має пріоритет над збереженою). 3) **Програма пам'ятає теку експорту**: усі діалоги збереження/відкриття (експорт читалки, списку, вибраного, бекапи, імпорт JSON, дамп) відкриваються в останній використаній теці. 4) **Передперегляд у «Обраному»**: для закладок без тексту показується курсивний уривок (≈160–200 символів) з офлайн-кешу тексту — і в GUI, і у веб. 5) Тести: 101/101.
+- **ENG:** 1) **Bandwidth savings**: repeated dictionary and arrivals-feed fetches now use conditional HTTP (ETag / If-None-Match, Last-Modified / If-Modified-Since) — the server answers 304 and the body is never re-downloaded; important given the ~200 MB/day limit. 2) **Live pacing is controllable at runtime**: «−»/«+» buttons in the top bar (1–60 s) change the pause without restart and persist across sessions (CLI `--pace` overrides the stored value). 3) **The app remembers the export folder**: every save/open dialog (reader/list/checked exports, backups, JSON import, dump) starts in the last used folder. 4) **Favorites preview**: bookmarks without text show an italic ~160–200-char snippet from the offline text cache — in both the GUI and the web UI. 5) Tests: 101/101.
+
+---
+
+## 2026-10-28
+
 ### 0.9.9: номерний пошук, фід офлайн, резервні копії у веб, CLI export / 0.9.9: number search, offline arrivals, web backups, CLI export
 
 - **UKR:** 1) **Пошук за номером офлайн**: рядок вигляду `1556-18`, `1178-2022-п`, `n0423500-26` у полі «Заголовок» відкриває документ напряму в читалці (точний пошук `by_nreg`, без мережі); у веб — те саме через `?q=` (`nreg_exact`). 2) **Фід «Оновлення» тепер офлайн-доступний**: останній знімок зберігається в індексі, при недоступній мережі показується з позначкою «збережене» + час; додано фільтр за назвою/номером/публікацією. 3) **Веб «Дані» → «Резервна копія»**: створення копій (`POST /api/jobs/backup`), список (`GET /api/backups`), відновлення з вибраного файлу з підтвердженням (`POST /api/jobs/restore`) — анотації повертаються, пошкоджений файл видаляється, безпечна заміна БД. 4) **CLI**: `export <nreg> --fmt txt|md|html [--edition] [--out]` — спершу кеш, потім наживо; без картки експортується TXT з кешу. 5) Тести: 92/92.

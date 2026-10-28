@@ -539,6 +539,13 @@ fn annotations_all(st: &State) -> Resp {
                         "kind": a.kind,
                         "text": a.text,
                         "created_at": a.created_at,
+                        // Context snippet from the offline text cache (None
+                        // until the document text was fetched at least once).
+                        "preview": if a.text.trim().is_empty() {
+                            rada_db::textcache::preview(&conn, &a.nreg, "", 200)
+                        } else {
+                            None
+                        },
                     })
                 })
                 .collect();
@@ -1850,6 +1857,28 @@ mod tests {
     }
 
     #[test]
+    fn annotations_all_bookmark_preview_from_cache() {
+        let st = favorites_state("prev");
+        let conn = db_open(&st.db_path).unwrap();
+        rada_db::annotations::insert(&conn, "2341-14", "bookmark", "", None, None).unwrap();
+        let long = format!("Початок документа. {}", "Довгий текст статті. ".repeat(40));
+        rada_db::textcache::put(&conn, "2341-14", "", &long).unwrap();
+        rada_db::annotations::insert(&conn, "2341-14", "comment", "є текст", None, None).unwrap();
+        drop(conn);
+        let (code, v) = call(&st, Method::Get, "/api/annotations/all", "");
+        assert_eq!(code, 200);
+        let items = v["items"].as_array().unwrap();
+        // [0] = the comment (newest): preview suppressed when text exists.
+        assert_eq!(items[0]["kind"], "comment");
+        assert!(items[0]["preview"].is_null(), "{}", items[0]);
+        // [1] = the bare bookmark: cached opening as the preview.
+        assert_eq!(items[1]["kind"], "bookmark");
+        let p = items[1]["preview"].as_str().unwrap();
+        assert!(p.starts_with("Початок документа."), "{p}");
+        assert!(p.ends_with('…'), "long body gets an ellipsis: {p}");
+    }
+
+    #[test]
     fn annotations_all_route_shape() {
         let st = favorites_state("all");
         let conn = db_open(&st.db_path).unwrap();
@@ -1866,10 +1895,10 @@ mod tests {
         assert_eq!(items[1]["id"], b1);
         assert_eq!(items[2]["id"], c1);
         // Exact JSON shape of one item.
-        for key in ["id", "nreg", "title", "kind", "text", "created_at"] {
+        for key in ["id", "nreg", "title", "kind", "text", "created_at", "preview"] {
             assert!(items[0].get(key).is_some(), "missing key {key}");
         }
-        assert_eq!(items[0].as_object().unwrap().len(), 6);
+        assert_eq!(items[0].as_object().unwrap().len(), 7);
         assert_eq!(items[0]["nreg"], "0000-00");
         assert_eq!(items[0]["kind"], "highlight");
         assert_eq!(items[0]["text"], "виділення");

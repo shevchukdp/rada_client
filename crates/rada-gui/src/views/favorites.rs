@@ -123,6 +123,19 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                         .color(crate::themes::weak()),
                                 );
                             }
+                            // Context snippet from the cached document text
+                            // (only when the annotation itself is empty, e.g.
+                            // a bare bookmark — otherwise the text says it).
+                            if a.text.trim().is_empty() {
+                                if let Some(preview) = app.doc_preview(&a.nreg, 160) {
+                                    ui.label(
+                                        egui::RichText::new(preview)
+                                            .small()
+                                            .italics()
+                                            .color(crate::themes::weak()),
+                                    );
+                                }
+                            }
                             ui.horizontal(|ui| {
                                 if ui.button(egui::RichText::new("відкрити документ").small()).clicked() {
                                     let (n, t) = (a.nreg.clone(), title.clone());

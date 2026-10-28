@@ -5,7 +5,7 @@
 //! short-lived worker threads that report back through an `mpsc` channel.
 //! Stale results are filtered with per-request generation counters.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -175,7 +175,9 @@ impl App {
     ) -> Self {
         apply_spacing(&cc.egui_ctx);
         let (tx, rx) = mpsc::channel();
-        let pace_secs = pace.unwrap_or(5);
+        let settings = crate::settings::load();
+        // CLI --pace wins; otherwise the persisted choice; otherwise 5 s.
+        let pace_secs = pace.or(if settings.pace > 0 { Some(settings.pace) } else { None }).unwrap_or(5);
         let mut app = Self {
             db_path,
             pace_secs,
@@ -194,7 +196,7 @@ impl App {
             index_status: None,
             toasts: Vec::new(),
             show_about: false,
-            settings: crate::settings::load(),
+            settings,
             theme_sig: String::new(),
             focus_req: None,
         };
@@ -822,7 +824,7 @@ impl App {
         }
         let stamp = backup_stamp();
         let name = format!("rada-index-backup-{stamp}.sqlite.gz");
-        let Some(path) = rfd::FileDialog::new().set_file_name(name).save_file() else {
+        let Some(path) = self.dlg_save(name) else {
             return;
         };
         self.home.backup_busy = true;
@@ -842,10 +844,7 @@ impl App {
         if self.home.backup_busy {
             return;
         }
-        let Some(src) = rfd::FileDialog::new()
-            .add_filter("rada snapshot", &["gz", "sqlite"])
-            .pick_file()
-        else {
+        let Some(src) = self.dlg_open(&["gz", "sqlite"]) else {
             return;
         };
         self.home.backup_busy = true;
@@ -888,10 +887,7 @@ impl App {
             return;
         }
         let dump_file = if from_file {
-            let Some(p) = rfd::FileDialog::new()
-                .add_filter("dump doc.txt", &["txt", "tsv", "dump"])
-                .pick_file()
-            else {
+            let Some(p) = self.dlg_open(&["txt", "tsv", "dump"]) else {
                 return;
             };
             Some(p)
@@ -947,8 +943,7 @@ impl App {
     /// Save all annotations as a portable JSON file through a save dialog.
     pub fn export_annotations(&mut self) {
         let default_name = format!("rada-annotations-{}.json", backup_stamp());
-        let Some(path) = rfd::FileDialog::new().set_file_name(default_name).save_file()
-        else {
+        let Some(path) = self.dlg_save(default_name) else {
             return;
         };
         let db = self.db_path.clone();
@@ -966,10 +961,7 @@ impl App {
     /// Import annotations from a JSON file (array or `{"annotations":[...]}`)
     /// picked through a file dialog. Existing rows are kept; valid entries are appended.
     pub fn import_annotations(&mut self) {
-        let Some(path) = rfd::FileDialog::new()
-            .add_filter("JSON", &["json"])
-            .pick_file()
-        else {
+        let Some(path) = self.dlg_open(&["json"]) else {
             return;
         };
         let db = self.db_path.clone();
@@ -984,6 +976,74 @@ impl App {
     }
 
     /// Export the currently open document (md/txt/html) through a save dialog.
+    /// Cached-text context snippet for `nreg` (favorites preview); `None`
+    /// when the document text was never fetched into the cache.
+    pub fn doc_preview(&self, nreg: &str, max_chars: usize) -> Option<String> {
+        let conn = rada_db::open(&self.db_path).ok()?;
+        rada_db::textcache::preview(&conn, nreg, "", max_chars)
+    }
+
+    /// Change the live-request pause at runtime (shared client + persisted).
+    pub fn set_pace_secs(&mut self, secs: u64) {
+        let secs = secs.clamp(1, 60);
+        self.pace_secs = secs;
+        self.client.set_pace(secs);
+        self.settings.pace = secs;
+        crate::settings::save(&self.settings);
+    }
+
+    /// Save dialog anchored at the last used folder (remembered on success).
+    fn dlg_save(&mut self, name: String) -> Option<PathBuf> {
+        let mut d = rfd::FileDialog::new().set_file_name(name);
+        let dir = self.settings.export_dir.clone();
+        if !dir.is_empty() && Path::new(&dir).is_dir() {
+            d = d.set_directory(&dir);
+        }
+        let p = d.save_file();
+        if let Some(p) = &p {
+            if let Some(par) = p.parent() {
+                self.settings.export_dir = par.display().to_string();
+                crate::settings::save(&self.settings);
+            }
+        }
+        p
+    }
+
+    /// Open-file dialog anchored at the last used folder.
+    fn dlg_open(&mut self, exts: &[&str]) -> Option<PathBuf> {
+        let mut d = rfd::FileDialog::new();
+        if !exts.is_empty() {
+            d = d.add_filter("файли", exts);
+        }
+        let dir = self.settings.export_dir.clone();
+        if !dir.is_empty() && Path::new(&dir).is_dir() {
+            d = d.set_directory(&dir);
+        }
+        let p = d.pick_file();
+        if let Some(p) = &p {
+            if let Some(par) = p.parent() {
+                self.settings.export_dir = par.display().to_string();
+                crate::settings::save(&self.settings);
+            }
+        }
+        p
+    }
+
+    /// Folder picker anchored at the last used folder.
+    fn dlg_folder(&mut self) -> Option<PathBuf> {
+        let mut d = rfd::FileDialog::new();
+        let dir = self.settings.export_dir.clone();
+        if !dir.is_empty() && Path::new(&dir).is_dir() {
+            d = d.set_directory(&dir);
+        }
+        let p = d.pick_folder();
+        if let Some(p) = &p {
+            self.settings.export_dir = p.display().to_string();
+            crate::settings::save(&self.settings);
+        }
+        p
+    }
+
     /// Print the current reader document: write its structured HTML to a
     /// temp file and open it in the system browser (user prints with
     /// Ctrl+P there — egui has no printer API).
@@ -1004,8 +1064,7 @@ impl App {
     pub fn export_reader(&mut self, fmt: &str) {        let Some(r) = self.reader.as_ref() else { return };
         let body = r.export_doc(fmt);
         let default_name = format!("zakon-{}.{}", sanitize(&r.hit.nreg), fmt);
-        let Some(path) = rfd::FileDialog::new().set_file_name(default_name).save_file()
-        else {
+        let Some(path) = self.dlg_save(default_name) else {
             return;
         };
         self.spawn(move |tx| {
@@ -1027,8 +1086,7 @@ impl App {
         let q = self.search.query.trim();
         let name_q = if q.is_empty() { "all".to_string() } else { sanitize(q) };
         let default_name = format!("zakon-{name_q}-list.{ext}");
-        let Some(path) = rfd::FileDialog::new().set_file_name(default_name).save_file()
-        else {
+        let Some(path) = self.dlg_save(default_name) else {
             return;
         };
         self.spawn(move |tx| {
@@ -1056,7 +1114,7 @@ impl App {
         if sel.is_empty() {
             return;
         }
-        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+        let Some(dir) = self.dlg_folder() else {
             return;
         };
         let client = self.client.clone();
@@ -1136,8 +1194,7 @@ impl App {
             sanitize(&q)
         };
         let default_name = format!("zakon-{name_q}-full.{ext}");
-        let Some(path) = rfd::FileDialog::new().set_file_name(default_name).save_file()
-        else {
+        let Some(path) = self.dlg_save(default_name) else {
             return;
         };
         let client = self.client.clone();

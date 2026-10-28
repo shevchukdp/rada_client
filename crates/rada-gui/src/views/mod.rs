@@ -29,6 +29,7 @@ pub use search::SearchState;
 pub fn topbar(app: &mut App, ctx: &egui::Context) {
     let mut go: Option<Page> = None;
     let mut theme_pick: Option<String> = None;
+    let mut pace_delta: Option<i64> = None;
     egui::TopBottomPanel::top("topbar")
         .exact_height(46.0)
         .show(ctx, |ui| {
@@ -59,6 +60,20 @@ pub fn topbar(app: &mut App, ctx: &egui::Context) {
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.add_space(10.0);
+                    if ui
+                        .button(egui::RichText::new("+").small())
+                        .on_hover_text("більша пауза між live-запитами (до 60 с)")
+                        .clicked()
+                    {
+                        pace_delta = Some(1);
+                    }
+                    if ui
+                        .button(egui::RichText::new("−").small())
+                        .on_hover_text("менша пауза між live-запитами (мінімум 1 с; сервер просить ≥5)")
+                        .clicked()
+                    {
+                        pace_delta = Some(-1);
+                    }
                     ui.label(
                         egui::RichText::new(format!("{} с/запит", app.pace_secs))
                             .small(),
@@ -82,6 +97,9 @@ pub fn topbar(app: &mut App, ctx: &egui::Context) {
     }
     if let Some(id) = theme_pick {
         app.set_theme(&id);
+    }
+    if let Some(d) = pace_delta {
+        app.set_pace_secs((app.pace_secs as i64 + d).clamp(1, 60) as u64);
     }
     if app.show_about {
         about_window(app, ctx);
