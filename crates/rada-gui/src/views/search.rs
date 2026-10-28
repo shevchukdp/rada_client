@@ -314,6 +314,68 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             ui.add_space(4.0);
         }
 
+        // ---- facet chips: dictionary-driven one-click filters ------------
+        // Advisory counts from `rada_db::facets` for the term the results
+        // belong to; clicking a chip sets that filter, clicking the active
+        // chip again clears it. Never shown over an empty or failed result.
+        if app.search.searched
+            && app.search.total > 0
+            && (app.search.facets.is_some() || app.search.facets_loading)
+            && app.search.query.trim() == app.search.facets_for
+        {
+            let fc = app.search.facets.clone();
+            let stan = app.dicts.stan.clone();
+            let typs = app.dicts.typs.clone();
+            let organs = app.dicts.organs.clone();
+            let (f_status, f_typ, f_org) =
+                (app.search.f_status, app.search.f_typ, app.search.f_org);
+            let mut pick: Option<FacetPick> = None;
+            ui.horizontal_wrapped(|ui| {
+                if app.search.facets_loading {
+                    ui.spinner();
+                }
+                if let Some(fc) = &fc {
+                    if let Some((id, was)) =
+                        facet_group(ui, "Статус:", &fc.status, &stan, f_status)
+                    {
+                        pick = Some(FacetPick::Status(if was { None } else { Some(id) }));
+                    }
+                    ui.separator();
+                    if let Some((id, was)) = facet_group(ui, "Тип:", &fc.typ, &typs, f_typ) {
+                        pick = Some(FacetPick::Typ(if was { None } else { Some(id) }));
+                    }
+                    ui.separator();
+                    if let Some((id, was)) =
+                        facet_group(ui, "Видавник:", &fc.org, &organs, f_org)
+                    {
+                        pick = Some(if was {
+                            FacetPick::Org(None, String::new())
+                        } else {
+                            let label = facet_chips(&fc.org, &organs)
+                                .into_iter()
+                                .find(|(_, i)| *i == id)
+                                .map(|(l, _)| l)
+                                .unwrap_or_else(|| format!("id {id}"));
+                            FacetPick::Org(Some(id), label)
+                        });
+                    }
+                }
+            });
+            if let Some(p) = pick {
+                match p {
+                    FacetPick::Status(v) => app.search.f_status = v,
+                    FacetPick::Typ(v) => app.search.f_typ = v,
+                    FacetPick::Org(v, label) => {
+                        app.search.f_org = v;
+                        app.search.f_org_label = label;
+                    }
+                }
+                app.search.set_offset(0);
+                app.run_search();
+            }
+            ui.add_space(4.0);
+        }
+
         // ---- results ------------------------------------------------
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -612,6 +674,70 @@ fn opt_label(opts: &[(i64, String)], id: i64, kind: &str) -> String {
         .unwrap_or_else(|| format!("{kind} {id}"))
 }
 
+/// Which filter column a facet chip click edits (`None` = clear it).
+enum FacetPick {
+    Status(Option<i64>),
+    Typ(Option<i64>),
+    /// `(picked id, label stored into f_org_label)`; `(None, _)` clears.
+    Org(Option<i64>, String),
+}
+
+/// Top-6 facet entries as `(label, id)` with dictionary-resolved labels:
+/// known id → dict label, unset value 0 → «немає», unknown id → «id N».
+/// `counts` arrives sorted by count descending (as `rada_db::facets` emits).
+pub fn facet_chips(counts: &[(i64, usize)], dict: &[(i64, String)]) -> Vec<(String, i64)> {
+    counts
+        .iter()
+        .take(6)
+        .map(|(id, _)| {
+            let label = dict
+                .iter()
+                .find(|(did, _)| *did == *id)
+                .map(|(_, l)| l.clone())
+                .unwrap_or_else(|| {
+                    if *id == 0 {
+                        "немає".into()
+                    } else {
+                        format!("id {id}")
+                    }
+                });
+            (label, *id)
+        })
+        .collect()
+}
+
+/// Draw one facet group: weak title + up to six `{label} ({count})` chips.
+/// Returns the clicked chip as `(id, was_already_active)` — the caller
+/// toggles: active chip clears the filter, any other chip sets it.
+fn facet_group(
+    ui: &mut egui::Ui,
+    title: &str,
+    counts: &[(i64, usize)],
+    dict: &[(i64, String)],
+    active: Option<i64>,
+) -> Option<(i64, bool)> {
+    ui.label(
+        egui::RichText::new(title)
+            .small()
+            .color(crate::themes::weak()),
+    );
+    let mut hit = None;
+    for (label, id) in facet_chips(counts, dict) {
+        let count = counts
+            .iter()
+            .find(|(i, _)| *i == id)
+            .map(|(_, c)| *c)
+            .unwrap_or(0);
+        let sel = active == Some(id);
+        let btn = egui::Button::new(egui::RichText::new(format!("{label} ({count})")).small())
+            .selected(sel);
+        if ui.add(btn).clicked() {
+            hit = Some((id, sel));
+        }
+    }
+    hit
+}
+
 fn stan_label(stan: &[(i64, String)], id: i64) -> String {
     if stan.is_empty() {
         return match id {
@@ -720,6 +846,10 @@ impl Default for SearchState {
             cache_term: String::new(),
             cache_hits: Vec::new(),
             cache_error: None,
+            facets_run: 0,
+            facets_loading: false,
+            facets: None,
+            facets_for: String::new(),
         }
     }
 }
@@ -769,6 +899,14 @@ pub struct SearchState {
     /// `(hit, index title)` pairs, ranked.
     pub cache_hits: Vec<(rada_db::textcache::CacheHit, String)>,
     pub cache_error: Option<String>,
+    /// Generation of the in-flight facet-counts worker (advisory filter chips).
+    pub facets_run: u64,
+    pub facets_loading: bool,
+    /// Per-column counts for the current query (`None` until they arrive or
+    /// after a failure — facets never block or disturb the hit list).
+    pub facets: Option<rada_db::FacetCounts>,
+    /// The query term the displayed facets belong to.
+    pub facets_for: String,
 }
 
 impl SearchState {
@@ -1133,6 +1271,32 @@ fn calendar_popup(app: &mut App, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn facet_chips_resolve_labels_cap_and_order() {
+        let dict = vec![
+            (1, "чинний".to_string()),
+            (2, "недіючий".to_string()),
+            (3, "а".to_string()),
+            (4, "б".to_string()),
+            (5, "в".to_string()),
+        ];
+        // Already count-desc, as rada_db::facets emits.
+        let counts = vec![(1, 9), (0, 8), (2, 7), (99, 6), (3, 5), (4, 4), (5, 3)];
+        let chips = facet_chips(&counts, &dict);
+        // Cap at 6, input order preserved.
+        assert_eq!(chips.len(), 6, "only the top 6 entries become chips");
+        assert!(!chips.iter().any(|(_, id)| *id == 5), "7th entry dropped");
+        // Labels: known id → dict, 0 → «немає», unknown → «id N».
+        assert_eq!(chips[0], ("чинний".to_string(), 1));
+        assert_eq!(chips[1], ("немає".to_string(), 0));
+        assert_eq!(chips[2], ("недіючий".to_string(), 2));
+        assert_eq!(chips[3], ("id 99".to_string(), 99));
+        assert_eq!(chips[4], ("а".to_string(), 3));
+        assert_eq!(chips[5], ("б".to_string(), 4));
+        // Empty input → no chips.
+        assert!(facet_chips(&[], &dict).is_empty());
+    }
 
     #[test]
     fn cache_row_label_prefers_title() {

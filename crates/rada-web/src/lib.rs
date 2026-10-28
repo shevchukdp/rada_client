@@ -2756,4 +2756,15 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("rada-theme"));
         assert!(ui::INDEX_HTML.contains("\"?print=1&theme=\""));
     }
+
+    #[test]
+    fn ui_page_has_deep_links() {
+        // URL <-> state: search params are restored on load and written back
+        // on every search; opening a document puts ?doc=<nreg> into the URL.
+        assert!(ui::INDEX_HTML.contains("function readDeepLink()"));
+        assert!(ui::INDEX_HTML.contains("function writeDeepLink()"));
+        assert!(ui::INDEX_HTML.contains("writeDeepLink();"));
+        assert!(ui::INDEX_HTML.contains("history.replaceState(null, \"\", \"?doc=\""));
+        assert!(ui::INDEX_HTML.contains("readDeepLink();"));
+    }
 }

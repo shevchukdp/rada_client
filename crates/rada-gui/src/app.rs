@@ -31,6 +31,12 @@ pub enum Msg {
         run: u64,
         res: Outcome<(Vec<rada_db::SearchHit>, i64)>,
     },
+    /// Per-option counts for the filter columns of a search (advisory:
+    /// errors never disturb the hit list).
+    Facets {
+        run: u64,
+        res: Outcome<rada_db::FacetCounts>,
+    },
     /// Offline full-text scan of the cached bodies: `(hit, index title)`.
     CacheSearch {
         run: u64,
@@ -379,6 +385,7 @@ impl App {
         crate::settings::remember_query(&mut self.settings, &self.search.query);
         crate::settings::save(&self.settings);
         let nreg_guess = self.search.query.trim().to_string();
+        let facets_q = q.clone();
         self.spawn(move |tx| {
             let conn = match rada_db::open(&db) {
                 Ok(c) => c,
@@ -397,6 +404,24 @@ impl App {
             }
             let res = rada_db::search::search(&conn, &q).map_err(|e| e.to_string());
             let _ = tx.send(Msg::Search { run, res });
+        });
+        // Advisory facet counts for the same query (separate worker + run id;
+        // failures here never touch the hit list).
+        let facets_run = self.next_run();
+        let fdb = self.db_path.clone();
+        self.search.facets_run = facets_run;
+        self.search.facets_loading = true;
+        self.search.facets = None;
+        self.search.facets_for = self.search.query.trim().to_string();
+        self.spawn(move |tx| {
+            let res = (|| -> Outcome<rada_db::FacetCounts> {
+                let conn = rada_db::open(&fdb).map_err(|e| e.to_string())?;
+                rada_db::facets(&conn, &facets_q).map_err(|e| e.to_string())
+            })();
+            let _ = tx.send(Msg::Facets {
+                run: facets_run,
+                res,
+            });
         });
     }
 
@@ -1427,6 +1452,17 @@ impl App {
                             self.search.hits.clear();
                             self.search.error = Some(e);
                         }
+                    }
+                }
+            }
+            Msg::Facets { run, res } => {
+                if run == self.search.facets_run {
+                    self.search.facets_loading = false;
+                    match res {
+                        Ok(fc) => self.search.facets = Some(fc),
+                        // Facets are advisory: on failure show nothing and
+                        // leave the hit list untouched.
+                        Err(_) => self.search.facets = None,
                     }
                 }
             }

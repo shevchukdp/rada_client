@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.9: фасети в GUI, глибокі посилання у веб та час читання / GUI facets, web deep links & reading time
+
+- **UKR:** 1) **Фасети в GUI-пошуку**: після пошуку з'являються чипи «Статус/Тип/Видавник» з кількістю результатів («Чинний (36)»); клік встановлює фільтр і перевиконує пошук, повторний клік знімає. 2) **Глибокі посилання у веб**: URL відтворює стан — `?q=&sort=&date_from=&date_to=&status=&typ=&org=&number=` повертає точний результат пошуку після F5 чи за переданим посиланням, `?doc=<номер>` одразу відкриває акт у читалці. 3) **Час читання у читалці**: панель показує кількість слів, символів та оцінку часу читання (≈400 слів/хв), напр. «43 733 слів · 340 212 симв. · ~110 хв». 4) Тести: 140/140.
+- **ENG:** 1) **Facets in the GUI search**: after a search, «Статус/Тип/Видавник» chips appear with per-option counts («Чинний (36)»); a click sets that filter and re-runs the search, a second click clears it. 2) **Web deep links**: the URL mirrors the state — `?q=&sort=&date_from=&date_to=&status=&typ=&org=&number=` reproduces the exact result set after F5 or a shared link, and `?doc=<nreg>` opens the act straight in the reader. 3) **Reading time in the reader**: the toolbar shows word count, character count and an estimated reading time (≈400 wpm), e.g. «43 733 слів · 340 212 симв. · ~110 хв». 4) Tests: 140/140.
+
+---
+
+## 2026-10-28
+
 ### 0.10.8: CLI-фід оновлень та друк у кольорах теми / CLI arrivals feed & theme-colored printing
 
 - **UKR:** 1) **CLI `arrivals`**: живий фід змінених документів (`r.tsv`) з дифом проти збереженого знімка — нові позначаються `*`, є `--save` (зберегти фід для наступного дифу), `--json` і `--limit N`. 2) **Друк у кольорах теми**: веб-друк (`Друк`) тепер передає поточну тему — заголовки і лінії друкуються її акцентним кольором на білому папері (темні теми не витрачають чорнило). 3) Тести: 137/137.

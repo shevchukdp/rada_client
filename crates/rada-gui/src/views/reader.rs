@@ -595,6 +595,13 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
         {
             app.print_reader(ui.ctx());
         }
+        if let Some(t) = &text {
+            let st = reading_stats(t);
+            if !st.is_empty() {
+                ui.label(egui::RichText::new(st).small().color(crate::themes::weak()))
+                    .on_hover_text("оцінка часу читання: ≈400 слів за хвилину");
+            }
+        }
         ui.separator();
         // Reader font zoom: A−  100%  A+   (persisted in settings.ini).
         let z = app.settings.zoom;
@@ -1292,6 +1299,37 @@ pub fn toc_entries(paras: &[Para]) -> Vec<(usize, String)> {
         .collect()
 }
 
+/// Reading stats of the act body as a compact toolbar label
+/// («401 слів · 2 406 симв. · ~2 хв», ≈400 words/min, min 1 хв;
+/// thousands grouped with spaces). Empty string for empty text.
+pub fn reading_stats(text: &str) -> String {
+    let words = text.split_whitespace().count();
+    if words == 0 {
+        return String::new();
+    }
+    let chars = text.chars().count();
+    let minutes = words.div_ceil(400).max(1);
+    format!(
+        "{} слів · {} симв. · ~{} хв",
+        group_thousands(words),
+        group_thousands(chars),
+        minutes
+    )
+}
+
+/// Decimal grouping with U+0020 every three digits (1234567 → «1 234 567»).
+pub fn group_thousands(n: usize) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    for (i, c) in s.chars().enumerate() {
+        if i > 0 && (s.len() - i) % 3 == 0 {
+            out.push(' ');
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// One-line outline label: max 90 *characters* (Cyrillic-safe) with an
 /// ellipsis when clipped.
 pub fn toc_label(title: &str) -> String {
@@ -1507,6 +1545,21 @@ fn annotations_panel(app: &mut App, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reading_stats_format() {
+        assert_eq!(reading_stats(""), "");
+        assert_eq!(reading_stats("   \n\t "), "", "whitespace is not words");
+        let text = "слово ".repeat(401); // 401 words → 2 minutes
+        assert_eq!(reading_stats(&text), "401 слів · 2 406 симв. · ~2 хв");
+        // Grouping: thousands separated by spaces.
+        assert_eq!(group_thousands(0), "0");
+        assert_eq!(group_thousands(999), "999");
+        assert_eq!(group_thousands(1000), "1 000");
+        assert_eq!(group_thousands(1234567), "1 234 567");
+        // 1..400 words → ~1 хв.
+        assert!(reading_stats(&"слов ".repeat(120)).ends_with("~1 хв"));
+    }
 
     #[test]
     fn toc_helpers() {

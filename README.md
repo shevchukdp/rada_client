@@ -62,6 +62,12 @@ official open-data API:
   - **New-arrival badges** — the arrivals feed is diffed against what you have
     seen: fresh docs are gold, with a «нових» counter and a «лише нові» filter
     (the seen list persists across sessions).
+  - **Search facets** — after each search, chip rows «Статус/Тип/Видавник» show
+    per-option result counts («Чинний (36)」); a click sets that filter and
+    re-runs the search, a second click clears it.
+  - **Reading time** — the reader toolbar reports words, characters and an
+    estimated reading time (≈400 wpm), e.g. «43 733 слів · 340 212 симв. ·
+    ~110 хв».
   - **Cache full-text search («Знайти в кеші»)** — offline scan of every cached
     document body (Unicode case-insensitive, ranked, context snippets); rows
     open in the reader. Also `--cache-search TERM` on launch, CLI
@@ -139,6 +145,8 @@ official open-data API:
   **dict facets** (the status/type/publisher dropdowns show per-option result
   counts after each search), **theme-colored printing** (the print view keeps
   the current theme's accent on white paper),
+  **deep links** (`?q=&sort=&status=…` reproduces a search on load,
+  `?doc=<nreg>` opens a document directly),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.

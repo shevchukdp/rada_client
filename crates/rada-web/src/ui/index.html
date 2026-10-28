@@ -711,10 +711,51 @@ async function init() {
   fillDict("f-typ", "typs");
   fillDict("f-org", "organs");
   renderRecent();
-  doSearch(0);
+  const dl = readDeepLink();
+  if (dl.doc) { openDoc(dl.doc); } else { doSearch(0); }
   // Re-attach to jobs that are still running after a page reload.
   await refreshJobs();
   if (jobsAnyRunning) pollJobs();
+}
+
+// ---- deep link: URL <-> search state ----------------------------------------
+// `?q=&sort=&date_from=&date_to=&status=&typ=&org=&number=` reproduces a
+// search on load (F5 and shared links keep the exact result set);
+// `?doc=<nreg>` opens a document in the reader.
+function readDeepLink() {
+  const p = new URLSearchParams(location.search);
+  const q = p.get("q");
+  if (q !== null) { $("q").value = q; }
+  const s = p.get("sort");
+  if (s) { state.sort = s; }
+  let any = q !== null && q !== "";
+  for (const [param, id] of [
+    ["date_from", "date-from"], ["date_to", "date-to"],
+    ["status", "f-status"], ["typ", "f-typ"], ["org", "f-org"],
+    ["number", "f-number"],
+  ]) {
+    const v = p.get(param);
+    if (v !== null && v !== "") { $(id).value = v; any = true; }
+  }
+  return { any, doc: p.get("doc") };
+}
+
+function writeDeepLink() {
+  const p = new URLSearchParams();
+  const q = $("q").value.trim();
+  if (q) { p.set("q", q); }
+  if (state.sort && state.sort !== "date_desc") { p.set("sort", state.sort); }
+  const df = $("date-from").value.trim();
+  if (/^[0-9]{8}$/.test(df)) { p.set("date_from", df); }
+  const dt = $("date-to").value.trim();
+  if (/^[0-9]{8}$/.test(dt)) { p.set("date_to", dt); }
+  for (const [param, id] of [["status", "f-status"], ["typ", "f-typ"], ["org", "f-org"]]) {
+    if ($(id).value) { p.set(param, $(id).value); }
+  }
+  const n = $("f-number").value.trim();
+  if (n) { p.set("number", n); }
+  const url = p.toString() ? "?" + p.toString() : location.pathname;
+  history.replaceState(null, "", url);
 }
 
 // Original option labels per select + option value, captured once when the
@@ -795,6 +836,7 @@ async function doSearch(offset) {
     else badDate = true;
   }
   $("date-hint").hidden = !badDate;
+  writeDeepLink();
   const meta = $("results-meta");
   meta.textContent = "Завантаження…";
   $("results").innerHTML = "";
@@ -933,6 +975,7 @@ function clickSort(col) {
 
 async function openDoc(nreg) {
   state.curNreg = nreg;
+  history.replaceState(null, "", "?doc=" + encodeURIComponent(nreg));
   state.curText = "";
   state.annots = [];
   findHits = []; findIdx = -1;
