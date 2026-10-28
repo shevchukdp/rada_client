@@ -2987,4 +2987,32 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("renderRecentQ();"));
         assert!(ui::INDEX_HTML.contains("row.hidden = items.length === 0;"));
     }
+
+    #[test]
+    fn ui_page_has_related_panel() {
+        // «Пов'язані документи» panel in the reader (the GUI's related-docs
+        // list): the trigger button, the muted error line's «повторити»
+        // retry button that re-fires the fetch, the pure row builder, and
+        // its empty-list hint.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-related\""));
+        assert!(ui::INDEX_HTML.contains("\u{043F}\u{043E}\u{0432}\u{0442}\u{043E}\u{0440}\u{0438}\u{0442}\u{0438}"));
+        assert!(ui::INDEX_HTML.contains("function renderRelatedItems("));
+        assert!(ui::INDEX_HTML.contains(
+            "\u{043F}\u{043E}\u{0441}\u{0438}\u{043B}\u{0430}\u{043D}\u{044C} \u{043D}\u{0430} \u{0456}\u{043D}\u{0448}\u{0456} \u{0430}\u{043A}\u{0442}\u{0438} \u{043D}\u{0435} \u{0437}\u{043D}\u{0430}\u{0439}\u{0434}\u{0435}\u{043D}\u{043E}"
+        ));
+    }
+
+    #[test]
+    fn ui_page_related_resets_on_open() {
+        // openDoc wipes the related panel right next to resetToc /
+        // resetCompare: the list hides and empties, its loaded-flag clears,
+        // and the trigger re-enables — a stale related list (or a stuck
+        // disabled button) never follows the user into the next document.
+        assert!(ui::INDEX_HTML.contains("resetToc();"));
+        assert!(ui::INDEX_HTML.contains("resetCompare();"));
+        assert!(ui::INDEX_HTML.contains("$(\"related-list\").hidden = true;"));
+        assert!(ui::INDEX_HTML.contains("$(\"related-list\").innerHTML = \"\";"));
+        assert!(ui::INDEX_HTML.contains("$(\"related-list\").dataset.loaded = \"\";"));
+        assert!(ui::INDEX_HTML.contains("$(\"btn-related\").disabled = false;"));
+    }
 }

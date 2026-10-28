@@ -380,6 +380,8 @@
   }
   #related-list li:hover { background: rgba(128, 128, 128, 0.12); }
   #related-list li .nreg { color: var(--muted); font-size: 12px; margin-left: 6px; }
+  #related-list li.hint { cursor: default; }
+  #related-list li button { margin-left: 8px; }
   #annotations li {
     display: flex; gap: 8px; align-items: center; padding: 6px 10px;
     border: 1px solid var(--border); border-radius: 7px; margin: 5px 0;
@@ -1232,7 +1234,9 @@ async function openDoc(nreg) {
   $("related-row").hidden = true;
   $("related-list").hidden = true;
   $("related-list").innerHTML = "";
+  $("related-list").dataset.loaded = "";
   $("related-status").textContent = "";
+  $("btn-related").disabled = false;
   setLive("картка · pacing ≈5 с/запит…");
   const enc = encNreg(nreg);
   $("site-link").href = "https://zakon.rada.gov.ua/go/" + enc;
@@ -1282,43 +1286,73 @@ async function loadCard() {
 }
 
 /// «Пов'язані документи»: fetch links to other acts from the live page and
-/// render them as clickable rows (one paced request per click).
-$("btn-related").onclick = () => loadRelated();
+/// render them as clickable rows (one paced request per click). While a
+/// fetched list is shown, clicking the button again just collapses it.
+$("btn-related").onclick = () => {
+  const list = $("related-list");
+  if (!list.hidden && list.dataset.loaded === "1") {
+    list.hidden = true; // toggle: hide the shown results without a new fetch
+    $("related-status").textContent = "";
+    return;
+  }
+  loadRelated();
+};
+
+/// Pure: build the <li> rows for the related list — one clickable row per
+/// link (title + muted nreg); an empty (or missing) list yields exactly the
+/// «не знайдено» hint row. Rows carry data-i so the caller can re-bind
+/// openDoc without putting raw nregs into HTML attributes.
+function renderRelatedItems(list) {
+  if (!list || !list.length) {
+    return '<li class="hint">посилань на інші акти не знайдено</li>';
+  }
+  let html = "";
+  for (let i = 0; i < list.length; i++) {
+    const r = list[i];
+    html += '<li data-i="' + i + '"><span>' + escHtml(r.title || r.nreg) +
+      '</span><span class="nreg">' + escHtml(r.nreg) + "</span></li>";
+  }
+  return html;
+}
+
 async function loadRelated() {
   const nreg = state.curNreg;
   if (!nreg) return;
   const list = $("related-list");
   const status = $("related-status");
+  const btn = $("btn-related");
   list.hidden = false;
   list.innerHTML = "";
-  status.textContent = "завантаження (живий API, ≈5 с)…";
+  list.dataset.loaded = "";
+  status.textContent = "шукаю посилання…";
+  btn.disabled = true;
   try {
     const d = await api("/api/related/" + encNreg(nreg));
     if (nreg !== state.curNreg) return;
-    if (!d.items.length) {
-      status.textContent = "";
-      const li = document.createElement("li");
-      li.className = "hint";
-      li.textContent = "посилань на інші акти не знайдено";
-      list.appendChild(li);
-      return;
+    btn.disabled = false;
+    const items = d.items || [];
+    list.innerHTML = renderRelatedItems(items);
+    for (const li of list.querySelectorAll("li[data-i]")) {
+      const item = items[Number(li.dataset.i)];
+      li.onclick = () => openDoc(item.nreg);
     }
-    status.textContent = "Знайдено: " + d.items.length;
-    for (const r of d.items) {
-      const li = document.createElement("li");
-      const t = document.createElement("span");
-      t.textContent = r.title || r.nreg;
-      const n = document.createElement("span");
-      n.className = "nreg";
-      n.textContent = r.nreg;
-      li.appendChild(t);
-      li.appendChild(n);
-      li.onclick = () => openDoc(r.nreg);
-      list.appendChild(li);
-    }
+    status.textContent = items.length ? "Знайдено: " + items.length : "";
+    list.dataset.loaded = "1";
   } catch (e) {
     if (nreg !== state.curNreg) return;
-    status.textContent = "Помилка: " + e.message;
+    btn.disabled = false;
+    status.textContent = "";
+    const li = document.createElement("li");
+    li.className = "hint";
+    li.textContent = "не вдалося отримати посилання";
+    const retry = document.createElement("button");
+    retry.id = "retry-related";
+    retry.type = "button";
+    retry.title = "Запитати посилання ще раз";
+    retry.textContent = "повторити";
+    retry.onclick = () => loadRelated();
+    li.appendChild(retry);
+    list.appendChild(li);
   }
 }
 

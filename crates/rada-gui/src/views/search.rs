@@ -308,6 +308,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     }
                 }
                 if resort && !app.search.loading {
+                    // remember the chosen ordering for the next launch
+                    app.settings.sort = app.search.sort.as_str().to_string();
+                    crate::settings::save(&app.settings);
                     app.run_search();
                 }
             });

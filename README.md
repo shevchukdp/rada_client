@@ -29,7 +29,8 @@ official open-data API:
     AND-narrowing with last-word prefix matching (automatic OR fallback),
     a **date-range calendar** (Ukrainian months, dates beyond the freshest data
     fetched from rada are disabled), **clickable column sorting**
-    (Назва ▲▼ / Дата ▲▼ / Редакція ▼ / Релевантність),
+    (Назва ▲▼ / Дата ▲▼ / Редакція ▼ / Релевантність — the choice is
+     remembered across launches),
     paging, live name resolver; a **«Розширений пошук на порталі»** button that
     opens the zakon.rada.gov.ua search with the current query in the browser;
     **export of the results list** (.md/.txt);
@@ -54,7 +55,9 @@ official open-data API:
     portal page for links to other acts referenced by the open one (one paced
     request), shows their offline titles, and opens any of them on click; the
     web UI has the same list behind a «Пов'язані документи» button
-    (`GET /api/related/{nreg}`). CLI: `related <nreg> [--json]`.
+    (`GET /api/related/{nreg}`) with a «повторити» retry on failure, an empty
+    notice, a collapse-on-second-click and a reset on document change.
+    CLI: `related <nreg> [--json]`.
   - **Mouse-selection highlights** — the «Виділення мишею» chip in the reader
     makes the text selectable by mouse; «виділити» saves the selection as a
     gold highlight annotation (double-click selects a word/paragraph).
@@ -238,6 +241,7 @@ Launch arguments:
 .\rada-client.exe stats                  # offline index report (docs, dicts, cache, snapshot)
 .\rada-client.exe stats --json           # machine-readable
 .\rada-client.exe cache --purge 2755-17 # drop one document's cached text
+.\rada-client.exe backfill --query "податковий кодекс" --limit 5   # pre-cache top hits' texts for offline reading (--dry-run lists without network)
 .\rada-client.exe cache --search "освіту" --limit 10   # offline full-text over cached bodies
 .\rada-client.exe arrivals --save            # live updated-docs feed, diffed vs the saved snapshot
 .\rada-client.exe resolve "податковий кодекс"   # name → nreg (offline index first, live only as fallback)

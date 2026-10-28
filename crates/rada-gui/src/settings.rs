@@ -31,6 +31,9 @@ pub struct Settings {
     /// Arrivals page text filter (persisted so a domain filter survives
     /// restarts).
     pub arr_filter: String,
+    /// Chosen search sort as the stable id from `rada_db::search::Sort::as_str()`
+    /// («relevance» / «date_desc» / …); empty = default. Parsed leniently.
+    pub sort: String,
 }
 
 impl Settings {
@@ -145,6 +148,7 @@ fn parse(text: &str) -> Settings {
                     }
                 }
                 "arrfilter" => s.arr_filter = v.trim().to_string(),
+                "sort" => s.sort = v.trim().to_string(),
                 "recent" => {
                     if let Some((n, t)) = v.split_once('\t') {
                         s.recents.push((n.to_string(), t.to_string()));
@@ -168,7 +172,7 @@ fn parse(text: &str) -> Settings {
 fn render(s: &Settings) -> String {
     let clean = |v: &str| v.replace(['\r', '\n', '\t'], " ");
     let mut out = format!(
-        "last_nreg={}\nlast_title={}\nlast_query={}\ntheme={}\nzoom={}\nraw={}\nexport_dir={}\npace={}\narrfilter={}\n",
+        "last_nreg={}\nlast_title={}\nlast_query={}\ntheme={}\nzoom={}\nraw={}\nexport_dir={}\npace={}\narrfilter={}\nsort={}\n",
         clean(&s.last_nreg),
         clean(&s.last_title),
         clean(&s.last_query),
@@ -178,6 +182,7 @@ fn render(s: &Settings) -> String {
         clean(&s.export_dir),
         s.pace,
         clean(&s.arr_filter),
+        clean(&s.sort),
     );
     for (n, t) in &s.recents {
         out.push_str(&format!("recent={}\t{}\n", clean(n), clean(t)));
@@ -213,6 +218,7 @@ mod tests {
             recent_q: vec!["податковий кодекс".into(), "лік".into()],
             arr_seen: vec!["1556-18".into(), "16-15".into()],
             arr_filter: "податков".into(),
+            sort: "nazva_desc".into(),
         };
         let p = std::env::temp_dir().join("rada-settings-test.ini");
         save_to(&p, &s).unwrap();
@@ -223,6 +229,28 @@ mod tests {
         let got2 = parse(&render(&s));
         assert_eq!(got2.last_query, "row1 row2");
         let _ = std::fs::remove_file(&p);
+    }
+
+    #[test]
+    fn sort_key_defaults_empty_and_roundtrips() {
+        // absent key = empty = the Sort default is used by the app
+        assert_eq!(parse("last_nreg=x\n").sort, "");
+        // a stored id comes back verbatim and parses to a stable Sort
+        let s = parse("sort=podd_desc\n");
+        assert_eq!(s.sort, "podd_desc");
+        assert_eq!(
+            rada_db::search::Sort::parse(&s.sort),
+            rada_db::search::Sort::PoddDesc
+        );
+        // garbage falls back leniently to the default ordering
+        assert_eq!(
+            rada_db::search::Sort::parse(&parse("sort=???!\n").sort),
+            rada_db::search::Sort::default()
+        );
+        // render→parse keeps the value
+        let mut s = Settings::default();
+        s.sort = rada_db::search::Sort::NazvaAsc.as_str().to_string();
+        assert_eq!(parse(&render(&s)).sort, "nazva_asc");
     }
 
     #[test]

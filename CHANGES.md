@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.21: кешування текстів за запитом, панель посилань у веб та пам'ять сортування / on-demand text caching, web related panel & sort memory
+
+- **UKR:** 1) **CLI `backfill --query "TERM"`**: завантажує й кешує тексти топ- результатів локального пошуку, щоб читати їх офлайн; по одному рядку на документ («[2/10] nreg — 12 345 симв.» / «уже в кеші» / «помилка»), `--dry-run` без мережі, `--json`, `--limit N` (до 25); помилки не переривають процес. 2) **«Пов'язані документи» у веб**: підказка «шукаю посилання…», «посилань на інші акти не знайдено», «не вдалося отримати посилання» з кнопкою «повторити»; повторний клік ховає список, відкриття нового документа скидає панель. 3) **Сортування пошуку пам'ятається**: вибране впорядкування (Назва / Дата / Редакція / Релевантність) зберігається між запусками. 4) Тести: 186/186.
+- **ENG:** 1) **CLI `backfill --query "TERM"`**: fetches and caches the texts of the top local-search hits so later reading is offline; one line per document («[2/10] nreg — 12 345 симв.» / «уже в кеші» / «помилка»), `--dry-run` without network, `--json`, `--limit N` (up to 25); per-doc failures never abort the run. 2) **«Пов'язані документи» in the web reader**: a «шукаю посилання…» hint, «посилань на інші акти не знайдено» for empty results, «не вдалося отримати посилання» with a «повторити» retry button; clicking the button again collapses the list and opening another document resets the panel. 3) **Search sort is remembered**: the chosen ordering (Назва / Дата / Редакція / Релевантність) now persists across launches. 4) Tests: 186/186.
+
+---
+
+## 2026-10-28
+
 ### 0.10.20: історія запитів у веб, словники з файла та скорочення в «Про програму» / web query history, dictionary from file & shortcut docs
 
 - **UKR:** 1) **«Недавні запити» у веб**: під рядком фільтрів чипи останніх 10 запитів (сховище браузера); клік повторює пошук, «очистити» чистить історію. 2) **CLI `dict --from-file ФАЙЛ --kind K`**: завантаження словника з локального дамп-файла (той самий формат, що й portal .txt: id + табуляція + назва в Windows-1251) без жодного запиту до мережі; **`dict --fresh`** — швидкий звіт «stan: 10 записів / …: порожньо» без перевантаження (і `{"fresh":{…}}` з `--json`). 3) **«Про програму»**: розділ «Гарячі клавіші» — Ctrl+F, Enter, Alt+стрілки, Alt+PageUp/PageDown. 4) Тести: 182/182.

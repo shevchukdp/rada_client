@@ -6,6 +6,9 @@
 //! - `search`    local title search (FTS5 + filters);
 //! - `card`      live card for a document (human summary, `--json` for raw JSON);
 //! - `text`      clean text of a document (current or a given edition);
+//! - `backfill`  fetch and cache the act texts of the top hits of a local
+//!               title search, so later reading works offline
+//!               (`--dry-run` lists cached/missing without fetching);
 //! - `dict`      load reference dictionaries (stan/typs/organs) from the live API,
 //!               seed one offline from a file (`--from-file`) or report
 //!               local freshness (`--fresh`);
@@ -127,6 +130,23 @@ enum Cmd {
         limit: Option<usize>,
         /// Restrict to one document.
         nreg: Option<String>,
+    },
+    /// Fetch and cache the act texts of the top hits of a local title search,
+    /// so later reading works offline. Best-effort: one document failing does
+    /// not abort the run. `--dry-run` lists cached/missing without network.
+    Backfill {
+        /// Title term for the local search (like `search`).
+        #[arg(long)]
+        query: String,
+        /// Max hits to consider (default 10, clamped to 1..=25).
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// List which documents are cached/missing only: no network, no writes.
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit JSON instead of the progress lines.
+        #[arg(long)]
+        json: bool,
     },
     /// Offline report on the local index: file, documents, last import,
     /// dictionaries, text cache, saved arrivals snapshot (`--json` for
@@ -335,6 +355,9 @@ fn run() -> Result<()> {
         }
         Cmd::Cache { purge, search, limit, nreg } => {
             cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref())
+        }
+        Cmd::Backfill { query, limit, dry_run, json } => {
+            cmd_backfill(&cli.db, &query, limit, dry_run, json, cli.pace)
         }
         Cmd::Stats { json } => cmd_stats(&cli.db, json),
         Cmd::Arrivals {
@@ -988,6 +1011,102 @@ fn cmd_cache(db: &PathBuf, purge: bool, search: Option<&str>, limit: Option<usiz
     Ok(())
 }
 
+/// Final summary line of `backfill` (one line, pure): counts of the run plus
+/// the cache row total afterwards (`textcache::stats`).
+fn backfill_summary(fetched: usize, cached_already: usize, failed: usize, total_rows: i64) -> String {
+    format!(
+        "отримано {fetched}, вже в кеші {cached_already}, помилок {failed}; кеш тепер: {total_rows} тіл"
+    )
+}
+
+/// Fetch and cache the act texts of the top hits of a local title search so
+/// later reading is offline. The hits come from `rada_db::search::search`
+/// (`nazva` only, `limit` clamped to 1..=25); already-cached documents are
+/// skipped, each missing one goes through the paced client `show_text` and is
+/// put into the cache under the current edition (`""`), like `text` does.
+/// A single fetch failure prints a muted line and never aborts the loop —
+/// the command is best-effort and exits 0 even when every fetch fails.
+/// `--dry-run` only lists the cached/missing state: no network, no writes.
+fn cmd_backfill(
+    db: &PathBuf,
+    query: &str,
+    limit: usize,
+    dry_run: bool,
+    json: bool,
+    pace: u64,
+) -> Result<()> {
+    let limit = limit.clamp(1, 25);
+    let conn = rada_db::open(db)?;
+    let q = rada_db::search::SearchQuery {
+        nazva: Some(query.to_string()),
+        limit,
+        offset: 0,
+        ..Default::default()
+    };
+    let (hits, _total) = rada_db::search::search(&conn, &q)?;
+    if hits.is_empty() {
+        println!("нічого не знайдено");
+        return Ok(());
+    }
+    let n = hits.len();
+    // The paced client is built only for a real run — `--dry-run` never touches
+    // the network.
+    let c = if dry_run { None } else { Some(client(pace)) };
+    let mut fetched = 0usize;
+    let mut cached_already = 0usize;
+    let mut failed = 0usize;
+    for (i, h) in hits.iter().enumerate() {
+        let i = i + 1;
+        if rada_db::textcache::cached(&conn, &h.nreg).unwrap_or(false) {
+            cached_already += 1;
+            if !json {
+                println!("  [{i}/{n}] {} — уже в кеші", h.nreg);
+            }
+            continue;
+        }
+        if dry_run {
+            if !json {
+                println!("  [{i}/{n}] {} — не в кеші", h.nreg);
+            }
+            continue;
+        }
+        let c = c.as_ref().expect("client built above for a real run");
+        match c.show_text(&h.nreg) {
+            Ok(text) => {
+                // Same cache-refresh pattern as `text`: current edition, best-effort write.
+                let _ = rada_db::textcache::put(&conn, &h.nreg, "", &text);
+                fetched += 1;
+                if !json {
+                    println!("  [{i}/{n}] {} — {} симв.", h.nreg, text.chars().count());
+                }
+            }
+            Err(e) => {
+                // One bad document must not abort the run: muted stderr line, continue.
+                failed += 1;
+                eprintln!("  [{i}/{n}] {} — помилка: {e}", h.nreg);
+            }
+        }
+    }
+    let (rows, _bytes) = rada_db::textcache::stats(&conn).unwrap_or((0, 0));
+    if json {
+        let out = serde_json::json!({
+            "fetched": fetched,
+            "cached_already": cached_already,
+            "failed": failed,
+            "rows": rows,
+        });
+        println!("{}", serde_json::to_string_pretty(&out).map_err(anyhow::Error::from)?);
+        return Ok(());
+    }
+    let summary = backfill_summary(fetched, cached_already, failed, rows);
+    if dry_run {
+        println!("{summary} (сухий прогін)");
+    } else {
+        println!("{summary}");
+    }
+    Ok(())
+}
+
 /// Plain-data snapshot behind `stats`: everything read from the local index,
 /// ready for both renderers (aligned lines / JSON).
 struct StatsReport {
@@ -1624,9 +1743,9 @@ fn fmt_date(d: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        annot_out_note, arrivals_out_note, card_out_note, dict_fresh_lines, dict_matches,
-        facet_lines, new_nregs, normalize_fmt, out_note, resolve_out_note, stats_lines,
-        StatsReport,
+        annot_out_note, arrivals_out_note, backfill_summary, card_out_note, dict_fresh_lines,
+        dict_matches, facet_lines, new_nregs, normalize_fmt, out_note, resolve_out_note,
+        stats_lines, StatsReport,
     };
 
     #[test]
@@ -1853,5 +1972,25 @@ mod tests {
         );
         // empty slice ⇒ empty vec
         assert!(dict_fresh_lines(&[]).is_empty());
+    }
+
+    #[test]
+    fn backfill_summary_renders_counts_and_cache_total() {
+        // all-nonzero render: exact wording, comma/semicolon separators
+        assert_eq!(
+            backfill_summary(3, 5, 1, 1234),
+            "отримано 3, вже в кеші 5, помилок 1; кеш тепер: 1234 тіл"
+        );
+        // zeros render the zeros (never omitted)
+        assert_eq!(
+            backfill_summary(0, 0, 0, 0),
+            "отримано 0, вже в кеші 0, помилок 0; кеш тепер: 0 тіл"
+        );
+        // wording check: the four count labels and the cache tail are present
+        let line = backfill_summary(2, 1, 0, 42);
+        assert!(line.starts_with("отримано 2"));
+        assert!(line.contains("вже в кеші 1"));
+        assert!(line.contains("помилок 0"));
+        assert!(line.contains("; кеш тепер: 42 тіл"));
     }
 }

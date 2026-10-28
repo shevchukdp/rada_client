@@ -232,6 +232,8 @@ impl App {
         }
         // The arrivals text filter survives restarts.
         app.arrivals.filter = app.settings.arr_filter.clone();
+        // So does the chosen result sort («date_desc» etc., lenient parse).
+        app.search.sort = rada_db::search::Sort::parse(&app.settings.sort);
         app.theme_sig = String::new();
         app.refresh_theme(&cc.egui_ctx);
         app.refresh_index_state();
