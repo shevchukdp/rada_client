@@ -2,7 +2,7 @@
 
 use eframe::egui;
 
-use crate::app::{err, App};
+use crate::app::{err, gold, App};
 
 pub struct ArrivalsState {
     pub run: u64,
@@ -15,6 +15,19 @@ pub struct ArrivalsState {
     pub saved_at: Option<String>,
     /// Client-side substring filter over title/nreg/publication.
     pub filter: String,
+    /// Nregs absent from the persisted seen-set at the last successful load
+    /// (the «НОВЕ» badges; also what «лише нові» filters by).
+    pub new_nregs: Vec<String>,
+    /// Show only the `new_nregs` documents.
+    pub only_new: bool,
+}
+
+/// Nregs of `docs` that are not in `seen` (order preserved).
+pub fn unseen_docs(docs: &[rada_core::models::UpdatedDoc], seen: &[String]) -> Vec<String> {
+    docs.iter()
+        .map(|d| d.nreg.clone())
+        .filter(|n| !seen.contains(n))
+        .collect()
 }
 
 impl Default for ArrivalsState {
@@ -27,6 +40,8 @@ impl Default for ArrivalsState {
             from_cache: false,
             saved_at: None,
             filter: String::new(),
+            new_nregs: Vec::new(),
+            only_new: false,
         }
     }
 }
@@ -62,6 +77,22 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 ui.label(
                     egui::RichText::new(format!("{} документів", app.arrivals.docs.len())).small(),
                 );
+                if !app.arrivals.new_nregs.is_empty() {
+                    ui.label(
+                        egui::RichText::new(format!("нових: {}", app.arrivals.new_nregs.len()))
+                            .small()
+                            .strong()
+                            .color(gold()),
+                    );
+                }
+                let on = app.arrivals.only_new;
+                if ui
+                    .add(egui::Button::new(egui::RichText::new("лише нові").small()).selected(on))
+                    .on_hover_text("показати лише документи, яких ви ще не бачили")
+                    .clicked()
+                {
+                    app.arrivals.only_new = !on;
+                }
             }
             if app.arrivals.from_cache {
                 ui.label(
@@ -108,10 +139,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 let f = app.arrivals.filter.trim().to_lowercase();
+                let fresh = app.arrivals.new_nregs.clone();
+                let only_new = app.arrivals.only_new;
                 let docs: Vec<rada_core::models::UpdatedDoc> = app
                     .arrivals
                     .docs
                     .iter()
+                    .filter(|d| {
+                        !only_new || fresh.contains(&d.nreg)
+                    })
                     .filter(|d| {
                         f.is_empty()
                             || d.nazva.to_lowercase().contains(&f)
@@ -127,14 +163,25 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                             .weak(),
                     );
                 }
+                if docs.is_empty() && only_new && f.is_empty() {
+                    ui.label(
+                        egui::RichText::new("нових документів немає — усі перечитані")
+                            .small()
+                            .weak(),
+                    );
+                }
                 for d in docs {
+                    let is_new = fresh.contains(&d.nreg);
                     let meta = format!("{}   [{}]   pub: {}", d.nreg, d.status, d.publics);
                     let doc = format!("{}\n{}", d.nazva, meta);
+                    let rt = egui::RichText::new(doc).small();
+                    let rt = if is_new { rt.color(gold()) } else { rt };
                     if ui
                         .add_sized(
                             [ui.available_width(), 44.0],
-                            egui::Button::new(egui::RichText::new(doc).small()).wrap(),
+                            egui::Button::new(rt).wrap(),
                         )
+                        .on_hover_text(if is_new { "новий з минулого перегляду" } else { "" })
                         .clicked()
                     {
                         app.open_reader_by_nreg(&d.nreg, &d.nazva, 0, "", "", "");
@@ -142,4 +189,32 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
             });
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn doc(nreg: &str) -> rada_core::models::UpdatedDoc {
+        rada_core::models::UpdatedDoc {
+            num: 1,
+            nreg: nreg.into(),
+            nazva: "н".into(),
+            status: "Чинний".into(),
+            publics: String::new(),
+            link: String::new(),
+            size: None,
+            file: String::new(),
+        }
+    }
+
+    #[test]
+    fn unseen_docs_keeps_order_and_new_only() {
+        let docs = vec![doc("1-1"), doc("2-2"), doc("3-3")];
+        let seen = vec!["2-2".to_string()];
+        assert_eq!(unseen_docs(&docs, &seen), ["1-1", "3-3"]);
+        assert_eq!(unseen_docs(&docs, &[]).len(), 3, "nothing seen: all new");
+        let all = vec!["1-1".to_string(), "2-2".to_string(), "3-3".to_string()];
+        assert!(unseen_docs(&docs, &all).is_empty(), "all seen: nothing new");
+    }
 }

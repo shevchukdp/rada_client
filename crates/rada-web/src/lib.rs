@@ -21,7 +21,7 @@ use rada_core::models::{LawCardJson, StatusId};
 use rada_core::related::RelatedDoc;
 use rada_core::RadaClient;
 use rada_db::dict::all_labels;
-use rada_db::search::{search, SearchQuery, Sort};
+use rada_db::search::{facets, search, SearchQuery, Sort};
 use rada_db::{doc_count, last_import, open as db_open};
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -297,7 +297,20 @@ fn search_handler(st: &State, q: &[(String, String)]) -> Resp {
                 }
             }
             match search(&conn, &q) {
-                Ok((hits, total)) => json_ok(&json!({ "total": total, "hits": hits })),
+                Ok((hits, total)) => {
+                    // Dictionary-dropdown facet counts («Чинний (1204)»).
+                    // Search must never fail because of facets: on error
+                    // the field is simply null.
+                    let facet_json = match facets(&conn, &q) {
+                        Ok(f) => serde_json::to_value(f).unwrap_or(Value::Null),
+                        Err(_) => Value::Null,
+                    };
+                    json_ok(&json!({
+                        "total": total,
+                        "hits": hits,
+                        "facets": facet_json,
+                    }))
+                }
                 Err(e) => json_err(500, &format!("search error: {e:#}")),
             }
         }
@@ -2543,6 +2556,87 @@ mod tests {
         assert_eq!(junk, ["3000-03", "2000-02", "1000-01"]);
     }
 
+    // ---- facet counts (dictionary dropdowns on «Пошук») --------------------
+
+    /// Fresh indexed db with three documents at distinct status / types /
+    /// org_id combinations — (5, "2|168", 10), (1, "2", 10), (5, "168", 20) —
+    /// for the facet tests. Unique dir per tag keeps parallel tests apart.
+    fn facet_state(tag: &str) -> Arc<State> {
+        let dir = std::env::temp_dir().join(format!("rada-web-facet-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let st = Arc::new(State {
+            db_path: dir.join("test.sqlite"),
+            client: RadaClient::with_pacing(Duration::from_secs(3600)),
+            pace_secs: 3600,
+            jobs: Mutex::new(HashMap::new()),
+            job_seq: AtomicU64::new(0),
+        });
+        let conn = db_open(&st.db_path).expect("open test index");
+        conn.execute_batch(
+            "INSERT INTO docs(nreg, nazva, status, types, org_id, org_date, org_num, poddat) VALUES
+             ('1000-01', 'Абетка',  5, '2|168', 10, '20010101', '1000', '20030101'),
+             ('2000-02', 'Кодекс',  1, '2',     10, '20020202', '2000', '20010202'),
+             ('3000-03', 'Ятринка', 5, '168',   20, '20030303', '3000', '20020303');",
+        )
+        .expect("seed docs");
+        drop(conn);
+        st
+    }
+
+    #[test]
+    fn search_endpoint_returns_facets() {
+        let st = facet_state("shape");
+        let v = search_get(&st, "");
+        let f = &v["facets"];
+        // (id, count) pairs, count desc then id; "2|168" counts in both buckets.
+        assert_eq!(f["status"], json!([[5, 2], [1, 1]]), "{v}");
+        assert_eq!(f["typ"], json!([[2, 2], [168, 2]]), "{v}");
+        assert_eq!(f["org"], json!([[10, 2], [20, 1]]), "{v}");
+        // The nreg-exact shortcut answers before any result set: no facets.
+        let exact = search_get(&st, "q=1000-01");
+        assert_eq!(exact["nreg_exact"], true, "{exact}");
+        assert!(exact.get("facets").is_none(), "{exact}");
+    }
+
+    #[test]
+    fn search_facets_ignore_own_column_filter() {
+        let st = facet_state("own");
+        // status=5 narrows the hits to 2, but the status facet keeps counting
+        // the unselected option so the user can flip the choice…
+        let v = search_get(&st, "status=5");
+        assert_eq!(v["total"], 2);
+        let f = &v["facets"];
+        assert_eq!(f["status"], json!([[5, 2], [1, 1]]), "status filter ignored: {v}");
+        // …while the other facets honor it (only the two status-5 docs).
+        assert_eq!(f["typ"], json!([[168, 2], [2, 1]]), "typ honors the status filter: {v}");
+        assert_eq!(f["org"], json!([[10, 1], [20, 1]]), "org honors the status filter: {v}");
+    }
+
+    #[test]
+    fn search_facets_empty_result_and_zero_ids() {
+        let st = facet_state("empty");
+        // A query with no matches: facets are empty arrays, still HTTP 200.
+        let v = search_get(&st, "q=%D0%BD%D0%B5%D0%BC%D0%B0%D1%94"); // «немає»
+        assert_eq!(v["total"], 0);
+        assert_eq!(v["facets"]["status"].as_array().unwrap().len(), 0, "{v}");
+        assert_eq!(v["facets"]["typ"].as_array().unwrap().len(), 0, "{v}");
+        assert_eq!(v["facets"]["org"].as_array().unwrap().len(), 0, "{v}");
+        // Empty index (no docs at all): the shape is kept, no failure.
+        let conn = db_open(&st.db_path).unwrap();
+        conn.execute("DELETE FROM docs", []).unwrap();
+        drop(conn);
+        let v = search_get(&st, "");
+        assert_eq!(v["total"], 0);
+        assert!(v["facets"]["status"].is_array(), "{v}");
+        // Defaults unset in the index (favorites seed): id 0 still surfaces.
+        let st0 = favorites_state("facets-zero");
+        let v = search_get(&st0, "");
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["facets"]["status"], json!([[0, 1]]), "{v}");
+        assert_eq!(v["facets"]["typ"].as_array().unwrap().len(), 0, "empty types explode to nothing: {v}");
+        assert_eq!(v["facets"]["org"], json!([[0, 1]]), "{v}");
+    }
+
     #[test]
     fn ui_page_has_sort_headers() {
         // Column-header sort row above the results: the bar, one chip per
@@ -2594,5 +2688,20 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("/api/cache/search?q="));
         assert!(ui::INDEX_HTML.contains("it.snippet"));
         assert!(ui::INDEX_HTML.contains("openDoc(it.nreg)"));
+    }
+
+    #[test]
+    fn ui_page_has_facet_counts() {
+        // Dictionary dropdowns annotate their options with per-option hit
+        // counts after every search («Чинний (1204)»): the annotation
+        // function, the JSON field it consumes, the original-label cache it
+        // restores before each search, and its call site in doSearch.
+        assert!(ui::INDEX_HTML.contains("function applyFacets("));
+        assert!(ui::INDEX_HTML.contains("optionLabels"));
+        assert!(ui::INDEX_HTML.contains("resetFacetLabels()"));
+        assert!(ui::INDEX_HTML.contains("applyFacets(\"f-status\", d.facets && d.facets.status)"));
+        assert!(ui::INDEX_HTML.contains("applyFacets(\"f-typ\", d.facets && d.facets.typ)"));
+        assert!(ui::INDEX_HTML.contains("applyFacets(\"f-org\", d.facets && d.facets.org)"));
+        assert!(ui::INDEX_HTML.contains("facets"));
     }
 }

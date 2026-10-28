@@ -49,6 +49,8 @@ pub struct ReaderState {
     /// Cleaned text last selected with the mouse in `select_mode`
     /// (`None` = nothing selected). Drives the «виділити» button.
     pub sel_pending: Option<String>,
+    /// «Зміст» panel visibility.
+    pub outline_open: bool,
 }
 
 pub const ANN_KINDS: [&str; 3] = ["Коментар", "Закладка", "Виділення"];
@@ -85,6 +87,7 @@ impl ReaderState {
             related_loaded: false,
             select_mode: false,
             sel_pending: None,
+            outline_open: false,
         }
     }
 
@@ -775,6 +778,50 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
             None
         };
         app.reader.as_mut().unwrap().find_scroll = false;
+
+        // ---- outline («Зміст») ----------------------------------------
+        // Section/article headings become one-click jump targets.
+        let toc = toc_entries(&paras);
+        let mut outline_pick: Option<usize> = None;
+        if toc.len() >= 2 {
+            let open = app.reader.as_ref().map(|r| r.outline_open).unwrap_or(false);
+            let resp = egui::CollapsingHeader::new(
+                egui::RichText::new(format!("Зміст ({})", toc.len())).strong().size(14.0),
+            )
+            .id_salt("reader_outline")
+            .open(Some(open))
+            .show(ui, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(220.0)
+                    .auto_shrink([false, true])
+                    .show(ui, |ui| {
+                        for (pi, title) in &toc {
+                            let short = toc_label(title);
+                            let indent = if toc_is_section(title) { 0.0 } else { 14.0 };
+                            ui.indent(egui::Id::new(("toc", *pi)), |ui| {
+                                ui.add_space(indent);
+                                if ui
+                                    .selectable_label(false, egui::RichText::new(short).small())
+                                    .clicked()
+                                {
+                                    outline_pick = Some(*pi);
+                                }
+                            });
+                        }
+                    });
+            });
+            // Controlled open state (`open(Some(..))`): flip it ourselves on a
+            // header click (egui's `openness` is an animation float).
+            let now_open = if resp.header_response.clicked() {
+                !open
+            } else {
+                open
+            };
+            if let Some(r) = app.reader.as_mut() {
+                r.outline_open = now_open;
+            }
+        }
+        let mut outline_target = outline_pick;
         ui.add_space(6.0);
 
         egui::ScrollArea::vertical().show(ui, |ui| {
@@ -922,6 +969,15 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
                     );
                     ui.scroll_to_rect(rect, Some(egui::Align::Center));
                     find_target = None;
+                }
+                // scroll the heading picked in the outline («Зміст»).
+                if outline_target == Some(pi) {
+                    let rect = egui::Rect::from_min_max(
+                        egui::pos2(x_left, y_before),
+                        egui::pos2(x_right, ui.cursor().min.y),
+                    );
+                    ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                    outline_target = None;
                 }
             }
             ui.add_space(40.0);
@@ -1223,6 +1279,37 @@ pub fn paragraphs(t: &str) -> Vec<Para> {
 /// Max characters kept from a mouse selection before saving.
 const SEL_MAX_CHARS: usize = 500;
 
+/// Outline entries: `(paragraph index, heading text)` for structural
+/// headings («Розділ/Глава/Стаття …») in document order.
+pub fn toc_entries(paras: &[Para]) -> Vec<(usize, String)> {
+    paras
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| match p.kind {
+            PKind::Section | PKind::Article => Some((i, p.text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
+/// One-line outline label: max 90 *characters* (Cyrillic-safe) with an
+/// ellipsis when clipped.
+pub fn toc_label(title: &str) -> String {
+    let n = title.chars().count();
+    if n <= 90 {
+        return title.to_string();
+    }
+    let mut s: String = title.chars().take(90).collect();
+    s.push('…');
+    s
+}
+
+/// True for top-level headings («Розділ …» / «Глава …», any case).
+pub fn toc_is_section(title: &str) -> bool {
+    let l = title.trim_start().to_uppercase();
+    l.starts_with("РОЗДІЛ") || l.starts_with("ГЛАВА")
+}
+
 /// Normalize a raw mouse selection for saving: trim, collapse whitespace
 /// runs to single spaces, cap at `max_chars` *characters* (Cyrillic-safe).
 /// `None` when the selection is empty or whitespace-only.
@@ -1420,6 +1507,32 @@ fn annotations_panel(app: &mut App, ui: &mut egui::Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn toc_helpers() {
+        let text = "ЗАКОН УКРАЇНИ\nПро тест\n\
+                    РОЗДІЛ 1. ЗАГАЛЬНІ ПОЛОЖЕННЯ\n\
+                    Стаття 1. Визначення\n\
+                    1. текст\n\
+                    Глава 2. Інше\n\
+                    Стаття 2. Щось ще дуже довге ".to_string()
+            + &"символів ".repeat(30);
+        let paras = paragraphs(&text);
+        let toc = toc_entries(&paras);
+        // 2 sections + 2 articles = 4 entries, in document order.
+        assert_eq!(toc.len(), 4, "{toc:?}");
+        assert!(toc[0].1.starts_with("РОЗДІЛ"));
+        assert!(toc[1].1.starts_with("Стаття 1"));
+        assert!(toc_is_section(&toc[0].1) && !toc_is_section(&toc[1].1));
+        // Indices point at the classified paragraphs.
+        assert_eq!(paras[toc[1].0].kind, PKind::Article);
+        // Label: short titles pass through; long ones clip at 90 chars + ellipsis.
+        assert_eq!(toc_label("Стаття 1. Коротка"), "Стаття 1. Коротка");
+        let long: String = "а".repeat(120);
+        let lab = toc_label(&long);
+        assert_eq!(lab.chars().count(), 91, "90 chars + ellipsis");
+        assert!(lab.ends_with('…'));
+    }
 
     #[test]
     fn find_spans_case_insensitive_cyrillic() {

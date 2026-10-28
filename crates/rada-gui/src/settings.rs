@@ -25,6 +25,9 @@ pub struct Settings {
     pub pace: u64,
     /// Recent search queries, newest first, max 10.
     pub recent_q: Vec<String>,
+    /// Arrivals-feed nregs the user has already seen (the «нові» badges and
+    /// the «лише нові» filter work off this set). Cap 500.
+    pub arr_seen: Vec<String>,
 }
 
 impl Settings {
@@ -74,6 +77,21 @@ pub fn remember_query(s: &mut Settings, q: &str) {
     s.recent_q.truncate(10);
 }
 
+/// Merge arrivals-feed nregs into the seen set (dedup, cap 500, oldest
+/// entries dropped first).
+pub fn mark_arrivals_seen<I: IntoIterator<Item = String>>(s: &mut Settings, nregs: I) {
+    for n in nregs {
+        let n = n.trim().to_string();
+        if !n.is_empty() && !s.arr_seen.contains(&n) {
+            s.arr_seen.push(n);
+        }
+    }
+    if s.arr_seen.len() > 500 {
+        let extra = s.arr_seen.len() - 500;
+        s.arr_seen.drain(0..extra);
+    }
+}
+
 pub fn path() -> Option<PathBuf> {
     let base = std::env::var("LOCALAPPDATA").ok()?;
     Some(PathBuf::from(base).join("rada-client").join("settings.ini"))
@@ -117,6 +135,12 @@ fn parse(text: &str) -> Settings {
                         s.recent_q.push(q);
                     }
                 }
+                "arrseen" => {
+                    let n = v.trim().to_string();
+                    if !n.is_empty() {
+                        s.arr_seen.push(n);
+                    }
+                }
                 "recent" => {
                     if let Some((n, t)) = v.split_once('\t') {
                         s.recents.push((n.to_string(), t.to_string()));
@@ -156,6 +180,9 @@ fn render(s: &Settings) -> String {
     for q in &s.recent_q {
         out.push_str(&format!("recentq={}\n", clean(q)));
     }
+    for n in &s.arr_seen {
+        out.push_str(&format!("arrseen={}\n", clean(n)));
+    }
     out
 }
 
@@ -179,6 +206,7 @@ mod tests {
             export_dir: "C:\\temp".into(),
             pace: 7,
             recent_q: vec!["податковий кодекс".into(), "лік".into()],
+            arr_seen: vec!["1556-18".into(), "16-15".into()],
         };
         let p = std::env::temp_dir().join("rada-settings-test.ini");
         save_to(&p, &s).unwrap();
@@ -192,8 +220,25 @@ mod tests {
     }
 
     #[test]
-    fn raw_toggle_roundtrip() {
-        assert!(!parse("").raw, "formatted is the default");
+    fn arr_seen_merge_dedups_and_caps() {
+        let mut s = Settings::default();
+        mark_arrivals_seen(&mut s, (0..512).map(|i| format!("{i}-1")));
+        assert_eq!(s.arr_seen.len(), 500, "cap 500, oldest dropped");
+        assert_eq!(s.arr_seen[499], "511-1");
+        // dedup keeps the first occurrence, empties ignored
+        mark_arrivals_seen(&mut s, vec!["511-1".into(), String::new(), "  ".into(), "x-1".into()]);
+        assert_eq!(s.arr_seen.len(), 500, "cap enforced per merge");
+        assert_eq!(s.arr_seen[498], "511-1", "re-adding does not move it");
+        assert_eq!(s.arr_seen[499], "x-1");
+        // round-trip through the ini format
+        let p = std::env::temp_dir().join("rada-settings-arrseen.ini");
+        save_to(&p, &s).unwrap();
+        let got = parse(&std::fs::read_to_string(&p).unwrap());
+        assert_eq!(got.arr_seen, s.arr_seen);
+    }
+
+    #[test]
+    fn raw_toggle_roundtrip() {        assert!(!parse("").raw, "formatted is the default");
         assert!(parse("raw=1\n").raw);
         assert!(!parse("raw=0\n").raw);
         let s = parse("raw=1\n");

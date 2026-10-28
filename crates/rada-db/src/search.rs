@@ -123,6 +123,17 @@ pub struct SearchHit {
     pub poddat: String,
 }
 
+/// Per-option result counts for the dictionary-driven filters («Статус»,
+/// «Тип», «Видавник» on the web search page). Each list is `(dict_id, count)`
+/// sorted by count descending, then id ascending; the unset/unknown value 0
+/// is kept, so those documents still surface.
+#[derive(Debug, Clone, Serialize)]
+pub struct FacetCounts {
+    pub status: Vec<(i64, usize)>,
+    pub typ: Vec<(i64, usize)>,
+    pub org: Vec<(i64, usize)>,
+}
+
 /// Exact-`nreg` lookup for offline "search by number" (`254к/96-вр`,
 /// `1178-2022-п`, `n0423500-26`…). Returns the hit without any FTS/LIKE.
 pub fn by_nreg(conn: &Connection, nreg: &str) -> Result<Option<SearchHit>> {
@@ -204,6 +215,73 @@ fn add_param(
     where_sql.push_str(&format!("?{}", args.len()));
 }
 
+/// Column whose own filter is excluded from a facet count (standard facet
+/// semantics: counting the options of one column respects every *other*
+/// filter but ignores that column's own selection).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FacetColumn {
+    Status,
+    Typ,
+    Org,
+}
+
+/// Build the shared `WHERE` fragment (and its numbered arguments) used by
+/// both [`search_with`] and [`facets`]. `use_fts` suppresses the `LIKE`
+/// title clause (the FTS branch matches via `MATCH ?1`, which must stay
+/// `?1`, so callers push it into `args` first). `skip` omits one column's
+/// own filter for facet counts.
+fn build_where(
+    q: &SearchQuery,
+    title: Option<&str>,
+    use_fts: bool,
+    skip: Option<FacetColumn>,
+    args: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+) -> String {
+    let mut where_sql = String::new();
+    if let Some(t) = title {
+        if !use_fts {
+            add_param(&mut where_sql, args, " AND nazva LIKE ", format!("%{t}%"));
+        }
+    }
+    if let Some(org) = q.org_id {
+        if skip != Some(FacetColumn::Org) {
+            add_param(&mut where_sql, args, " AND org_id = ", org);
+        }
+    }
+    if let Some(typ) = q.typ {
+        if skip != Some(FacetColumn::Typ) {
+            // `types` is stored as "2|168|11"; pad with '|' on both sides for
+            // an exact member match.
+            add_param(
+                &mut where_sql,
+                args,
+                " AND ('||' || types || '|') LIKE ",
+                format!("%|{typ}|%"),
+            );
+        }
+    }
+    if let Some(st) = q.status {
+        if skip != Some(FacetColumn::Status) {
+            add_param(&mut where_sql, args, " AND status = ", st);
+        }
+    }
+    if let Some(d) = &q.date_from {
+        add_param(&mut where_sql, args, " AND org_date >= ", d.clone());
+    }
+    if let Some(d) = &q.date_to {
+        add_param(&mut where_sql, args, " AND org_date <= ", d.clone());
+    }
+    if let Some(n) = &q.doc_number {
+        add_param(
+            &mut where_sql,
+            args,
+            " AND org_num LIKE ",
+            format!("%{n}%"),
+        );
+    }
+    where_sql
+}
+
 /// Execute a search; returns `(hits, total)`.
 ///
 /// Multi-word titles take the FTS5 path: first the strict AND expression
@@ -241,48 +319,13 @@ fn search_with(
     let use_fts = fts.is_some();
 
     let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
-    let mut where_sql = String::new();
 
     // In the FTS path, ?1 is the MATCH expression.
     if let Some(expr) = fts {
         args.push(Box::new(expr));
     }
 
-    if let Some(t) = &title {
-        if !use_fts {
-            add_param(&mut where_sql, &mut args, " AND nazva LIKE ", format!("%{t}%"));
-        }
-    }
-    if let Some(org) = q.org_id {
-        add_param(&mut where_sql, &mut args, " AND org_id = ", org);
-    }
-    if let Some(typ) = q.typ {
-        // `types` is stored as "2|168|11"; pad with '|' on both sides for an
-        // exact member match.
-        add_param(
-            &mut where_sql,
-            &mut args,
-            " AND ('||' || types || '|') LIKE ",
-            format!("%|{typ}|%"),
-        );
-    }
-    if let Some(st) = q.status {
-        add_param(&mut where_sql, &mut args, " AND status = ", st);
-    }
-    if let Some(d) = &q.date_from {
-        add_param(&mut where_sql, &mut args, " AND org_date >= ", d.clone());
-    }
-    if let Some(d) = &q.date_to {
-        add_param(&mut where_sql, &mut args, " AND org_date <= ", d.clone());
-    }
-    if let Some(n) = &q.doc_number {
-        add_param(
-            &mut where_sql,
-            &mut args,
-            " AND org_num LIKE ",
-            format!("%{n}%"),
-        );
-    }
+    let where_sql = build_where(q, title, use_fts, None, &mut args);
 
     let (base, order) = if use_fts {
         (
@@ -347,6 +390,136 @@ fn search_with(
         hits.push(row.context("next search row")?);
     }
     Ok((hits, total))
+}
+
+/// Per-option counts for the current search (dictionary dropdown facets).
+/// Standard facet semantics: the counts of one column respect every filter
+/// **except that column's own** (the status facet ignores `q.status`, the
+/// typ facet ignores `q.typ`, the org facet ignores `q.org_id`), so the UI
+/// can show what each *other* option would yield. The title term goes
+/// through the same FTS5/LIKE dual path as [`search`] (AND expression, OR
+/// fallback when it matches nothing).
+pub fn facets(conn: &Connection, q: &SearchQuery) -> Result<FacetCounts> {
+    let title = q
+        .nazva
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+
+    // Same effective expression choice as `search()`: strict AND when it
+    // finds anything, the OR fallback otherwise; `None` = LIKE path.
+    let fts: Option<String> = if title.as_deref().map(is_multi_word).unwrap_or(false) {
+        let t = title.as_deref().unwrap_or("");
+        let and_expr = fts_expr_and(t);
+        if count_fts(conn, q, title.as_deref(), &and_expr)? == 0 {
+            Some(fts_expr_or(t))
+        } else {
+            Some(and_expr)
+        }
+    } else {
+        None
+    };
+
+    Ok(FacetCounts {
+        status: group_facet(conn, q, title.as_deref(), fts.as_deref(), "status", FacetColumn::Status)?,
+        typ: typ_facet(conn, q, title.as_deref(), fts.as_deref())?,
+        org: group_facet(conn, q, title.as_deref(), fts.as_deref(), "org_id", FacetColumn::Org)?,
+    })
+}
+
+/// Row count on the FTS5 path with the full filter set (drives the AND→OR
+/// fallback decision shared with [`search`]).
+fn count_fts(conn: &Connection, q: &SearchQuery, title: Option<&str>, expr: &str) -> Result<i64> {
+    let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = vec![Box::new(expr.to_string())];
+    let where_sql = build_where(q, title, true, None, &mut args);
+    let sql = format!(
+        "SELECT COUNT(*) FROM docs_fts f JOIN docs d ON d.rowid = f.rowid
+         WHERE docs_fts MATCH ?1{where_sql}"
+    );
+    let refs: Vec<&dyn rusqlite::types::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+    conn.query_row(&sql, refs.as_slice(), |r| r.get(0))
+        .context("facet count")
+}
+
+/// `GROUP BY` facet over a single-valued column (`status` / `org_id`).
+/// NULL/0 buckets are kept (id 0 = unknown value).
+fn group_facet(
+    conn: &Connection,
+    q: &SearchQuery,
+    title: Option<&str>,
+    fts: Option<&str>,
+    col: &str,
+    skip: FacetColumn,
+) -> Result<Vec<(i64, usize)>> {
+    let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    if let Some(e) = fts {
+        args.push(Box::new(e.to_string()));
+    }
+    let where_sql = build_where(q, title, fts.is_some(), Some(skip), &mut args);
+    let sql = if fts.is_some() {
+        format!(
+            "SELECT d.{col}, COUNT(*) FROM docs_fts f JOIN docs d ON d.rowid = f.rowid
+             WHERE docs_fts MATCH ?1{where_sql}
+             GROUP BY d.{col} ORDER BY COUNT(*) DESC, d.{col}"
+        )
+    } else {
+        format!(
+            "SELECT {col}, COUNT(*) FROM docs WHERE 1=1{where_sql}
+             GROUP BY {col} ORDER BY COUNT(*) DESC, {col}"
+        )
+    };
+    let refs: Vec<&dyn rusqlite::types::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql).context("prepare facet")?;
+    let mut rows = stmt
+        .query_map(refs.as_slice(), |r| Ok((r.get(0)?, r.get(1)?)))
+        .context("run facet")?;
+    let mut out = Vec::new();
+    while let Some(row) = rows.next() {
+        out.push(row.context("next facet row")?);
+    }
+    Ok(out)
+}
+
+/// Facet over the multi-valued `types` column ("2|168|11"): rows are read
+/// raw and each document counts once per member id — exactly the membership
+/// the typ filter matches (`'|' || types || '|' LIKE '%|<id>|%'`), since a
+/// token counts iff it parses as the same i64 the padded LIKE would hit.
+fn typ_facet(
+    conn: &Connection,
+    q: &SearchQuery,
+    title: Option<&str>,
+    fts: Option<&str>,
+) -> Result<Vec<(i64, usize)>> {
+    let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+    if let Some(e) = fts {
+        args.push(Box::new(e.to_string()));
+    }
+    let where_sql = build_where(q, title, fts.is_some(), Some(FacetColumn::Typ), &mut args);
+    let sql = if fts.is_some() {
+        format!(
+            "SELECT d.types FROM docs_fts f JOIN docs d ON d.rowid = f.rowid
+             WHERE docs_fts MATCH ?1{where_sql}"
+        )
+    } else {
+        format!("SELECT types FROM docs WHERE 1=1{where_sql}")
+    };
+    let refs: Vec<&dyn rusqlite::types::ToSql> = args.iter().map(|b| b.as_ref()).collect();
+    let mut stmt = conn.prepare(&sql).context("prepare typ facet")?;
+    let mut rows = stmt
+        .query_map(refs.as_slice(), |r| r.get::<_, String>(0))
+        .context("run typ facet")?;
+    let mut counts: std::collections::HashMap<i64, usize> = std::collections::HashMap::new();
+    while let Some(row) = rows.next() {
+        for tok in row.context("next typ facet row")?.split('|') {
+            if let Ok(id) = tok.parse::<i64>() {
+                *counts.entry(id).or_insert(0) += 1;
+            }
+        }
+    }
+    let mut out: Vec<(i64, usize)> = counts.into_iter().collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    Ok(out)
 }
 
 /// Heuristic: could this token be an nreg (system number) rather than a
@@ -711,5 +884,116 @@ mod tests {
         assert_eq!(fts_expr_or("  a  b  "), "\"a\" OR \"b\"*");
         assert_eq!(fts_expr_or("a\"b"), "\"a\"\"b\"*");
         assert_eq!(fts_expr_or(""), "");
+    }
+
+    // ---- facets («Пошук» dictionary dropdown counts) -----------------------
+
+    /// Three docs sharing the word «документ», each pair differing in
+    /// status / types / org: (5, "2|168", 10), (1, "2", 10), (5, "168", 20).
+    fn facet_seeded() -> Connection {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let uk = [
+            "1\t1000-01\tПро перший документ\t5\t2|168\t10:20040923:1000-IV\t\t0\t20041203",
+            "2\t2000-02\tПро другий документ\t1\t2\t10:20120810:2000-II\t\t0\t20120810",
+            "3\t3000-03\tПро третій документ\t5\t168\t20:20150303:3000-III\t\t0\t20150303",
+        ]
+        .join("\n");
+        let rows = parse_dump(&uk).unwrap();
+        upsert_docs(&mut conn, &rows).unwrap();
+        conn
+    }
+
+    #[test]
+    fn facets_count_per_column_with_title_term() {
+        let conn = facet_seeded();
+        let f = facets(
+            &conn,
+            &SearchQuery {
+                nazva: Some("документ".into()), // single word → LIKE path
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // Count desc, then id; the multi-valued "2|168" counts in both buckets.
+        assert_eq!(f.status, vec![(5, 2), (1, 1)]);
+        assert_eq!(f.typ, vec![(2, 2), (168, 2)]);
+        assert_eq!(f.org, vec![(10, 2), (20, 1)]);
+    }
+
+    #[test]
+    fn facets_ignore_their_own_column_filter() {
+        let conn = facet_seeded();
+        let f = facets(
+            &conn,
+            &SearchQuery {
+                status: Some(5),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // status facet ignores the status filter: the unselected option (1)
+        // is still counted so the user can flip the choice.
+        assert_eq!(f.status, vec![(5, 2), (1, 1)]);
+        // …while the other facets honor it (only the two status-5 docs).
+        assert_eq!(f.typ, vec![(168, 2), (2, 1)]);
+        assert_eq!(f.org, vec![(10, 1), (20, 1)]);
+    }
+
+    #[test]
+    fn facets_empty_table_returns_empty_vecs() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        migrate(&conn).unwrap();
+        let f = facets(&conn, &SearchQuery::default()).unwrap();
+        assert!(f.status.is_empty());
+        assert!(f.typ.is_empty());
+        assert!(f.org.is_empty());
+    }
+
+    #[test]
+    fn facets_honor_date_and_number_filters() {
+        let conn = facet_seeded();
+        // Only the two docs adopted ≥ 2010 (status 1 + 5, types 2 + 168, org 10 + 20).
+        let f = facets(
+            &conn,
+            &SearchQuery {
+                date_from: Some("20100101".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(f.status, vec![(1, 1), (5, 1)]);
+        assert_eq!(f.typ, vec![(2, 1), (168, 1)]);
+        assert_eq!(f.org, vec![(10, 1), (20, 1)]);
+        // org_num "2000-II" → a single doc.
+        let f = facets(
+            &conn,
+            &SearchQuery {
+                doc_number: Some("2000".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(f.status, vec![(1, 1)]);
+        assert_eq!(f.typ, vec![(2, 1)]);
+        assert_eq!(f.org, vec![(10, 1)]);
+    }
+
+    #[test]
+    fn facets_follow_the_or_fallback_of_multi_word_search() {
+        let conn = seeded_extra();
+        // AND matches nothing → `search()` answers with the OR result set;
+        // the facets must count that same set (both «кодекс» docs).
+        assert_eq!(fts_count(&conn, &fts_expr_and("кримінальний податковий")), 0);
+        let f = facets(
+            &conn,
+            &SearchQuery {
+                nazva: Some("кримінальний податковий".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(f.status, vec![(1, 1), (2, 1)]); // 2341-14 + 5555-20
+        assert_eq!(f.org, vec![(1, 1), (2, 1)]);
     }
 }

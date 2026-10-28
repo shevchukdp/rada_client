@@ -59,10 +59,16 @@ official open-data API:
   - **Query history** — «недавні запити» chips under the search filters repeat
     a past search with one click (persisted, clearable); «копіювати текст» in
     the reader copies the whole act to the clipboard.
+  - **New-arrival badges** — the arrivals feed is diffed against what you have
+    seen: fresh docs are gold, with a «нових» counter and a «лише нові» filter
+    (the seen list persists across sessions).
   - **Cache full-text search («Знайти в кеші»)** — offline scan of every cached
     document body (Unicode case-insensitive, ranked, context snippets); rows
     open in the reader. Also `--cache-search TERM` on launch, CLI
     `cache --search TERM`, and web «Пошук у тексті».
+  - **Reader outline («Зміст»)** — a collapsible panel listing every
+    «Розділ/Глава/Стаття» heading; one click scrolls straight to it (shown for
+    acts with at least two headings, e.g. 604 entries in the Criminal Code).
   - **Plain-text mode** — «Форматований/Простий» toggle (GUI) and «Простий»
     (web) switch off structural styling of titles/sections/articles.
   - **Printing** — «Друк» in the reader (and «🖨 Друк» in the web UI) opens a
@@ -130,6 +136,8 @@ official open-data API:
   **offline full-text search over cached bodies** («Пошук у тексті»,
   `GET /api/cache/search?q=`), **date-range filters** (`date_from`/`date_to`,
   validated 8-digit YYYYMMDD, never blocking),
+  **dict facets** (the status/type/publisher dropdowns show per-option result
+  counts after each search),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.

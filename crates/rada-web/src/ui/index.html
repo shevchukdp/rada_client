@@ -707,7 +707,7 @@ async function refreshFoot() {
 
 async function init() {
   await refreshFoot();
-  fillDict("f-status", "status");
+  fillDict("f-status", "stan");
   fillDict("f-typ", "typs");
   fillDict("f-org", "organs");
   renderRecent();
@@ -717,19 +717,54 @@ async function init() {
   if (jobsAnyRunning) pollJobs();
 }
 
+// Original option labels per select + option value, captured once when the
+// dictionary options are first populated. Facet counts are appended to the
+// labels on every search and stripped from this cache before the next one.
+const optionLabels = {};
+
 async function fillDict(selectId, kind) {
   const sel = $(selectId);
+  optionLabels[selectId] = optionLabels[selectId] || {};
   try {
     const d = await api("/api/dict/" + kind);
     for (const it of d.items) {
       const o = document.createElement("option");
       o.value = String(it.id);
       o.textContent = it.id + " — " + it.label;
+      optionLabels[selectId][o.value] = o.textContent;
       sel.appendChild(o);
-      if (kind === "status") state.statusLabels.set(String(it.id), it.label);
+      if (kind === "stan") state.statusLabels.set(String(it.id), it.label);
       if (kind === "organs") state.orgLabels.set(String(it.id), it.label);
     }
   } catch (_) {}
+}
+
+// ---- facet counts on the dictionary filters («Пошук») -----------------------
+// After every search the «Статус» / «Тип» / «Видавник» options carry the
+// number of hits each would yield in the current result set, e.g.
+// «5 — Чинний (1204)». Options without a match keep the plain label.
+function applyFacets(selectId, counts) {
+  const cache = optionLabels[selectId] || {};
+  const byId = {};
+  for (const pair of counts || []) byId[String(pair[0])] = pair[1];
+  for (const o of $(selectId).options) {
+    const label = cache[o.value];
+    if (label === undefined) continue; // «усі» and non-dict options stay as-is
+    const n = byId[o.value];
+    o.textContent = n === undefined ? label : label + " (" + n + ")";
+  }
+}
+
+// Strip stale counts from every dictionary option (called at the start of
+// each search, so counts never outlive the result set they describe).
+function resetFacetLabels() {
+  for (const selectId of ["f-status", "f-typ", "f-org"]) {
+    const cache = optionLabels[selectId] || {};
+    for (const o of $(selectId).options) {
+      const label = cache[o.value];
+      if (label !== undefined) o.textContent = label;
+    }
+  }
 }
 
 function statusLabel(id) {
@@ -764,6 +799,7 @@ async function doSearch(offset) {
   meta.textContent = "Завантаження…";
   $("results").innerHTML = "";
   $("sort-bar").hidden = true;
+  resetFacetLabels(); // never show counts from the previous result set
   try {
     const d = await api("/api/search?" + p.toString());
     // Offline number search: exact nreg hit opens the document directly.
@@ -772,6 +808,11 @@ async function doSearch(offset) {
       openDoc(d.hits[0].nreg);
       return;
     }
+    // Per-option hit counts on the dictionary filters (null when the server
+    // could not compute them; missing on the nreg-exact path).
+    applyFacets("f-status", d.facets && d.facets.status);
+    applyFacets("f-typ", d.facets && d.facets.typ);
+    applyFacets("f-org", d.facets && d.facets.org);
     state.nregs = d.hits.map(h => h.nreg);
     meta.textContent = "Знайдено: " + d.total + " (показано " + d.hits.length + ")";
     renderSortBar(q, d.hits.length > 0);

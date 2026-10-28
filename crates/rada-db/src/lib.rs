@@ -30,7 +30,7 @@ use std::path::Path;
 
 pub use annotations::Annotation;
 pub use schema::migrate;
-pub use search::{by_nreg, looks_like_nreg, SearchHit, SearchQuery};
+pub use search::{by_nreg, facets, looks_like_nreg, FacetCounts, SearchHit, SearchQuery};
 
 /// Open (or create) the index at `path` and ensure the schema is current.
 pub fn open(path: impl AsRef<Path>) -> Result<Connection> {

@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.7: зміст читалки, «нові» оновлення та фільтри-фасети / reader outline, new-arrival badges & dict facets
+
+- **UKR:** 1) **«Зміст» у читалці**: розкривна панель зі всіма «Розділ/Глава/Стаття» акту (у Кримінальному кодексі — 604); один клік — перехід до заголовка. 2) **«Нові» в Оновленнях**: фід порівнюється з раніше переглянутим — свіжі документи підсвічуються золотим, лічильник «нових» і фільтр «лише нові» (перелік переглянутого зберігається). 3) **Фасети у веб-пошуку**: після пошуку випадаючі списки «Статус/Тип/Видавник» показують кількість результатів для кожного варіанта («Чинний (1204)»); підсумки рахуються SQL-групуванням з тією ж логікою фільтрів. 4) **Виправлено**: список «Статус» у веб не заповнювався (ендпоінт словника 404). 5) Тести: 134/134.
+- **ENG:** 1) **Reader outline («Зміст»)**: a collapsible panel listing every «Розділ/Глава/Стаття» heading of the act (604 in the Criminal Code); one click jumps to it. 2) **«New» in the arrivals feed**: the feed is diffed against what you saw before — fresh docs are gold, with a «нових» counter and a «лише нові» filter (the seen list is persisted). 3) **Dict facets in the web search**: after a search the «Статус/Тип/Видавник» dropdowns show per-option result counts («Чинний (1204)»), computed by SQL GROUP BY with the same filter logic. 4) **Fixed**: the web «Статус» dropdown was never populated (dictionary endpoint 404). 5) Tests: 134/134.
+
+---
+
+## 2026-10-28
+
 ### 0.10.6: пошук у кеші в GUI / cache full-text search in the GUI
 
 - **UKR:** 1) **«Знайти в кеші» на сторінці пошуку**: кнопка запускає офлайн повнотекстовий пошук у кешованих тілах документів (тільки що прочитані акти); результати з'являються нижче списку — назва з індексу, номер, кількість збігів і курсивний фрагмент контексту; клік відкриває акт у читалці. 2) **CLI читалки**: прапець `--cache-search TERM` відкриває сторінку пошуку з одразу виконаним пошуком у кеші. 3) Тести: 122/122.

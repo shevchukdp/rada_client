@@ -1576,6 +1576,18 @@ impl App {
                     self.arrivals.loading = false;
                     match res {
                         Ok((docs, from_cache)) => {
+                            // Diff against the persisted seen-set: docs that
+                            // were not in it get the «НОВЕ» badge, then the
+                            // whole feed becomes seen (persisted).
+                            let seen = self.settings.arr_seen.clone();
+                            self.arrivals.new_nregs =
+                                views::arrivals::unseen_docs(&docs, &seen);
+                            if !from_cache {
+                                let nregs: Vec<String> =
+                                    docs.iter().map(|d| d.nreg.clone()).collect();
+                                crate::settings::mark_arrivals_seen(&mut self.settings, nregs);
+                                crate::settings::save(&self.settings);
+                            }
                             self.arrivals.docs = docs;
                             self.arrivals.from_cache = from_cache;
                             self.arrivals.saved_at = if from_cache {
