@@ -258,6 +258,16 @@
   .hit a { color: var(--link); text-decoration: none; font-weight: 500; }
   .hit .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
   .pager { display: flex; gap: 10px; align-items: center; margin: 12px 0; }
+  /* Sortable column headers above the results list: same chip language as
+     the «Обране» filters, the active column takes the accent. */
+  #sort-bar .chip {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #sort-bar .chip:hover { color: var(--text); border-color: var(--accent); }
+  #sort-bar .chip.active {
+    background: var(--accent); color: var(--accent-text); border-color: var(--accent);
+  }
   #rada-recent .chip {
     background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
     border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
@@ -454,6 +464,12 @@
       <button id="recent-clear" class="clear" type="button" title="Очистити історію">✕</button>
     </div>
     <div id="results-meta"></div>
+    <div class="row" id="sort-bar" hidden>
+      <button class="chip" type="button" id="sort-nazva" data-col="nazva" title="Сортувати за назвою">Назва</button>
+      <button class="chip" type="button" id="sort-date" data-col="date" title="Сортувати за датою ухвалення">Дата</button>
+      <button class="chip" type="button" id="sort-podd" data-col="podd" title="Сортувати за датою редакції">Редакція</button>
+      <button class="chip" type="button" id="sort-relevance" data-col="relevance" title="Сортувати за релевантністю" hidden>Релевантність</button>
+    </div>
     <div id="results"></div>
     <div class="pager">
       <button id="prev" type="button">← Раніше</button>
@@ -574,6 +590,7 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   limit: 50, offset: 0,
+  sort: "date_desc",  // current result ordering (see SORT_CHIPS below)
   nregs: [],          // nregs of the current results page (bulk export)
   curNreg: null,
   curCard: null,
@@ -684,10 +701,14 @@ function statusLabel(id) {
 async function doSearch(offset) {
   state.offset = offset;
   $("form-error").hidden = true;
+  const q = $("q").value.trim();
+  // Relevance (FTS rank) is only meaningful for a text query.
+  if (!q && state.sort === "relevance") state.sort = "date_desc";
   const p = new URLSearchParams();
   p.set("limit", String(state.limit));
   p.set("offset", String(offset));
-  if ($("q").value.trim()) p.set("q", $("q").value.trim());
+  p.set("sort", state.sort);
+  if (q) p.set("q", q);
   if ($("f-status").value) p.set("status", $("f-status").value);
   if ($("f-typ").value) p.set("typ", $("f-typ").value);
   if ($("f-org").value) p.set("org", $("f-org").value);
@@ -697,10 +718,12 @@ async function doSearch(offset) {
   const meta = $("results-meta");
   meta.textContent = "Завантаження…";
   $("results").innerHTML = "";
+  $("sort-bar").hidden = true;
   try {
     const d = await api("/api/search?" + p.toString());
     state.nregs = d.hits.map(h => h.nreg);
     meta.textContent = "Знайдено: " + d.total + " (показано " + d.hits.length + ")";
+    renderSortBar(q, d.hits.length > 0);
     const list = $("results");
     for (const h of d.hits) {
       const div = document.createElement("div");
@@ -728,6 +751,47 @@ async function doSearch(offset) {
   } catch (e) {
     meta.textContent = "Помилка: " + e.message;
   }
+}
+
+// ---- sort by column («Пошук» header row above the results list) -------------
+// One chip per sortable column: the first id applies on click, the second
+// is the toggle-back on the next click (so «Редакція» / «Релевантність»
+// fall back to the default newest-first ordering).
+const SORT_CHIPS = {
+  nazva: ["nazva_asc", "nazva_desc"],
+  date: ["date_desc", "date_asc"],
+  podd: ["podd_desc", "date_desc"],
+  relevance: ["relevance", "date_desc"],
+};
+// For every sort id: the chip it highlights and its ▲/▼ direction marker.
+const SORT_ACTIVE = {
+  nazva_asc: ["nazva", "▲"], nazva_desc: ["nazva", "▼"],
+  date_desc: ["date", "▼"], date_asc: ["date", "▲"],
+  podd_desc: ["podd", "▼"], relevance: ["relevance", "≡"],
+};
+const SORT_LABELS = {
+  nazva: "Назва", date: "Дата", podd: "Редакція", relevance: "Релевантність",
+};
+
+/// Highlight the chip owning `state.sort` (with its direction marker). The
+/// row is visible only with results; «Релевантність» only with a text query.
+function renderSortBar(query, visible) {
+  $("sort-bar").hidden = !visible;
+  $("sort-relevance").hidden = !query;
+  const act = SORT_ACTIVE[state.sort];
+  for (const b of document.querySelectorAll("#sort-bar .chip")) {
+    const on = !!act && act[0] === b.dataset.col;
+    b.classList.toggle("active", on);
+    b.textContent = SORT_LABELS[b.dataset.col] + (on ? " " + act[1] : "");
+  }
+}
+
+/// Click a column header: apply its primary sort, toggle direction on the
+/// next click, and re-run the search from the first page.
+function clickSort(col) {
+  const ids = SORT_CHIPS[col];
+  state.sort = state.sort === ids[0] ? ids[1] : ids[0];
+  doSearch(0);
 }
 
 /// Optional «Від»/«До» dates must be exactly 8 ASCII digits (YYYYMMDD);
@@ -1495,6 +1559,8 @@ $("search-form").addEventListener("submit", (ev) => {
 });
 $("prev").onclick = () => doSearch(Math.max(0, state.offset - state.limit));
 $("next").onclick = () => doSearch(state.offset + state.limit);
+document.querySelectorAll("#sort-bar .chip").forEach(b =>
+  b.addEventListener("click", () => clickSort(b.dataset.col)));
 
 // ---- live nreg resolver (search tab) ---------------------------------------
 $("btn-resolve").onclick = async () => {

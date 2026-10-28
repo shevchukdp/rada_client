@@ -75,6 +75,9 @@ enum Cmd {
         /// Offset.
         #[arg(long, default_value_t = 0)]
         offset: usize,
+        /// Sort: date_desc (default) | date_asc | nazva_asc | nazva_desc | podd_desc | relevance.
+        #[arg(long, default_value = "date_desc")]
+        sort: String,
         /// Emit JSON (default: table).
         #[arg(long)]
         json: bool,
@@ -198,8 +201,9 @@ fn run() -> Result<()> {
             number,
             limit,
             offset,
+            sort,
             json,
-        } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, json),
+        } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, sort, json),
         Cmd::Card { nreg } => cmd_card(&nreg, cli.pace),
         Cmd::Text { nreg, edition } => cmd_text(&nreg, edition.as_deref(), cli.pace),
         Cmd::Dict { kind } => cmd_dict(&cli.db, cli.pace, kind.as_deref()),
@@ -316,6 +320,7 @@ fn cmd_search(
     number: Option<String>,
     limit: usize,
     offset: usize,
+    sort: String,
     json: bool,
 ) -> Result<()> {
     let conn = rada_db::open(db)?;
@@ -331,6 +336,7 @@ fn cmd_search(
         date_from,
         date_to,
         doc_number: number,
+        sort: rada_db::search::Sort::parse(&sort),
         limit,
         offset,
     };

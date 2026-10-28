@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.9.4: сортування результатів — клікабельні стовпці / 0.9.4: sortable result columns
+
+- **UKR:** 1) **Сортування у пошуку**: рядок «Сортування» над результатами — «Назва ▲/▼», «Дата ▼/▲» (типово найновіші першими), «Редакція ▼» (дата поточної редакції), «Релевантність» (ранг FTS для запитів із 2+ слів). 2) **Веб**: клікабельні заголовки стовпців над результатами + параметр `?sort=` у `GET /api/search` (date_desc|date_asc|nazva_asc|nazva_desc|podd_desc|relevance). 3) **CLI**: `search --sort <вид>` з тими самими ідентифікаторами. 4) Сортування назв — без урахування регістру (NOCASE), стабільна прив'язка за nreg. 5) Тести: 68/68 (+5 у ядрі — усі напрямки, fallback, парсер; +4 у веб — параметр sort і заголовок сторінки).
+- **ENG:** 1) **Search sorting**: a «Сортування» row above results — «Назва ▲/▼», «Дата ▼/▲» (newest-first by default), «Редакція ▼» (current-edition date), «Релевантність» (FTS rank for 2+ word queries). 2) **Web**: clickable column headers over the results plus a `?sort=` parameter on `GET /api/search` (date_desc|date_asc|nazva_asc|nazva_desc|podd_desc|relevance). 3) **CLI**: `search --sort <kind>` with the same identifiers. 4) Title sorting is case-insensitive (NOCASE) with a stable nreg tie-break. 5) Tests: 68/68 (+5 core — every direction, fallback, parser; +4 web — sort param and page header).
+
+---
+
+## 2026-10-28
+
 ### 0.9.3: зручність читання й дати — масштаб шрифту, календар, надійний синк, «Обране» у веб / 0.9.3: reading & dates — font zoom, calendar picker, robust sync, web Favorites
 
 - **UKR:** 1) **Масштаб тексту читалки**: кнопки «A−»/«A+» і «100%» (клік — скидання); заголовок і всі абзаци масштабуються 60–250% і зберігаються в settings.ini. 2) **Календар дат** у пошуку («…» біля полів «Дата з/по»): назви місяців українською, тижні з понеділка; недоступні дати пізніше **найновіших успішно отриманих з ради даних** (макс. `org_date` в індексі, з фолбеком на останній імпорт); переставлені «з/по» авто-виправляються. 3) **Надійний синк**: оновлення картки більше не обнулює `dokid`/`org_num`/`organs` наявного документа (беруться лише ненульові значення; картка тепер несе `orgnum`) — номерний пошук більше не ламається після sync. 4) **Веб**: вкладка «Обране» — усі анотації з фільтрами, «→ текст», видаленням, редагуванням, JSON експорт/імпорт (`GET /api/annotations/all|export`, `POST …/import`). 5) Тести: 59/59 (+календар, парсер дат, збереження при sync, форми веб-ендпоінтів).

@@ -20,7 +20,7 @@ use anyhow::{anyhow, Context, Result};
 use rada_core::models::{LawCardJson, StatusId};
 use rada_core::RadaClient;
 use rada_db::dict::all_labels;
-use rada_db::search::{search, SearchQuery};
+use rada_db::search::{search, SearchQuery, Sort};
 use rada_db::{doc_count, last_import, open as db_open};
 use rusqlite::Connection;
 use serde_json::{json, Value};
@@ -259,6 +259,7 @@ fn search_handler(st: &State, q: &[(String, String)]) -> Resp {
         date_from: qget(q, "date_from").filter(|s| !s.is_empty()).map(str::to_string),
         date_to: qget(q, "date_to").filter(|s| !s.is_empty()).map(str::to_string),
         doc_number: qget(q, "number").filter(|s| !s.is_empty()).map(str::to_string),
+        sort: qget(q, "sort").map(Sort::parse).unwrap_or_default(),
         limit: qget(q, "limit")
             .and_then(|s| s.parse().ok())
             .unwrap_or(50)
@@ -1518,5 +1519,115 @@ mod tests {
     fn fmt_yyyymmdd_passthrough() {
         assert_eq!(fmt_yyyymmdd(20261015), "15.10.2026");
         assert_eq!(fmt_yyyymmdd(42), "42");
+    }
+
+    // ---- result sorting (`sort=` parameter, «Пошук» column headers) --------
+
+    /// Fresh indexed db with three documents at distinct adoption / edition
+    /// dates and A→Я Cyrillic titles, for the sort tests. Unique dir per tag
+    /// keeps parallel tests from colliding.
+    fn sorted_state(tag: &str) -> Arc<State> {
+        let dir = std::env::temp_dir().join(format!("rada-web-sort-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        let st = Arc::new(State {
+            db_path: dir.join("test.sqlite"),
+            client: RadaClient::with_pacing(Duration::from_secs(3600)),
+            pace_secs: 3600,
+            jobs: Mutex::new(HashMap::new()),
+            job_seq: AtomicU64::new(0),
+        });
+        let conn = db_open(&st.db_path).expect("open test index");
+        conn.execute_batch(
+            "INSERT INTO docs(nreg, nazva, status, org_date, org_num, poddat) VALUES
+             ('1000-01', 'Абетка',  5, '20010101', '1000', '20030101'),
+             ('2000-02', 'Кодекс',  1, '20020202', '2000', '20010202'),
+             ('3000-03', 'Ятринка', 5, '20030303', '3000', '20020303');",
+        )
+        .expect("seed docs");
+        drop(conn);
+        st
+    }
+
+    /// `GET /api/search?{query}` through `route` (query parsed exactly as
+    /// `handle_request` does), returning the JSON body.
+    fn search_get(st: &Arc<State>, query: &str) -> Value {
+        let mut req: Request = TestRequest::new()
+            .with_method(Method::Get)
+            .with_path("/api/search")
+            .into();
+        let resp = route(&Method::Get, "/api/search", &parse_query(query), &mut req, st)
+            .expect("route");
+        assert_eq!(resp.status_code().0, 200);
+        serde_json::from_slice(&resp.into_reader().into_inner()).unwrap()
+    }
+
+    /// The hit nregs, in the order the API returned them.
+    fn hit_nregs(v: &Value) -> Vec<String> {
+        v["hits"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| h["nreg"].as_str().unwrap().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn search_sort_date_asc() {
+        let st = sorted_state("date");
+        // Oldest adoption date first.
+        assert_eq!(
+            hit_nregs(&search_get(&st, "sort=date_asc")),
+            ["1000-01", "2000-02", "3000-03"],
+        );
+        // Without `sort` the default stays newest-first.
+        assert_eq!(
+            hit_nregs(&search_get(&st, "")),
+            ["3000-03", "2000-02", "1000-01"],
+        );
+    }
+
+    #[test]
+    fn search_sort_nazva() {
+        let st = sorted_state("nazva");
+        // Cyrillic NOCASE order: Абетка < Кодекс < Ятринка.
+        assert_eq!(
+            hit_nregs(&search_get(&st, "sort=nazva_asc")),
+            ["1000-01", "2000-02", "3000-03"],
+        );
+        assert_eq!(
+            hit_nregs(&search_get(&st, "sort=nazva_desc")),
+            ["3000-03", "2000-02", "1000-01"],
+        );
+    }
+
+    #[test]
+    fn search_sort_garbage_defaults() {
+        let st = sorted_state("garbage");
+        // An unknown id must behave exactly like the (DateDesc) default.
+        let junk = hit_nregs(&search_get(&st, "sort=zzz"));
+        assert_eq!(junk, hit_nregs(&search_get(&st, "")));
+        assert_eq!(junk, ["3000-03", "2000-02", "1000-01"]);
+    }
+
+    #[test]
+    fn ui_page_has_sort_headers() {
+        // Column-header sort row above the results: the bar, one chip per
+        // column, and the sort parameter threaded into the search request.
+        assert!(ui::INDEX_HTML.contains("id=\"sort-bar\""));
+        assert!(ui::INDEX_HTML.contains("id=\"sort-nazva\""));
+        assert!(ui::INDEX_HTML.contains("id=\"sort-date\""));
+        assert!(ui::INDEX_HTML.contains("id=\"sort-podd\""));
+        assert!(ui::INDEX_HTML.contains("id=\"sort-relevance\""));
+        assert!(ui::INDEX_HTML.contains("data-col=\"nazva\""));
+        assert!(ui::INDEX_HTML.contains("data-col=\"date\""));
+        assert!(ui::INDEX_HTML.contains("data-col=\"podd\""));
+        assert!(ui::INDEX_HTML.contains("data-col=\"relevance\""));
+        assert!(ui::INDEX_HTML.contains(">Назва<"));
+        assert!(ui::INDEX_HTML.contains(">Дата<"));
+        assert!(ui::INDEX_HTML.contains(">Редакція<"));
+        assert!(ui::INDEX_HTML.contains(">Релевантність<"));
+        assert!(ui::INDEX_HTML.contains("p.set(\"sort\", state.sort)"));
+        assert!(ui::INDEX_HTML.contains("renderSortBar"));
+        assert!(ui::INDEX_HTML.contains("clickSort"));
     }
 }

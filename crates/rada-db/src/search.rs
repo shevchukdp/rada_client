@@ -11,6 +11,70 @@ use anyhow::{Context, Result};
 use rusqlite::Connection;
 use serde::Serialize;
 
+/// Result ordering for [`SearchQuery`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Sort {
+    /// FTS rank when available, otherwise newest-first.
+    Relevance,
+    /// Newest adoption date first — the default.
+    #[default]
+    DateDesc,
+    /// Oldest adoption date first.
+    DateAsc,
+    /// Title A→Я.
+    NazvaAsc,
+    /// Title Я→A.
+    NazvaDesc,
+    /// Newest edition date first.
+    PoddDesc,
+}
+
+impl Sort {
+    /// Case-insensitive parse; unknown values fall back to the default.
+    pub fn parse(s: &str) -> Sort {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "relevance" => Sort::Relevance,
+            "date" | "date_desc" => Sort::DateDesc,
+            "date_asc" => Sort::DateAsc,
+            "nazva" | "nazva_asc" => Sort::NazvaAsc,
+            "nazva_desc" => Sort::NazvaDesc,
+            "podd" | "podd_desc" => Sort::PoddDesc,
+            _ => Sort::default(),
+        }
+    }
+
+    /// Stable identifier for URLs and persisted state.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Sort::Relevance => "relevance",
+            Sort::DateDesc => "date_desc",
+            Sort::DateAsc => "date_asc",
+            Sort::NazvaAsc => "nazva_asc",
+            Sort::NazvaDesc => "nazva_desc",
+            Sort::PoddDesc => "podd_desc",
+        }
+    }
+
+    /// `ORDER BY` body (without the `ORDER BY` keyword). `prefix` qualifies
+    /// columns on the joined FTS query (e.g. `"d."`).
+    fn order_body(self, prefix: &str) -> String {
+        let (col, dir) = match self {
+            Sort::Relevance | Sort::DateDesc => ("org_date", "DESC"),
+            Sort::DateAsc => ("org_date", "ASC"),
+            Sort::NazvaAsc => ("nazva", "ASC"),
+            Sort::NazvaDesc => ("nazva", "DESC"),
+            Sort::PoddDesc => ("poddat", "DESC"),
+        };
+        match self {
+            Sort::Relevance => "f.rank".to_string(),
+            Sort::NazvaAsc | Sort::NazvaDesc => {
+                format!("{prefix}{col} COLLATE NOCASE {dir}, {prefix}nreg")
+            }
+            _ => format!("{prefix}{col} {dir}, {prefix}nreg"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchQuery {
     /// Title term.
@@ -23,6 +87,8 @@ pub struct SearchQuery {
     pub date_to: Option<String>,
     /// Document-number substring (e.g. `2041`).
     pub doc_number: Option<String>,
+    /// Result ordering (default: newest first).
+    pub sort: Sort,
     pub limit: usize,
     pub offset: usize,
 }
@@ -38,6 +104,7 @@ impl Default for SearchQuery {
             date_from: None,
             date_to: None,
             doc_number: None,
+            sort: Sort::default(),
             limit: 50,
             offset: 0,
         }
@@ -138,13 +205,15 @@ pub fn search(conn: &Connection, q: &SearchQuery) -> Result<(Vec<SearchHit>, i64
             "SELECT d.nreg, d.nazva, d.status, d.org_date, d.org_num, d.poddat
              FROM docs_fts f JOIN docs d ON d.rowid = f.rowid
              WHERE docs_fts MATCH ?1",
-            " ORDER BY f.rank",
+            format!(" ORDER BY {}", q.sort.order_body("d.")),
         )
     } else {
+        // No FTS rank available: `Relevance` degrades to newest-first.
+        let sort = if q.sort == Sort::Relevance { Sort::DateDesc } else { q.sort };
         (
             "SELECT nreg, nazva, status, org_date, org_num, poddat FROM docs
              WHERE 1=1",
-            " ORDER BY org_date DESC, nreg",
+            format!(" ORDER BY {}", sort.order_body("")),
         )
     };
 
@@ -314,5 +383,90 @@ mod tests {
         )
         .unwrap();
         assert_eq!(total, 0); // the only кодекс is status 1
+    }
+
+    #[test]
+    fn sort_date_asc_flips_default() {
+        let conn = seeded();
+        let (hits, _) = search(
+            &conn,
+            &SearchQuery {
+                sort: Sort::DateAsc,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // org_dates: 2341-14=19940401, 2041-15=20040923, 4505-12=20120810
+        assert_eq!(hits[0].nreg, "2341-14");
+        assert_eq!(hits[2].nreg, "4505-12");
+    }
+
+    #[test]
+    fn sort_nazva_ignores_case() {
+        let conn = seeded();
+        let (hits, _) = search(
+            &conn,
+            &SearchQuery {
+                sort: Sort::NazvaAsc,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // "Кримінальний…" (К) before "Про…" (П) in Cyrillic order.
+        assert_eq!(hits[0].nreg, "2341-14");
+        let (desc, _) = search(
+            &conn,
+            &SearchQuery {
+                sort: Sort::NazvaDesc,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_ne!(desc[0].nreg, hits[0].nreg);
+    }
+
+    #[test]
+    fn sort_podd_desc() {
+        let conn = seeded();
+        let (hits, _) = search(
+            &conn,
+            &SearchQuery {
+                sort: Sort::PoddDesc,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        // poddat: 4505-12=20120810 newest.
+        assert_eq!(hits[0].nreg, "4505-12");
+    }
+
+    #[test]
+    fn relevance_in_fts_matches_rank() {
+        let conn = seeded();
+        let (hits, _) = search(
+            &conn,
+            &SearchQuery {
+                nazva: Some("кримінальний кодекс".into()),
+                sort: Sort::Relevance,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(hits[0].nreg, "2341-14");
+    }
+
+    #[test]
+    fn sort_parse_round_trip() {
+        for s in [
+            Sort::Relevance,
+            Sort::DateDesc,
+            Sort::DateAsc,
+            Sort::NazvaAsc,
+            Sort::NazvaDesc,
+            Sort::PoddDesc,
+        ] {
+            assert_eq!(Sort::parse(s.as_str()), s);
+        }
+        assert_eq!(Sort::parse("garbage"), Sort::DateDesc);
     }
 }

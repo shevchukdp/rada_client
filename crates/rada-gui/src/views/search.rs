@@ -145,6 +145,79 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         });
         ui.add_space(6.0);
 
+        // ---- column sort --------------------------------------------
+        if app.search.searched {
+            use rada_db::search::Sort;
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("Сортування:").small().weak());
+                let cur = app.search.sort;
+                let words = app.search.query.split_whitespace().count();
+                let mut resort = false;
+                let small_btn = |ui: &mut egui::Ui, lbl: &str, active: bool| {
+                    ui.add(
+                        egui::Button::new(egui::RichText::new(lbl).small()).selected(active),
+                    )
+                };
+                // Назва (A→Я / Я→A)
+                let nazva_active = matches!(cur, Sort::NazvaAsc | Sort::NazvaDesc);
+                let lbl = if cur == Sort::NazvaDesc {
+                    "Назва ▼"
+                } else {
+                    "Назва ▲"
+                };
+                if small_btn(ui, lbl, nazva_active).clicked() {
+                    app.search.sort = if cur == Sort::NazvaAsc {
+                        Sort::NazvaDesc
+                    } else {
+                        Sort::NazvaAsc
+                    };
+                    resort = true;
+                }
+                // Дата (найновіші / найстаріші); Relevance без FTS = найновіші.
+                let date_active = matches!(cur, Sort::DateDesc | Sort::DateAsc)
+                    || (cur == Sort::Relevance && words < 2);
+                let lbl = if cur == Sort::DateAsc {
+                    "Дата ▲"
+                } else {
+                    "Дата ▼"
+                };
+                if small_btn(ui, lbl, date_active).clicked() {
+                    app.search.sort = if cur == Sort::DateAsc {
+                        Sort::DateDesc
+                    } else {
+                        Sort::DateAsc
+                    };
+                    resort = true;
+                }
+                // Редакція (найновіша редакція першою)
+                let podd_active = cur == Sort::PoddDesc;
+                if small_btn(ui, "Редакція ▼", podd_active).clicked() {
+                    app.search.sort = if podd_active {
+                        Sort::DateDesc
+                    } else {
+                        Sort::PoddDesc
+                    };
+                    resort = true;
+                }
+                // Релевантність — має сенс лише для FTS (2+ слова).
+                if words >= 2 {
+                    let rel_active = cur == Sort::Relevance;
+                    if small_btn(ui, "Релевантність", rel_active).clicked() {
+                        app.search.sort = if rel_active {
+                            Sort::DateDesc
+                        } else {
+                            Sort::Relevance
+                        };
+                        resort = true;
+                    }
+                }
+                if resort && !app.search.loading {
+                    app.run_search();
+                }
+            });
+            ui.add_space(4.0);
+        }
+
         // ---- results ------------------------------------------------
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -385,6 +458,7 @@ impl Default for SearchState {
             f_typ: None,
             f_date_from: String::new(),
             f_date_to: String::new(),
+            sort: rada_db::search::Sort::Relevance,
             pick: None,
             pick_year: 0,
             pick_month: 0,
@@ -417,6 +491,9 @@ pub struct SearchState {
     pub f_typ: Option<i64>,
     pub f_date_from: String,
     pub f_date_to: String,
+    /// Column ordering for the results list (Relevance = FTS rank,
+    /// degrading to newest-first outside FTS).
+    pub sort: rada_db::search::Sort,
     /// Open calendar popup (None = closed); month shown while open.
     pub pick: Option<PickKind>,
     pub pick_year: u32,
@@ -520,6 +597,7 @@ impl SearchState {
             status: self.f_status,
             date_from: parse(&self.f_date_from, &mut invalid),
             date_to: parse(&self.f_date_to, &mut invalid),
+            sort: self.sort,
             doc_number: {
                 let t = self.f_number.trim();
                 if t.is_empty() { None } else { Some(t.to_string()) }

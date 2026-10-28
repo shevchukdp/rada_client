@@ -25,7 +25,8 @@ official open-data API:
   catppuccin/github-dark, header picker, persisted), Ukrainian labels:
   - **Пошук** — local FTS5 search with filters (status/type/date/number/publisher),
     a **date-range calendar** (Ukrainian months, dates beyond the freshest data
-    fetched from rada are disabled),
+    fetched from rada are disabled), **clickable column sorting**
+    (Назва ▲▼ / Дата ▲▼ / Редакція ▼ / Релевантність),
     paging, live name resolver; **export of the results list** (.md/.txt);
     one-click **copy nreg** from any result row.
   - **Continue / recents** — the app persists the last opened documents and
@@ -129,9 +130,10 @@ Launch arguments:
 .\rada-client.exe init
 .\rada-client.exe init --dump C:\path\to\doc.txt
 
-# 2) Search the local index (title + any filters).
+# 2) Search the local index (title + any filters + --sort).
 .\rada-client.exe search "податковий кодекс"
 .\rada-client.exe search "" --status 5 --org 1 --date_from 20240101 --limit 20 --json
+.\rada-client.exe search "кодекс" --sort nazva_asc   # date_desc|date_asc|nazva_asc|nazva_desc|podd_desc|relevance
 
 # 3) Live lookups (respect the 5–7 s API pacing).
 .\rada-client.exe card 2755-17          # JSON card with all editions
