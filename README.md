@@ -24,10 +24,12 @@ official open-data API:
   matrix/opencode/nord/dracula/solarized/gruvbox/monokai/one-dark/tokyo-night/
   catppuccin/github-dark, header picker, persisted), Ukrainian labels:
   - **Пошук** — local FTS5 search with filters (status/type/date/number/publisher),
+    AND-narrowing with last-word prefix matching (automatic OR fallback),
     a **date-range calendar** (Ukrainian months, dates beyond the freshest data
     fetched from rada are disabled), **clickable column sorting**
     (Назва ▲▼ / Дата ▲▼ / Редакція ▼ / Релевантність),
     paging, live name resolver; **export of the results list** (.md/.txt);
+    **checkbox-select results → individual numbered files** in a chosen folder;
     one-click **copy nreg** from any result row.
   - **Continue / recents** — the app persists the last opened documents and
     query (`%LOCALAPPDATA%\rada-client\settings.ini`); Home shows clickable

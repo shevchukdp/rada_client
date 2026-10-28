@@ -71,6 +71,8 @@ pub enum Msg {
         res: Option<String>,
     },
     Exported(Outcome<PathBuf>),
+    /// Individual-file export of checked results finished.
+    SelectedExported { written: usize, failed: usize, dir: PathBuf },
     /// Dictionaries-only live fetch finished (auto-run at startup when empty).
     /// Ok(list of failed dict kinds; empty = all loaded), Err = fatal.
     DictsFetched(Outcome<Vec<String>>),
@@ -1001,6 +1003,87 @@ impl App {
         });
     }
 
+    /// Live export of the CHECKED results as individual numbered files
+    /// (`NNN - number - title.ext`) into a chosen folder. Cache first, then
+    /// paced live fetch (which refreshes the cache). Progress = LiveExport.
+    pub fn export_selected_files(&mut self, md: bool) {
+        if self.search.live_export.is_some() {
+            return;
+        }
+        let sel: Vec<rada_db::SearchHit> = self
+            .search
+            .hits
+            .iter()
+            .filter(|h| self.search.selected.iter().any(|n| n == &h.nreg))
+            .cloned()
+            .collect();
+        if sel.is_empty() {
+            return;
+        }
+        let Some(dir) = rfd::FileDialog::new().pick_folder() else {
+            return;
+        };
+        let client = self.client.clone();
+        let db = self.db_path.clone();
+        let ext = if md { "md" } else { "txt" };
+        self.search.live_export = Some((0, sel.len() as u64));
+        self.spawn(move |tx| {
+            let total = sel.len() as u64;
+            let mut written = 0usize;
+            let mut failed = 0usize;
+            for (i, h) in sel.iter().enumerate() {
+                let text = rada_db::open(&db)
+                    .ok()
+                    .and_then(|conn| rada_db::textcache::get(&conn, &h.nreg, "").ok().flatten())
+                    .or_else(|| {
+                        client.show_text(&h.nreg).ok().map(|t| {
+                            if let Ok(conn) = rada_db::open(&db) {
+                                let _ = rada_db::textcache::put(&conn, &h.nreg, "", &t);
+                            }
+                            t
+                        })
+                    });
+                let num = if h.org_num.is_empty() { h.nreg.as_str() } else { h.org_num.as_str() };
+                let title: String = h.nazva.chars().take(80).collect();
+                let fname = format!("{:03} - {} - {}.{}", i + 1, sanitize(num), sanitize(&title), ext);
+                let body = match &text {
+                    Some(t) if md => format!(
+                        "# {}\n\n> №{} ·рег. {} · від {} · ред. {}\n\n```\n{}\n```\n",
+                        h.nazva,
+                        h.org_num,
+                        h.nreg,
+                        crate::views::search::fmt_date(&h.org_date),
+                        crate::views::search::fmt_date(&h.poddat),
+                        t.trim_end()
+                    ),
+                    Some(t) => format!(
+                        "{}\n№{} · рег. {} · від {} · ред. {}\n\n{}\n",
+                        h.nazva,
+                        h.org_num,
+                        h.nreg,
+                        crate::views::search::fmt_date(&h.org_date),
+                        crate::views::search::fmt_date(&h.poddat),
+                        t.trim_end()
+                    ),
+                    None if md => format!(
+                        "# {}\n\n> №{} · текст отримати не вдалося (немає в кеші, live недоступний)\n",
+                        h.nazva, h.nreg
+                    ),
+                    None => format!(
+                        "{}\n№{} — текст отримати не вдалося (немає в кеші, live недоступний)\n",
+                        h.nazva, h.nreg
+                    ),
+                };
+                match std::fs::write(dir.join(&fname), &body) {
+                    Ok(_) => written += 1,
+                    Err(_) => failed += 1,
+                }
+                let _ = tx.send(Msg::LiveExport { done: (i + 1) as u64, total });
+            }
+            let _ = tx.send(Msg::SelectedExported { written, failed, dir });
+        });
+    }
+
     /// Live bulk export of the current results page: fetches each document's
     /// text (paced by the shared client, ~5 s/doc), appends saved annotations
     /// and writes md/txt. Progress arrives as `Msg::LiveExport`.
@@ -1137,6 +1220,7 @@ impl App {
                         Ok((hits, total)) => {
                             self.search.total = total;
                             self.search.hits = hits;
+                            self.search.selected.clear();
                             self.search.error = None;
                         }
                         Err(e) => {
@@ -1341,6 +1425,15 @@ impl App {
                     Ok(path) => self.toast(format!("збережено: {}", path.display()), ok()),
                     Err(e) => self.toast(format!("помилка збереження: {e}"), err()),
                 }
+            }
+            Msg::SelectedExported { written, failed, dir } => {
+                self.search.live_export = None;
+                let msg = if failed == 0 {
+                    format!("файлів записано: {written} → {}", dir.display())
+                } else {
+                    format!("файлів: {written}, помилок: {failed} → {}", dir.display())
+                };
+                self.toast(msg, if failed == 0 { ok() } else { err() });
             }
         }
     }

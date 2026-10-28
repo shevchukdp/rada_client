@@ -1,7 +1,9 @@
 //! Title search over the local index.
 //!
 //! Strategy:
-//! - multi-word query  → FTS5 MATCH (case-insensitive, ranked);
+//! - multi-word query  → FTS5 MATCH (case-insensitive, ranked); AND of all
+//!   tokens with a prefix match on the last token, falling back to OR when
+//!   the AND expression finds nothing;
 //! - single word       → `LIKE` substring (FTS can't do substrings);
 //! - plus optional filters (org / type / status / date range / number).
 //!
@@ -126,13 +128,41 @@ fn is_multi_word(term: &str) -> bool {
     !t.is_empty() && t.split_whitespace().count() >= 2
 }
 
-/// Build a safe FTS5 expression: quote every token, OR them together.
-fn fts_expr(term: &str) -> String {
-    term.split_whitespace()
+/// Join the tokens of `term` into an FTS5 expression separated by `sep`:
+/// every whitespace-separated token is quoted (an inner `"` is doubled),
+/// empty tokens are dropped, and the **last** token becomes a prefix match
+/// (`"tok"*`) — FTS5 only honours `*` right after the closing quote, never
+/// inside the quoted string («кодек» thus matches кодек/кодексу).
+fn fts_join(term: &str, sep: &str) -> String {
+    let toks: Vec<&str> = term
+        .split_whitespace()
         .filter(|w| !w.is_empty())
-        .map(|w| format!("\"{}\"", w.replace('"', "\"\"")))
+        .collect();
+    let last = toks.len().saturating_sub(1);
+    toks.iter()
+        .enumerate()
+        .map(|(i, w)| {
+            let q = format!("\"{}\"", w.replace('"', "\"\""));
+            if i == last {
+                format!("{q}*")
+            } else {
+                q
+            }
+        })
         .collect::<Vec<_>>()
-        .join(" OR ")
+        .join(sep)
+}
+
+/// Strict FTS5 expression: all tokens required, last token as prefix —
+/// `"tok1" AND "tok2" AND "tokN"*`.
+fn fts_expr_and(term: &str) -> String {
+    fts_join(term, " AND ")
+}
+
+/// Fallback FTS5 expression: any token may match, last token as prefix —
+/// `"tok1" OR "tok2" OR "tokN"*`.
+fn fts_expr_or(term: &str) -> String {
+    fts_join(term, " OR ")
 }
 
 fn add_param(
@@ -147,6 +177,11 @@ fn add_param(
 }
 
 /// Execute a search; returns `(hits, total)`.
+///
+/// Multi-word titles take the FTS5 path: first the strict AND expression
+/// (all tokens required, last token as prefix); when that yields nothing,
+/// the same query is retried with the OR expression so the user still gets
+/// ranked partial matches. The 0–1-word `LIKE` path is untouched.
 pub fn search(conn: &Connection, q: &SearchQuery) -> Result<(Vec<SearchHit>, i64)> {
     let title = q
         .nazva
@@ -154,14 +189,35 @@ pub fn search(conn: &Connection, q: &SearchQuery) -> Result<(Vec<SearchHit>, i64
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let use_fts = title.as_deref().map(is_multi_word).unwrap_or(false);
+
+    if title.as_deref().map(is_multi_word).unwrap_or(false) {
+        let t = title.as_deref().unwrap_or("");
+        let (hits, total) = search_with(conn, q, title.as_deref(), Some(fts_expr_and(t)))?;
+        if total == 0 {
+            return search_with(conn, q, title.as_deref(), Some(fts_expr_or(t)));
+        }
+        return Ok((hits, total));
+    }
+    search_with(conn, q, title.as_deref(), None)
+}
+
+/// Shared count/select flow. `fts` carries the MATCH expression for the
+/// FTS5 branch (its expression becomes `?1`); `None` selects the plain
+/// `docs` table with the `LIKE` title filter.
+fn search_with(
+    conn: &Connection,
+    q: &SearchQuery,
+    title: Option<&str>,
+    fts: Option<String>,
+) -> Result<(Vec<SearchHit>, i64)> {
+    let use_fts = fts.is_some();
 
     let mut args: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
     let mut where_sql = String::new();
 
     // In the FTS path, ?1 is the MATCH expression.
-    if use_fts {
-        args.push(Box::new(fts_expr(title.as_deref().unwrap_or(""))));
+    if let Some(expr) = fts {
+        args.push(Box::new(expr));
     }
 
     if let Some(t) = &title {
@@ -468,5 +524,119 @@ mod tests {
             assert_eq!(Sort::parse(s.as_str()), s);
         }
         assert_eq!(Sort::parse("garbage"), Sort::DateDesc);
+    }
+
+    /// `seeded()` plus one more «кодекс» doc so AND and OR expressions give
+    /// different answers. Kept separate from `seeded()` so the existing
+    /// count-based tests stay valid.
+    fn seeded_extra() -> Connection {
+        let mut conn = seeded();
+        let uk = "4\t5555-20\tПодатковий кодекс України\t2\t2\t2:20101111:5555-VI\t\t0\t20101118";
+        let rows = parse_dump(uk).unwrap();
+        upsert_docs(&mut conn, &rows).unwrap();
+        conn
+    }
+
+    /// Count FTS rows matching a raw MATCH expression (bypasses `search()`).
+    fn fts_count(conn: &Connection, expr: &str) -> i64 {
+        conn.query_row(
+            "SELECT COUNT(*) FROM docs_fts WHERE docs_fts MATCH ?1",
+            [expr],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn fts_and_narrows() {
+        let conn = seeded_extra();
+        // Old OR behaviour matched both кодек docs; AND keeps only the
+        // criminal-code one.
+        assert_eq!(fts_count(&conn, &fts_expr_or("кримінальний кодекс")), 2);
+        let (hits, total) = search(
+            &conn,
+            &SearchQuery {
+                nazva: Some("кримінальний кодекс".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].nreg, "2341-14");
+    }
+
+    #[test]
+    fn fts_and_falls_back_to_or() {
+        let conn = seeded_extra();
+        // No doc contains both words → AND yields 0 → the same query is
+        // retried with OR and finds each partial match.
+        assert_eq!(fts_count(&conn, &fts_expr_and("кримінальний податковий")), 0);
+        let (hits, total) = search(
+            &conn,
+            &SearchQuery {
+                nazva: Some("кримінальний податковий".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(total, 2);
+        let nregs: Vec<&str> = hits.iter().map(|h| h.nreg.as_str()).collect();
+        assert!(nregs.contains(&"2341-14"));
+        assert!(nregs.contains(&"5555-20"));
+    }
+
+    #[test]
+    fn fts_prefix_matches_inflection() {
+        let conn = seeded_extra();
+        // The AND expression alone (no OR fallback to mask it) must match
+        // «Кримінальний кодекс України» via the `кодек*` prefix.
+        assert_eq!(fts_count(&conn, &fts_expr_and("кримінальний кодек")), 1);
+        let (hits, total) = search(
+            &conn,
+            &SearchQuery {
+                nazva: Some("кримінальний кодек".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(total, 1);
+        assert_eq!(hits[0].nreg, "2341-14");
+    }
+
+    #[test]
+    fn fts_expr_and_quotes_and_prefixes_last() {
+        assert_eq!(
+            fts_expr_and("кримінальний кодекс"),
+            "\"кримінальний\" AND \"кодекс\"*"
+        );
+        // truncated last token → prefix query outside the quotes
+        assert_eq!(
+            fts_expr_and("кримінальний кодек"),
+            "\"кримінальний\" AND \"кодек\"*"
+        );
+        // single token → just the quoted prefix token
+        assert_eq!(fts_expr_and("код"), "\"код\"*");
+        // whitespace runs collapse, empty tokens dropped
+        assert_eq!(
+            fts_expr_and("  один   два  три  "),
+            "\"один\" AND \"два\" AND \"три\"*"
+        );
+        // inner `"` doubled
+        assert_eq!(fts_expr_and("a\"b c"), "\"a\"\"b\" AND \"c\"*");
+        // nothing but whitespace → empty expression
+        assert_eq!(fts_expr_and("   "), "");
+    }
+
+    #[test]
+    fn fts_expr_or_quotes_and_prefixes_last() {
+        assert_eq!(
+            fts_expr_or("кримінальний кодекс"),
+            "\"кримінальний\" OR \"кодекс\"*"
+        );
+        assert_eq!(fts_expr_or("код"), "\"код\"*");
+        assert_eq!(fts_expr_or("  a  b  "), "\"a\" OR \"b\"*");
+        assert_eq!(fts_expr_or("a\"b"), "\"a\"\"b\"*");
+        assert_eq!(fts_expr_or(""), "");
     }
 }

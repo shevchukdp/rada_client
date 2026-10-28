@@ -143,6 +143,44 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 }
             }
         });
+        ui.add_space(4.0);
+
+        // ---- selection → individual numbered files ------------------
+        ui.horizontal(|ui| {
+            let has = !app.search.hits.is_empty();
+            let n = app.search.selected.len();
+            ui.label(
+                egui::RichText::new(format!("Вибрано для файлів: {n}"))
+                    .small()
+                    .weak(),
+            );
+            if ui
+                .add_enabled(has, egui::Button::new(egui::RichText::new("вибрати все").small()))
+                .clicked()
+            {
+                app.search.selected = app.search.hits.iter().map(|h| h.nreg.clone()).collect();
+            }
+            if ui
+                .add_enabled(n > 0, egui::Button::new(egui::RichText::new("зняти").small()))
+                .clicked()
+            {
+                app.search.selected.clear();
+            }
+            let ready = n > 0 && app.search.live_export.is_none();
+            if ui
+                .add_enabled(ready, egui::Button::new("Вибране у файли .md"))
+                .on_hover_text("кожен документ — окремий нумерований файл у вибраній теці (тексти наживо/кеш)")
+                .clicked()
+            {
+                app.export_selected_files(true);
+            }
+            if ui
+                .add_enabled(ready, egui::Button::new("Вибране у файли .txt"))
+                .clicked()
+            {
+                app.export_selected_files(false);
+            }
+        });
         ui.add_space(6.0);
 
         // ---- column sort --------------------------------------------
@@ -243,6 +281,18 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     let text =
                         egui::RichText::new(format!("{}\n{}", h.nazva, meta)).small();
                     ui.horizontal(|ui| {
+                        let mut sel = app.search.selected.contains(&h.nreg);
+                        if ui
+                            .checkbox(&mut sel, "")
+                            .on_hover_text("позначте для експорту в окремі файли")
+                            .changed()
+                        {
+                            if sel {
+                                app.search.selected.push(h.nreg.clone());
+                            } else {
+                                app.search.selected.retain(|n| n != &h.nreg);
+                            }
+                        }
                         if ui
                             .add_sized([avail, 46.0], egui::Button::new(text).wrap())
                             .clicked()
@@ -459,6 +509,7 @@ impl Default for SearchState {
             f_date_from: String::new(),
             f_date_to: String::new(),
             sort: rada_db::search::Sort::Relevance,
+            selected: Vec::new(),
             pick: None,
             pick_year: 0,
             pick_month: 0,
@@ -494,6 +545,8 @@ pub struct SearchState {
     /// Column ordering for the results list (Relevance = FTS rank,
     /// degrading to newest-first outside FTS).
     pub sort: rada_db::search::Sort,
+    /// nregs checked for individual-file export (cleared on each search).
+    pub selected: Vec<String>,
     /// Open calendar popup (None = closed); month shown while open.
     pub pick: Option<PickKind>,
     pub pick_year: u32,

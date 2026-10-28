@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.9.8: експорт вибраного у файли та розумніший FTS / 0.9.8: checked-results file export & smarter FTS
+
+- **UKR:** 1) **Експорт вибраного окремими файлами**: чекбокс біля кожного результату, «вибрати все»/«зняти», «Вибране у файли .md/.txt» — обрані документи записуються в обрану теку окремими нумерованими файлами `NNN - №документа - назва.ext`; тексти беруться з кешу, за потреби — наживо (з поповненням кешу); лічильник ходу та фінальний тіст. 2) **Якісніший FTS-пошук**: запит із 2+ слів тепер звужує (AND) замість «або», останнє слово — з префіксом («кодек» знаходить «кодексу»); якщо AND нічого не дав — автоматичне повернення до OR. Приклад на реальній базі: «податковий митний» — 1 документ замість тисяч. 3) Тести: 82/82 (+5 FTS).
+- **ENG:** 1) **Checked-results export to individual files**: a checkbox on every result row, "вибрати все"/"зняти", and "Вибране у файли .md/.txt" — the checked documents are written to a chosen folder as individual numbered files `NNN - docnumber - title.ext`; texts come from the offline cache, falling back to paced live fetches (which refresh the cache); live progress plus a summary toast. 2) **Smarter FTS**: multi-word queries now narrow (AND) instead of OR, with the last token prefix-matched («кодек» finds «кодексу»); if AND yields nothing, the search automatically falls back to OR. On the real index: «податковий митний» → 1 document instead of thousands. 3) Tests: 82/82 (+5 FTS).
+
+---
+
+## 2026-10-28
+
 ### 0.9.7: офлайн-кеш текстів і простий режим читання / 0.9.7: offline text cache & plain-text mode
 
 - **UKR:** 1) **Офлайн-кеш текстів** (схема БД v3, таблиця `docs_text`): успішне live-завантаження зберігає текст документа (за редакціями); якщо живий доступ не вдався — читалка та CLI `text` віддають кешовану копію з позначкою «кешовано». 2) **CLI**: `cache` — статистика (рядки, розмір), `cache --purge [nreg]` — очищення. 3) **Простий текст**: перемикач «Форматований/Простий» у читалці (GUI) і кнопка «Простий» у веб — вимикає стилізацію заголовків/розділів/статей; вибір зберігається. 4) Тести: 77/77 (+6 кеш, +.round-trip `raw`, +перевірки веб-кнопки).
