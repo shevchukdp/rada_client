@@ -32,6 +32,9 @@ pub struct FavoritesState {
     pub kind_sel: usize,
     /// Render rows nested under per-document headers instead of flat.
     pub grouped: bool,
+    /// Row order: 0 = новіші перші (default), 1 = старіші перші,
+    /// 2 = за назвою документа (A→Я).
+    pub sort_sel: usize,
     /// First visit triggers an auto-load.
     pub loaded: bool,
     /// Two-step import: file picked through «Імпорт .json», waiting for the
@@ -48,6 +51,7 @@ impl Default for FavoritesState {
             filter: String::new(),
             kind_sel: 0,
             grouped: true,
+            sort_sel: 0,
             loaded: false,
             confirm_import: None,
         }
@@ -111,6 +115,26 @@ pub fn row_matches(a: &rada_db::Annotation, title: &str, needle: &str, kind: usi
 /// appear in first-appearance order of their rows, and rows keep their
 /// input order inside a group. `(nreg, title, rows)`; the group title is
 /// the first non-empty title seen among the group's rows.
+/// Order rows by the favorites sort chip: 0 = newest first, 1 = oldest
+/// first, 2 = by document title (case-insensitive, empty titles last,
+/// newest first within one title). `created_at` is `YYYY-MM-DD HH:MM:SS`,
+/// so a plain string compare orders it chronologically.
+pub fn sort_rows(rows: &mut [FavRow], sort_sel: usize) {
+    match sort_sel {
+        1 => rows.sort_by(|a, b| a.0.created_at.cmp(&b.0.created_at)),
+        2 => rows.sort_by(|a, b| {
+            let ta = a.1.to_lowercase();
+            let tb = b.1.to_lowercase();
+            let ea = ta.trim().is_empty();
+            let eb = tb.trim().is_empty();
+            ea.cmp(&eb).then_with(|| ta.cmp(&tb)).then_with(|| {
+                b.0.created_at.cmp(&a.0.created_at)
+            })
+        }),
+        _ => rows.sort_by(|a, b| b.0.created_at.cmp(&a.0.created_at)),
+    }
+}
+
 pub fn filter_and_group(
     rows: &[FavRow],
     needle: &str,
@@ -265,6 +289,21 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             {
                 app.fav.grouped = !app.fav.grouped;
             }
+            ui.separator();
+            for (i, lab, tip) in [
+                (0usize, "новіші", "спочатку найсвіжіші анотації"),
+                (1, "старіші", "спочатку найдавніші анотації"),
+                (2, "за назвою", "за алфавітом назви документа"),
+            ] {
+                let active = app.fav.sort_sel == i;
+                if ui
+                    .add(egui::Button::new(egui::RichText::new(lab).small()).selected(active))
+                    .on_hover_text(tip)
+                    .clicked()
+                {
+                    app.fav.sort_sel = i;
+                }
+            }
         });
         if let Some(e) = &app.fav.error {
             ui.label(egui::RichText::new(e).small().color(err()));
@@ -273,7 +312,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let items = app.fav.items.clone();
+                let mut items = app.fav.items.clone();
+                sort_rows(&mut items, app.fav.sort_sel);
                 let all_empty = items.is_empty();
                 let needle = app.fav.filter.clone();
                 let kind = app.fav.kind_sel;
@@ -694,5 +734,52 @@ mod tests {
         assert_eq!(p.bad_preview.len(), 5);
         assert!(p.bad_preview[0].starts_with("запис 1:"));
         assert!(p.bad_preview[4].starts_with("запис 5:"));
+    }
+
+    fn ann_at(id: i64, nreg: &str, created: &str) -> rada_db::Annotation {
+        let mut a = ann(id, nreg, "comment", "т");
+        a.created_at = created.to_string();
+        a
+    }
+
+    #[test]
+    fn sort_rows_orders_by_date_and_title() {
+        let rows = || -> Vec<FavRow> {
+            vec![
+                (ann_at(1, "a-1", "2026-01-01 10:00:00"), "Ялівка".to_string()),
+                (ann_at(2, "b-2", "2026-05-05 09:00:00"), "абрика".to_string()),
+                (ann_at(3, "c-3", "2026-03-03 08:00:00"), String::new()),
+            ]
+        };
+        // 0 = newest first.
+        let mut r = rows();
+        sort_rows(&mut r, 0);
+        assert_eq!(
+            r.iter().map(|x| x.0.id).collect::<Vec<_>>(),
+            vec![2, 3, 1],
+            "created_at descending"
+        );
+        // 1 = oldest first.
+        let mut r = rows();
+        sort_rows(&mut r, 1);
+        assert_eq!(r.iter().map(|x| x.0.id).collect::<Vec<_>>(), vec![1, 3, 2]);
+        // 2 = by title case-insensitively, empty titles last.
+        let mut r = rows();
+        sort_rows(&mut r, 2);
+        assert_eq!(
+            r.iter().map(|x| x.0.id).collect::<Vec<_>>(),
+            vec![2, 1, 3],
+            "«абрика» < «Ялівка» (я→ua collation by lowercase code points), порожня назва — остання"
+        );
+    }
+
+    #[test]
+    fn sort_rows_title_mode_breaks_ties_by_newest() {
+        let mut r: Vec<FavRow> = vec![
+            (ann_at(1, "a-1", "2026-01-01 10:00:00"), "Кодекс".to_string()),
+            (ann_at(2, "a-1", "2026-06-06 10:00:00"), "кодекс".to_string()),
+        ];
+        sort_rows(&mut r, 2);
+        assert_eq!(r.iter().map(|x| x.0.id).collect::<Vec<_>>(), vec![2, 1]);
     }
 }

@@ -76,7 +76,8 @@ official open-data API:
     ~110 хв».
   - **Grouped favorites** — the Обране page groups annotations per document
     (gold «Title (count)» header with an «відкрити» button), with a text/title
-    filter box, kind chips and a «групувати» toggle.
+    filter box, kind chips, a «групувати» toggle and sort chips
+    («новіші / старіші / за назвою»).
   - **Keyboard shortcuts** — Ctrl+F focuses find/query; Alt+←/→ **or**
     Alt+PageUp/PageDown step through the results list inside the reader.
   - **Cache full-text search («Знайти в кеші»)** — offline scan of every cached
@@ -167,6 +168,8 @@ official open-data API:
   that clears it and re-searches, plus «скинути все»),
   **arrivals feed with «НОВЕ» badges** (viewed nregs remembered in
   localStorage, «нових: N» + «лише нові» + text filter),
+  **edition comparison** («Порівняти редакції» — word/char/time stats per
+  edition plus «різниця: ±N слів»),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -235,7 +238,8 @@ Launch arguments:
 .\rada-client.exe cache --purge 2755-17 # drop one document's cached text
 .\rada-client.exe cache --search "освіту" --limit 10   # offline full-text over cached bodies
 .\rada-client.exe arrivals --save            # live updated-docs feed, diffed vs the saved snapshot
-.\rada-client.exe resolve "податковий кодекс"   # name → nreg
+.\rada-client.exe resolve "податковий кодекс"   # name → nreg (offline index first, live only as fallback)
+.\rada-client.exe resolve "кодекс" --limit 5 --out var.txt   # candidate table to file (BOM); --json too
 .\rada-client.exe export 2755-17 --fmt md --out zakon.md   # cache-first export
 .\rada-client.exe dict                   # load dictionaries (stan/typs/organs)
 .\rada-client.exe dict --kind typs

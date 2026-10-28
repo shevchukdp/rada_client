@@ -631,7 +631,19 @@
       <span class="hint">Редакція:</span>
       <select id="editions" disabled></select>
       <button id="load-text" type="button">Текст</button>
+      <button id="btn-compare-editions" type="button" disabled>Порівняти редакції</button>
       <span id="live-note" class="hint"></span>
+    </div>
+    <div id="edition-compare" hidden>
+      <div class="row">
+        <span class="hint">A:</span>
+        <select id="cmp-a"></select>
+        <span class="hint">B:</span>
+        <select id="cmp-b"></select>
+        <button id="cmp-run" type="button">Порівняти</button>
+        <button id="cmp-close" type="button">Закрити</button>
+      </div>
+      <div id="cmp-result" class="hint"></div>
     </div>
     <div class="row" id="find-bar">
       <input id="find-input" placeholder="Знайти в тексті…" autocomplete="off">
@@ -1119,6 +1131,7 @@ async function openDoc(nreg) {
   $("find-input").value = "";
   $("find-count").textContent = "";
   resetToc(); // stale outline entries must never survive into a new document
+  resetCompare(); // a stale edition comparison must never linger either
   $("doc-stats").textContent = ""; // stale stats must never linger either
   $("copy-hint").textContent = "";
   const pane = $("doc-pane");
@@ -1170,6 +1183,7 @@ async function loadCard() {
       sel.appendChild(o);
     }
     sel.disabled = false;
+    $("btn-compare-editions").disabled = sel.options.length < 2;
     loadAnnotations(nreg);
     loadText("");
     $("related-row").hidden = false;
@@ -1275,6 +1289,95 @@ async function loadText(edition) {
     $("text-retry-row").hidden = false;
     setLive("");
   }
+}
+
+// ---- edition comparison («Порівняти редакції», GUI reader parity) ----------
+
+/// Word count shared by the summary lines and the diff line (whitespace
+/// split, same counting as renderDocStats).
+function cmpWordCount(t) {
+  return (t || "").split(/\s+/).filter(Boolean).length;
+}
+
+/// Per-edition line of the comparison, same shape as the GUI reader stats
+/// line: «{date}»: {words} слів · {chars} симв. · ~{min} хв (≈400 wpm, min 1).
+function cmpSummaryLine(date, text) {
+  const t = text || "";
+  const words = cmpWordCount(t);
+  const chars = Array.from(t).length;
+  const min = Math.max(1, Math.ceil(words / 400));
+  return "«" + date + "»: " + groupTh(words) + " слів · " + groupTh(chars) +
+    " симв. · ~" + groupTh(min) + " хв";
+}
+
+/// Signed word-count difference (B minus A): «різниця: +12 слів».
+function cmpDiffLine(wordsA, wordsB) {
+  const d = wordsB - wordsA;
+  return "різниця: " + (d < 0 ? "-" : "+") + groupTh(Math.abs(d)) + " слів";
+}
+
+/// Hide the panel, empty the result, and re-disable the trigger until the
+/// next card fills #editions (called at the start of every openDoc so a
+/// stale comparison never lingers on a new document).
+function resetCompare() {
+  $("edition-compare").hidden = true;
+  $("cmp-result").innerHTML = "";
+  $("btn-compare-editions").disabled = true;
+}
+
+/// Show the panel: clone the edition options into #cmp-a/#cmp-b, default A
+/// to the currently selected edition and B to the previous one.
+function openComparePanel() {
+  const src = $("editions");
+  if (src.options.length < 2) return;
+  for (const id of ["cmp-a", "cmp-b"]) {
+    const sel = $(id);
+    sel.innerHTML = "";
+    for (const o of src.options) {
+      const c = document.createElement("option");
+      c.value = o.value;
+      c.textContent = o.textContent;
+      sel.appendChild(c);
+    }
+  }
+  const i = src.selectedIndex >= 0 ? src.selectedIndex : 0;
+  $("cmp-a").value = src.options[i].value;
+  const j = i > 0 ? i - 1 : 1;
+  $("cmp-b").value = src.options[Math.min(j, src.options.length - 1)].value;
+  $("cmp-result").innerHTML = "";
+  $("edition-compare").hidden = false;
+}
+
+/// Fetch BOTH editions through the same endpoint the text loader uses and
+/// render «one line per edition + differing words» into #cmp-result.
+/// Offline/API failure only writes the hint, never throws.
+async function runEditionCompare() {
+  if (!state.curNreg) return;
+  const nreg = state.curNreg;
+  const a = $("cmp-a").value || "";
+  const b = $("cmp-b").value || "";
+  const la = a ? fmtEd(a) : "поточна";
+  const lb = b ? fmtEd(b) : "поточна";
+  const res = $("cmp-result");
+  const btn = $("cmp-run");
+  btn.disabled = true;
+  res.textContent = "Завантаження двох редакцій…";
+  const getText = async (ed) => {
+    let url = "/api/doc/" + encNreg(nreg) + "/text";
+    if (ed) url += "?edition=" + encodeURIComponent(ed);
+    const d = await api(url);
+    return (d && d.text) || "";
+  };
+  try {
+    const both = await Promise.all([getText(a), getText(b)]);
+    if (state.curNreg !== nreg) return; // the document switched mid-flight
+    res.innerHTML = escHtml(cmpSummaryLine(la, both[0])) + "<br>" +
+      escHtml(cmpSummaryLine(lb, both[1])) + "<br>" +
+      escHtml(cmpDiffLine(cmpWordCount(both[0]), cmpWordCount(both[1])));
+  } catch (e) {
+    if (state.curNreg === nreg) res.textContent = "не вдалося завантажити редакції";
+  }
+  btn.disabled = false;
 }
 
 /// Gold ranges of the highlight-annotations of the current document, merged.
@@ -2172,6 +2275,9 @@ $("retry-card").onclick = () => loadCard();
 $("retry-text").onclick = () => loadText($("editions").value || "");
 $("editions").onchange = () => loadText($("editions").value || "");
 $("load-text").onclick = () => loadText($("editions").value || "");
+$("btn-compare-editions").onclick = () => openComparePanel();
+$("cmp-run").onclick = () => runEditionCompare();
+$("cmp-close").onclick = () => { $("edition-compare").hidden = true; };
 $("btn-bookmark").onclick = () => addAnn("bookmark", "", null, null);
 $("btn-highlight").onclick = () => {
   const selText = window.getSelection().toString();

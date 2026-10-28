@@ -166,12 +166,26 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
-    /// Resolve a human name to an nreg via the live `find/a` endpoint.
-    /// Prints the nreg when the query is unambiguous, else an error.
+    /// Resolve a human name to an nreg: offline-first via the local index
+    /// (exact nreg / title search), then the live `find/a` endpoint only when
+    /// the index is silent. Prints the nreg when the query is unambiguous,
+    /// else the candidate table.
     Resolve {
         /// Document name / abbreviation to look up.
         #[arg(required = true)]
         text: Vec<String>,
+        /// Max candidates to print (default 10, capped at 50).
+        #[arg(long, default_value_t = 10)]
+        limit: usize,
+        /// Output JSON instead of the plain table.
+        #[arg(long)]
+        json: bool,
+        /// Write the local candidate table to this file instead of stdout
+        /// (parent dirs created). Plain table gets a UTF-8 BOM
+        /// (Excel-friendly); with `--json` the file is written BOM-less.
+        /// The live fallback path keeps printing to stdout.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// List «related documents» — links to other acts referenced by this one,
     /// parsed from its live portal page (one paced request).
@@ -319,7 +333,9 @@ fn run() -> Result<()> {
         Cmd::Dict { kind, search, json } => {
             cmd_dict(&cli.db, cli.pace, kind.as_deref(), search.as_deref(), json)
         }
-        Cmd::Resolve { text } => cmd_resolve(&text.join(" "), cli.pace),
+        Cmd::Resolve { text, limit, json, out } => {
+            cmd_resolve(&cli.db, &text.join(" "), limit, json, out.as_deref(), cli.pace)
+        }
         Cmd::Related { nreg, json } => cmd_related(&cli.db, &nreg, json, cli.pace),
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
         Cmd::Status => cmd_status(&cli.db),
@@ -1140,7 +1156,57 @@ fn arrivals_out_note(rows: usize, file: &Path) -> String {
     format!("[arrivals] записано {rows} рядків → {}", file.display())
 }
 
-fn cmd_resolve(text: &str, pace: u64) -> Result<()> {
+/// Name → nreg resolver. Offline-first: the local index is consulted before
+/// any network call (exact `nreg` lookup for nreg-shaped queries, then the
+/// FTS5/LIKE title search). One or more local candidates mean the network is
+/// never touched — a muted `[resolve] локально` line marks the offline path.
+/// Only when the index stays silent does the live `find/a` fallback run,
+/// with its original behaviour (print the nreg / error).
+fn cmd_resolve(
+    db: &PathBuf,
+    text: &str,
+    limit: usize,
+    json: bool,
+    out: Option<&Path>,
+    pace: u64,
+) -> Result<()> {
+    let limit = limit.clamp(1, 50);
+    let hits = local_candidates(db, text, limit);
+    if !hits.is_empty() {
+        eprintln!("[resolve] локально");
+        let hits = &hits[..hits.len().min(limit)];
+        if json {
+            let body = serde_json::to_string_pretty(&serde_json::json!({ "candidates": hits }))
+                .map_err(anyhow::Error::from)?;
+            match out {
+                Some(p) => {
+                    write_out_file(p, format!("{body}\n").as_bytes())?;
+                    eprintln!("[resolve] записано JSON → {}", p.display());
+                }
+                None => println!("{body}"),
+            }
+            return Ok(());
+        }
+        let body = resolve_table(hits);
+        match out {
+            Some(p) => {
+                // UTF-8 BOM prefix: the same Excel-friendly convention as arrivals.
+                write_out_file(p, format!("\u{FEFF}{body}\n").as_bytes())?;
+                eprintln!("{}", resolve_out_note(hits.len(), p));
+            }
+            None => {
+                // Unambiguous local hit keeps the historical stdout shape: a
+                // bare nreg line, byte-for-byte as `find/a` printed it.
+                if hits.len() == 1 {
+                    println!("{}", hits[0].nreg);
+                } else {
+                    println!("{body}");
+                }
+            }
+        }
+        return Ok(());
+    }
+    // Live fallback (unchanged): only reached when the local index is empty.
     let c = client(pace);
     match c.resolve_name(text) {
         Some(nreg) => {
@@ -1151,6 +1217,71 @@ fn cmd_resolve(text: &str, pace: u64) -> Result<()> {
             "no unambiguous match for {text:?} (the API returned a candidate list)"
         )),
     }
+}
+
+/// Candidate rows from the local index: exact `nreg` hit for nreg-shaped
+/// queries (`254к/96-вр`, `984_006-06`, …), otherwise the FTS5/LIKE title
+/// search ranked by relevance. A missing index or a failed query is not an
+/// error — it simply means "no local candidates" and the caller goes live.
+fn local_candidates(db: &Path, text: &str, limit: usize) -> Vec<rada_db::SearchHit> {
+    let attempt = rada_db::open(db).and_then(|conn| {
+        if rada_db::looks_like_nreg(text) {
+            if let Some(hit) = rada_db::by_nreg(&conn, text)? {
+                return Ok(vec![hit]);
+            }
+        }
+        let q = rada_db::SearchQuery {
+            nazva: Some(text.to_string()),
+            sort: rada_db::search::Sort::Relevance,
+            limit,
+            offset: 0,
+            ..Default::default()
+        };
+        Ok(rada_db::search::search(&conn, &q)?.0)
+    });
+    match attempt {
+        Ok(hits) => hits,
+        Err(e) => {
+            eprintln!("[resolve] локальний пошук не вдався ({e:#}); піду в live");
+            Vec::new()
+        }
+    }
+}
+
+/// Candidate table: «{n} варіантів:» header, then aligned
+/// `  {nreg}  {nazva}  [{status_label}]  {org_num}/{org_date}` rows
+/// (search-style formatting, dates through [`fmt_date`]).
+fn resolve_table(hits: &[rada_db::SearchHit]) -> String {
+    let mut lines = vec![format!("{} варіантів:", hits.len())];
+    for h in hits {
+        let status = rada_core::models::StatusId(h.status).label();
+        lines.push(format!(
+            "  {:<16} {}  [{status}]  {}/{}",
+            h.nreg,
+            h.nazva,
+            h.org_num,
+            fmt_date(&h.org_date)
+        ));
+    }
+    lines.join("\n")
+}
+
+/// Create the parent directories of `p` and write `bytes` to it; failures
+/// carry the usual «запис {file}» context.
+fn write_out_file(p: &Path, bytes: &[u8]) -> Result<()> {
+    if let Some(parent) = p.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("create dir {}", parent.display()))?;
+        }
+    }
+    std::fs::write(p, bytes).with_context(|| format!("запис {}", p.display()))
+}
+
+/// The stderr note printed after `resolve --out` has written the candidate
+/// table (`n` variants) to `file`.
+fn resolve_out_note(n: usize, file: &Path) -> String {
+    format!("[resolve] записано {n} варіантів → {}", file.display())
 }
 
 fn cmd_related(db: &PathBuf, nreg: &str, json: bool, pace: u64) -> Result<()> {
@@ -1410,7 +1541,7 @@ fn fmt_date(d: &str) -> String {
 mod tests {
     use super::{
         annot_out_note, arrivals_out_note, card_out_note, dict_matches, facet_lines, new_nregs,
-        normalize_fmt, out_note, stats_lines, StatsReport,
+        normalize_fmt, out_note, resolve_out_note, stats_lines, StatsReport,
     };
 
     #[test]
@@ -1516,6 +1647,18 @@ mod tests {
         assert!(line.starts_with("[annot] записано "));
         assert!(line.contains("7"));
         assert!(line.contains("анотацій"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn resolve_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//r.txt");
+        let line = resolve_out_note(3, file);
+        assert!(line.starts_with("[resolve] записано "));
+        assert!(line.contains("3"));
+        assert!(line.contains("варіантів"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
     }

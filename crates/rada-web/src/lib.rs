@@ -2934,4 +2934,31 @@ mod tests {
             "$(\"arr-only-new\").onclick = () => { arrOnlyNew = !arrOnlyNew; applyArrFilter(); };"
         ));
     }
+
+    #[test]
+    fn ui_page_has_edition_compare() {
+        // «Порівняти редакції» panel (the GUI reader's collapsible edition
+        // comparison): a trigger beside «Текст», two selects pre-filled from
+        // #editions, and the two pure line builders behind #cmp-result —
+        // one «{date}: {words} слів · {chars} симв. · ~{min} хв» line per
+        // edition plus the signed «різниця: » line (B minus A).
+        assert!(ui::INDEX_HTML.contains("id=\"btn-compare-editions\""));
+        assert!(ui::INDEX_HTML.contains("Порівняти редакції"));
+        assert!(ui::INDEX_HTML.contains("id=\"cmp-a\""));
+        assert!(ui::INDEX_HTML.contains("id=\"cmp-b\""));
+        assert!(ui::INDEX_HTML.contains("function cmpSummaryLine("));
+        assert!(ui::INDEX_HTML.contains("function cmpDiffLine("));
+        assert!(ui::INDEX_HTML.contains("різниця: "));
+    }
+
+    #[test]
+    fn ui_page_edition_compare_resets_on_open() {
+        // openDoc calls resetCompare right next to resetToc: the panel hides,
+        // #cmp-result empties, and the trigger re-disables until the next
+        // card repopulates #editions — a stale comparison never lingers.
+        assert!(ui::INDEX_HTML.contains("function resetCompare("));
+        assert!(ui::INDEX_HTML.contains("resetCompare();"));
+        assert!(ui::INDEX_HTML.contains("$(\"cmp-result\").innerHTML = \"\";"));
+        assert!(ui::INDEX_HTML.contains("$(\"edition-compare\").hidden = true;"));
+    }
 }

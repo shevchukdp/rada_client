@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.19: сортування Обраного, порівняння редакцій у веб та офлайн-resolve / favorites sorting, web edition compare & offline resolve
+
+- **UKR:** 1) **Сортування в Обраному**: чипи «новіші / старіші / за назвою» — рядки (і групи) переупорядковуються миттєво, без запитів. 2) **«Порівняти редакції» у веб-читалці**: кнопка біля «Текст» відкриває панель із двома редакціями; для кожної — «N слів · M симв. · ~K хв», нижче — «різниця: ±N слів». 3) **CLI `resolve` тепер офлайн перший**: точний nreg і FTS-пошук назви з локального індексу (сіра лінія «локально»), мережа — лише коли індекс нічого не знайшов; нові `--limit N`, `--json` та `--out FILE` (таблиця з BOM, JSON без BOM). 4) Тести: 179/179.
+- **ENG:** 1) **Sorting in Favorites**: «новіші / старіші / за назвою» chips instantly reorder rows (and groups) with no queries. 2) **«Порівняти редакції» in the web reader**: a button by «Текст» opens a panel with two editions; each shows «N слів · M симв. · ~K хв», below — «різниця: ±N слів». 3) **CLI `resolve` is now offline-first**: exact nreg and FTS title lookup from the local index (a muted «локально» line), network only when the index is silent; new `--limit N`, `--json` and `--out FILE` (BOM'd table, BOM-less JSON). 4) Tests: 179/179.
+
+---
+
+## 2026-10-28
+
 ### 0.10.18: контекстне меню видачі, бейджі «НОВЕ» у веб та анотації в файл / hit context menu, web new badges & annotations to file
 
 - **UKR:** 1) **Правий клік на результаті пошуку**: меню «Відкрити в читалці / Відкрити на сайті / Копіювати реєстраційний номер / Копіювати назву / Позначити для файлів». 2) **«НОВЕ» в Оновленнях веб**: переглянуті раніше nreg зберігаються в браузері (до 500); свіжі позначаються золотим «НОВЕ», поруч «нових: N» і вимикач «лише нові». 3) **CLI `annot export --out FILE`**: JSON анотацій у файл без BOM (stdout мовчить); стара форма `annot export FILE` працює як раніше. 4) Тести: 174/174.
