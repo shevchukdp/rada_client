@@ -68,6 +68,11 @@ official open-data API:
   - **Reading time** — the reader toolbar reports words, characters and an
     estimated reading time (≈400 wpm), e.g. «43 733 слів · 340 212 симв. ·
     ~110 хв».
+  - **Grouped favorites** — the Обране page groups annotations per document
+    (gold «Title (count)» header with an «відкрити» button), with a text/title
+    filter box, kind chips and a «групувати» toggle.
+  - **Keyboard shortcuts** — Ctrl+F focuses find/query; Alt+←/→ **or**
+    Alt+PageUp/PageDown step through the results list inside the reader.
   - **Cache full-text search («Знайти в кеші»)** — offline scan of every cached
     document body (Unicode case-insensitive, ranked, context snippets); rows
     open in the reader. Also `--cache-search TERM` on launch, CLI

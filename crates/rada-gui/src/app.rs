@@ -1766,9 +1766,19 @@ impl eframe::App for App {
                 _ => None,
             };
         }
-        // Alt+Left/Right: prev/next document inside the reader.
-        let alt_prev = ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowLeft));
-        let alt_next = ctx.input_mut(|i| i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowRight));
+        // Alt+Left/Right or Alt+PageUp/PageDown: prev/next document inside
+        // the reader. The keys are consumed so PageUp/Down never also
+        // scrolls the central area.
+        let alt_prev = ctx.input_mut(|i| {
+            let a = i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowLeft);
+            let b = i.consume_key(egui::Modifiers::ALT, egui::Key::PageUp);
+            a || b
+        });
+        let alt_next = ctx.input_mut(|i| {
+            let a = i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowRight);
+            let b = i.consume_key(egui::Modifiers::ALT, egui::Key::PageDown);
+            a || b
+        });
         if self.page == Page::Reader && self.nav.is_some() {
             if alt_prev {
                 self.nav_step(-1);

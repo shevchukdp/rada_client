@@ -405,11 +405,19 @@ fn header(app: &mut App, ui: &mut egui::Ui) {
         if let Some((len, pos)) = nav_info {
             if len > 1 {
                 ui.separator();
-                if ui.button("‹").clicked() {
+                if ui
+                    .button("‹")
+                    .on_hover_text("попередній документ (Alt+PageUp)")
+                    .clicked()
+                {
                     nav_req = Some(-1);
                 }
                 ui.label(egui::RichText::new(format!("{pos} / {len}")).small());
-                if ui.button("›").clicked() {
+                if ui
+                    .button("›")
+                    .on_hover_text("наступний документ (Alt+PageDown)")
+                    .clicked()
+                {
                     nav_req = Some(1);
                 }
             }
