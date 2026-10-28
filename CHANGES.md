@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.10.15: зняття фільтрів одним кліком та фід у файл / one-click filter clearing & feed to file
+
+- **UKR:** 1) **«Активні фільтри» на сторінці пошуку**: рядок чипів із кожним увімкненим фільтром («Статус: Чинний ×», «Дата від: 01.01.2024 ×», «№ 2041 ×»…); клік знімає фільтр і перевиконує пошук, «скинути все» чистить усі. 2) **CLI `arrivals --out FILE`**: табличний перелік (з «новими» і приміткою про обрізання) пишеся у файл UTF-8 з BOM для Excel; `--json --out` — JSON без BOM. 3) Тести: 157/157.
+- **ENG:** 1) **«Активні фільтри» on the search page**: a chip row showing every enabled filter («Статус: Чинний ×», «Дата від: 01.01.2024 ×», «№ 2041 ×»…); a click clears it and re-runs the search, «скинути все» clears them all. 2) **CLI `arrivals --out FILE`**: the table listing (new markers + truncation note) is written to a UTF-8-with-BOM file for Excel; `--json --out` writes BOM-less JSON. 3) Tests: 157/157.
+
+---
+
+## 2026-10-28
+
 ### 0.10.14: копіювання у веб, CSV оновлень і картка в файл / web copy-button, arrivals CSV & card to file
 
 - **UKR:** 1) **Веб-читалка**: кнопка «Копіювати текст» (з буфером-запасним шляхом) і тихий рядок статистики «43 733 слів · 340 212 симв. · ~110 хв» у панелі експорту. 2) **CSV в Оновленнях**: кнопка «CSV» зберігає показаний (з урахуванням фільтра і «лише нові») перелік у файл UTF-8 з BOM — Excel відкриває кирилицю правильно. 3) **CLI `card`**: тепер показує людський переказ (номер, стан, дати, редакції); `--json` — звичний JSON, `--out FILE` пише картку (JSON чи переказ) у файл. 4) Тести: 155/155.

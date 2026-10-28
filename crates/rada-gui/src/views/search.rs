@@ -376,6 +376,131 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             ui.add_space(4.0);
         }
 
+        // ---- active filters row ------------------------------------------
+        // Every set filter gets a chip; clicking it clears that filter and
+        // re-runs. «скинути все» clears all of them at once.
+        if app.search.searched {
+            let stan = app.dicts.stan.clone();
+            let typs = app.dicts.typs.clone();
+            let organs = app.dicts.organs.clone();
+            let (f_status, f_typ, f_org) =
+                (app.search.f_status, app.search.f_typ, app.search.f_org);
+            let org_label = app.search.f_org_label.clone();
+            let (df, dt, num) = (
+                app.search.f_date_from.trim().to_string(),
+                app.search.f_date_to.trim().to_string(),
+                app.search.f_number.trim().to_string(),
+            );
+            let any = f_status.is_some()
+                || f_typ.is_some()
+                || f_org.is_some()
+                || !df.is_empty()
+                || !dt.is_empty()
+                || !num.is_empty();
+            if any {
+                let mut clear = ClearWhat::None;
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Активні фільтри:").small().weak());
+                    if let Some(id) = f_status {
+                        let lbl = filter_label(&stan, id);
+                        if ui
+                            .button(egui::RichText::new(format!("Статус: {lbl} ×")).small())
+                            .on_hover_text("прибрати цей фільтр")
+                            .clicked()
+                        {
+                            clear = ClearWhat::Status;
+                        }
+                    }
+                    if let Some(id) = f_typ {
+                        let lbl = filter_label(&typs, id);
+                        if ui
+                            .button(egui::RichText::new(format!("Тип: {lbl} ×")).small())
+                            .on_hover_text("прибрати цей фільтр")
+                            .clicked()
+                        {
+                            clear = ClearWhat::Typ;
+                        }
+                    }
+                    if let Some(id) = f_org {
+                        let lbl = if org_label.trim().is_empty() {
+                            filter_label(&organs, id)
+                        } else {
+                            org_label.clone()
+                        };
+                        if ui
+                            .button(egui::RichText::new(format!("Видавник: {lbl} ×")).small())
+                            .on_hover_text("прибрати цей фільтр")
+                            .clicked()
+                        {
+                            clear = ClearWhat::Org;
+                        }
+                    }
+                    if !df.is_empty() {
+                        let lbl = fmt_date(&df);
+                        if ui
+                            .button(egui::RichText::new(format!("Дата від: {lbl} ×")).small())
+                            .on_hover_text("прибрати цей фільтр")
+                            .clicked()
+                        {
+                            clear = ClearWhat::DateFrom;
+                        }
+                    }
+                    if !dt.is_empty() {
+                        let lbl = fmt_date(&dt);
+                        if ui
+                            .button(egui::RichText::new(format!("Дата до: {lbl} ×")).small())
+                            .on_hover_text("прибрати цей фільтр")
+                            .clicked()
+                        {
+                            clear = ClearWhat::DateTo;
+                        }
+                    }
+                    if !num.is_empty() {
+                        if ui
+                            .button(egui::RichText::new(format!("№ {num} ×")).small())
+                            .on_hover_text("прибрати цей фільтр")
+                            .clicked()
+                        {
+                            clear = ClearWhat::Number;
+                        }
+                    }
+                    if ui
+                        .button(egui::RichText::new("скинути все").small())
+                        .on_hover_text("прибрати всі фільтри")
+                        .clicked()
+                    {
+                        clear = ClearWhat::All;
+                    }
+                });
+                match clear {
+                    ClearWhat::None => {}
+                    ClearWhat::Status => app.search.f_status = None,
+                    ClearWhat::Typ => app.search.f_typ = None,
+                    ClearWhat::Org => {
+                        app.search.f_org = None;
+                        app.search.f_org_label.clear();
+                    }
+                    ClearWhat::DateFrom => app.search.f_date_from.clear(),
+                    ClearWhat::DateTo => app.search.f_date_to.clear(),
+                    ClearWhat::Number => app.search.f_number.clear(),
+                    ClearWhat::All => {
+                        app.search.f_status = None;
+                        app.search.f_typ = None;
+                        app.search.f_org = None;
+                        app.search.f_org_label.clear();
+                        app.search.f_date_from.clear();
+                        app.search.f_date_to.clear();
+                        app.search.f_number.clear();
+                    }
+                }
+                if !matches!(clear, ClearWhat::None) {
+                    app.search.set_offset(0);
+                    app.run_search();
+                }
+                ui.add_space(4.0);
+            }
+        }
+
         // ---- results ------------------------------------------------
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
@@ -736,6 +861,33 @@ fn facet_group(
         }
     }
     hit
+}
+
+/// Which active-filter chip was clicked (`None` = untouched).
+enum ClearWhat {
+    None,
+    Status,
+    Typ,
+    Org,
+    DateFrom,
+    DateTo,
+    Number,
+    All,
+}
+
+/// Generic dictionary label for the active-filter chips: dict hit → label,
+/// id 0 → «немає», unknown id → «id N».
+pub fn filter_label(dict: &[(i64, String)], id: i64) -> String {
+    dict.iter()
+        .find(|(did, _)| *did == id)
+        .map(|(_, l)| l.clone())
+        .unwrap_or_else(|| {
+            if id == 0 {
+                "немає".into()
+            } else {
+                format!("id {id}")
+            }
+        })
 }
 
 fn stan_label(stan: &[(i64, String)], id: i64) -> String {
@@ -1299,8 +1451,16 @@ mod tests {
     }
 
     #[test]
-    fn cache_row_label_prefers_title() {
-        assert_eq!(cache_row_label("Про освіту", "1556-18"), "Про освіту");
+    fn filter_label_resolves_dict_zero_and_unknown() {
+        let d = vec![(5i64, "чинний".to_string()), (21, "постанова".to_string())];
+        assert_eq!(filter_label(&d, 21), "постанова");
+        assert_eq!(filter_label(&d, 0), "немає");
+        assert_eq!(filter_label(&d, 999), "id 999");
+        assert_eq!(filter_label(&[], 7), "id 7", "empty dict falls back");
+    }
+
+    #[test]
+    fn cache_row_label_prefers_title() {        assert_eq!(cache_row_label("Про освіту", "1556-18"), "Про освіту");
         assert_eq!(cache_row_label("   ", "1556-18"), "1556-18", "blank title falls back");
         assert_eq!(cache_row_label("", "1-1"), "1-1");
     }

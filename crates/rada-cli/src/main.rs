@@ -136,6 +136,11 @@ enum Cmd {
         /// Max rows to print (default 30, capped at 1000).
         #[arg(long, default_value_t = 30)]
         limit: usize,
+        /// Write to this file instead of stdout (parent dirs created).
+        /// Plain table gets a UTF-8 BOM (Excel-friendly); with `--json` the
+        /// file is written BOM-less.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Load the reference dictionaries (stan / typs / organs) from the live API
     /// and print them as `id  label` rows; `--search TERM` filters the printed
@@ -288,7 +293,12 @@ fn run() -> Result<()> {
         Cmd::Cache { purge, search, limit, nreg } => {
             cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref())
         }
-        Cmd::Arrivals { save, json, limit } => cmd_arrivals(&cli.db, save, json, limit, cli.pace),
+        Cmd::Arrivals {
+            save,
+            json,
+            limit,
+            out,
+        } => cmd_arrivals(&cli.db, save, json, limit, out.as_deref(), cli.pace),
         Cmd::Dict { kind, search, json } => {
             cmd_dict(&cli.db, cli.pace, kind.as_deref(), search.as_deref(), json)
         }
@@ -875,7 +885,19 @@ fn new_nregs(live: &[String], seen: &[String]) -> Vec<String> {
     out
 }
 
-fn cmd_arrivals(db: &PathBuf, save: bool, json: bool, limit: usize, pace: u64) -> Result<()> {
+/// Live updated-documents feed (r.tsv) diffed against the saved snapshot.
+/// With `--out` the exact stdout body goes to the file (parent dirs created)
+/// and nothing prints to stdout: the plain table is written UTF-8 with a BOM
+/// (Excel-friendly, like the GUI CSV), the `--json` body BOM-less. `--save`
+/// persists the feed regardless of `--out` (after the diff, before returning).
+fn cmd_arrivals(
+    db: &PathBuf,
+    save: bool,
+    json: bool,
+    limit: usize,
+    out: Option<&Path>,
+    pace: u64,
+) -> Result<()> {
     let c = client(pace);
     let feed = c
         .updated_docs()
@@ -904,31 +926,66 @@ fn cmd_arrivals(db: &PathBuf, save: bool, json: bool, limit: usize, pace: u64) -
     }
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "items": feed,
-                "new_nregs": new,
-            }))
-            .map_err(anyhow::Error::from)?
-        );
+        let body = serde_json::to_string_pretty(&serde_json::json!({
+            "items": feed,
+            "new_nregs": new,
+        }))
+        .map_err(anyhow::Error::from)?;
+        match out {
+            Some(p) => {
+                if let Some(parent) = p.parent() {
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent)
+                            .with_context(|| format!("create dir {}", parent.display()))?;
+                    }
+                }
+                std::fs::write(p, format!("{body}\n"))
+                    .with_context(|| format!("запис {}", p.display()))?;
+                eprintln!("[arrivals] записано JSON → {}", p.display());
+            }
+            None => println!("{body}"),
+        }
         return Ok(());
     }
 
     if first_run {
         eprintln!("збереженого феду ще немає — усі документи вважаються новими");
     }
-    println!("{} документів, нових: {}", feed.len(), new.len());
-    let newset: std::collections::HashSet<&str> = new.iter().map(String::as_str).collect();
     let limit = limit.clamp(1, 1000);
+    let rows = feed.len().min(limit);
+    let newset: std::collections::HashSet<&str> = new.iter().map(String::as_str).collect();
+    let mut lines: Vec<String> = Vec::with_capacity(rows + 2);
+    lines.push(format!("{} документів, нових: {}", feed.len(), new.len()));
     for d in feed.iter().take(limit) {
         let marker = if newset.contains(d.nreg.as_str()) { "* " } else { "  " };
-        println!("{marker}{}  [{}]  {}", d.nreg, d.status, d.nazva);
+        lines.push(format!("{marker}{}  [{}]  {}", d.nreg, d.status, d.nazva));
     }
     if feed.len() > limit {
-        println!("… ще {} див. --limit", feed.len() - limit);
+        lines.push(format!("… ще {} див. --limit", feed.len() - limit));
+    }
+    let body = lines.join("\n");
+    match out {
+        Some(p) => {
+            if let Some(parent) = p.parent() {
+                if !parent.as_os_str().is_empty() {
+                    std::fs::create_dir_all(parent)
+                        .with_context(|| format!("create dir {}", parent.display()))?;
+                }
+            }
+            // UTF-8 BOM prefix: the same Excel-friendly CSV convention as the GUI.
+            std::fs::write(p, format!("\u{FEFF}{body}\n"))
+                .with_context(|| format!("запис {}", p.display()))?;
+            eprintln!("{}", arrivals_out_note(rows, p));
+        }
+        None => println!("{body}"),
     }
     Ok(())
+}
+
+/// The stderr note printed after `arrivals --out` has written the plain
+/// table (`rows` document rows) to `file`.
+fn arrivals_out_note(rows: usize, file: &Path) -> String {
+    format!("[arrivals] записано {rows} рядків → {}", file.display())
 }
 
 fn cmd_resolve(text: &str, pace: u64) -> Result<()> {
@@ -1178,7 +1235,22 @@ fn fmt_date(d: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{card_out_note, dict_matches, facet_lines, new_nregs, normalize_fmt, out_note};
+    use super::{
+        arrivals_out_note, card_out_note, dict_matches, facet_lines, new_nregs, normalize_fmt,
+        out_note,
+    };
+
+    #[test]
+    fn arrivals_out_note_formats_rows_arrow() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//a.csv");
+        let line = arrivals_out_note(42, file);
+        assert!(line.starts_with("[arrivals] записано "));
+        assert!(line.contains("42"));
+        assert!(line.contains("рядків"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
 
     #[test]
     fn card_out_note_formats_json_written_line() {
