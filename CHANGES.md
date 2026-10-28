@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-28
 
+### 0.9.6: друк документів / document printing
+
+- **UKR:** 1) **Друк у читалці**: кнопка «Друк» у панелі експорту створює друковану HTML-версію документа у тимчасовому файлі й відкриває її у системному браузері (друк — Ctrl+P там; в egui немає принтера). 2) **Веб**: кнопка «🖨 Друк» у читалці відкриває `/api/export/{nreg}?print=1` — той самий документ інлайн, з друкованими полями (`@page 18/16 мм`) і авто-викликом вікна друку після завантаження. 3) Тести: 71/71 (+web: print-wrap і перевірка кнопки на сторінці).
+- **ENG:** 1) **Reader printing**: a «Друк» button in the export bar renders the document's print-ready HTML to a temp file and opens it in the system browser (print with Ctrl+P there — egui has no printer API). 2) **Web**: a «🖨 Друк» button in the reader opens `/api/export/{nreg}?print=1` — the same document served inline with print margins (`@page 18/16 mm`) and the print dialog auto-invoked on load. 3) Tests: 71/71 (+web: print-wrap and the on-page button check).
+
+---
+
+## 2026-10-28
+
 ### 0.9.5: діалог «Про програму» та версія у веб / 0.9.5: About dialog & web version
 
 - **UKR:** 1) **Діалог «Про програму»**: кнопки в рядку стану та на «Головній» — версія, шлях і розмір індексу, кількість документів, дата найновіших отриманих даних, останній імпорт, словники, лічильник live-запитів і пауза, джерела даних (відкриті дані Ради, CC BY 4.0, ліміт ~200 МБ/добу) та посилання (GitHub, zakon.rada, data.rada). 2) **Веб**: `/api/status` тепер віддає `version`, у футері сторінки — «rada_client v…». 3) Тести: 69/69 (+тест версії веб-статусу).

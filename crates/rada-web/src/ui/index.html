@@ -577,6 +577,7 @@
         <option value="html">HTML</option>
       </select>
       <button id="btn-export" type="button">Завантажити файл</button>
+      <button id="btn-print" type="button" title="Відкрити друковану версію у новій вкладці">🖨 Друк</button>
       <a id="site-link" class="hint" target="_blank">на zakon.rada.gov.ua ↗</a>
     </div>
     <ul id="annotations"></ul>
@@ -1629,6 +1630,13 @@ $("btn-export").onclick = () => {
   location.href = "/api/export/" + encNreg(state.curNreg) +
     "?fmt=" + $("export-fmt").value +
     ($("editions").value ? "&edition=" + encodeURIComponent($("editions").value) : "");
+};
+
+$("btn-print").onclick = () => {
+  if (!state.curNreg) { return; }
+  window.open("/api/export/" + encNreg(state.curNreg) +
+    "?print=1" +
+    ($("editions").value ? "&edition=" + encodeURIComponent($("editions").value) : ""), "_blank");
 };
 
 $("bulk-export").onclick = async () => {

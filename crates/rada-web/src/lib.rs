@@ -803,10 +803,21 @@ fn export_handler(
         return json_err(400, "expected /api/export/{nreg} or /api/export/bulk");
     };
     if method == &Method::Get && tail != "bulk" {
-        let fmt = qget(q, "fmt").unwrap_or("txt").to_string();
+        let print = qget(q, "print").is_some();
+        let fmt = if print { "html".to_string() } else { qget(q, "fmt").unwrap_or("txt").to_string() };
         let edition = qget(q, "edition").filter(|s| !s.is_empty()).map(str::to_string);
         match build_export(st, tail, &fmt, edition.as_deref()) {
-            Ok((body, ext, filename)) => file_response(&body, &ext, &filename),
+            Ok((body, ext, filename)) => {
+                if print {
+                    // Inline print view: same document, auto-opens the
+                    // browser print dialog on load.
+                    Response::from_data(print_wrap(&body).into_bytes())
+                        .with_chunked_threshold(usize::MAX)
+                        .with_header(h("Content-Type", "text/html; charset=utf-8"))
+                } else {
+                    file_response(&body, &ext, &filename)
+                }
+            }
             Err(e) => json_err(502, &e.to_string()),
         }
     } else if method == &Method::Post && tail == "bulk" {
@@ -942,6 +953,20 @@ fn esc_html(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+}
+
+/// Turn a rendered html export into a print view: sensible print margins
+/// and the browser print dialog on load. Falls back to the input when the
+/// document has no `</body>`.
+fn print_wrap(doc: &str) -> String {
+    const INJECT: &str = "<style media=\"print\">@page{margin:18mm 16mm}\
+        body{margin:0;max-width:none}</style>\n\
+        <script>window.addEventListener('load',function(){\
+        setTimeout(function(){window.print();},250);});</script>\n</body></html>";
+    match doc.rfind("</body>") {
+        Some(i) => format!("{}{}", &doc[..i], INJECT),
+        None => doc.to_string(),
+    }
 }
 
 /// `YYYYMMDD` → `DD.MM.YYYY` (passthrough when not 8 digits).
@@ -1190,6 +1215,9 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("p-article"));
         assert!(ui::INDEX_HTML.contains("p-num"));
         assert!(ui::INDEX_HTML.contains("classifyLine"));
+        // Print: the reader's «Друк» button opens the auto-print view.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-print\""));
+        assert!(ui::INDEX_HTML.contains("?print=1"));
     }
 
     // ---- background data jobs («Дані») ---------------------------------------
@@ -1431,8 +1459,19 @@ mod tests {
     }
 
     #[test]
-    fn status_reports_version() {
-        let st = favorites_state("ver");
+    fn print_wrap_injects_dialog_and_survives_without_body() {
+        let doc = "<!doctype html><html><head></head><body><pre>x</pre></body></html>";
+        let w = print_wrap(doc);
+        assert!(w.contains("window.print()"), "{w}");
+        assert!(w.contains("@page"), "{w}");
+        assert!(w.starts_with("<!doctype html><html><head></head><body><pre>x</pre>"));
+        assert!(w.ends_with("</body></html>"), "{w}");
+        // No </body>: returned unchanged.
+        assert_eq!(print_wrap("<p>q</p>"), "<p>q</p>");
+    }
+
+    #[test]
+    fn status_reports_version() {        let st = favorites_state("ver");
         let (code, v) = call(&st, Method::Get, "/api/status", "");
         assert_eq!(code, 200);
         assert_eq!(

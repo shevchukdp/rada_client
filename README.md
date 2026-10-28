@@ -33,6 +33,8 @@ official open-data API:
     query (`%LOCALAPPDATA%\rada-client\settings.ini`); Home shows clickable
     chips of the **last opened documents**, and the search field pre-loads the
     last query.
+  - **Printing** — «Друк» in the reader (and «🖨 Друк» in the web UI) opens a
+    print-ready HTML view in the browser (web: auto-opens the print dialog).
   - **About dialog («Про програму»)** — version, index path/size/docs, freshest
     fetched data, dictionaries, live-request counter, API limits and links;
     the web footer shows the same version (`version` in `/api/status`).

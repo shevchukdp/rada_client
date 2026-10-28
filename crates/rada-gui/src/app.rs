@@ -923,8 +923,24 @@ impl App {
     }
 
     /// Export the currently open document (md/txt/html) through a save dialog.
-    pub fn export_reader(&mut self, fmt: &str) {
+    /// Print the current reader document: write its structured HTML to a
+    /// temp file and open it in the system browser (user prints with
+    /// Ctrl+P there — egui has no printer API).
+    pub fn print_reader(&mut self, ctx: &egui::Context) {
         let Some(r) = self.reader.as_ref() else { return };
+        let body = r.export_doc("html");
+        let path = std::env::temp_dir().join(format!("rada-print-{}.html", sanitize(&r.hit.nreg)));
+        match std::fs::write(&path, &body) {
+            Ok(_) => {
+                let url = format!("file:///{}", path.display().to_string().replace('\\', "/"));
+                ctx.open_url(egui::OpenUrl::new_tab(&url));
+                self.toast("друковану версію відкрито в браузері", ok());
+            }
+            Err(e) => self.toast(format!("помилка друку: {e}"), err()),
+        }
+    }
+
+    pub fn export_reader(&mut self, fmt: &str) {        let Some(r) = self.reader.as_ref() else { return };
         let body = r.export_doc(fmt);
         let default_name = format!("zakon-{}.{}", sanitize(&r.hit.nreg), fmt);
         let Some(path) = rfd::FileDialog::new().set_file_name(default_name).save_file()

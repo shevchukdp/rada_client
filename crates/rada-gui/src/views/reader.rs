@@ -451,6 +451,13 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
         if ui.button("⬇ Експорт .html").clicked() {
             app.export_reader("html");
         }
+        if ui
+            .button("Друк")
+            .on_hover_text("відкрити друковану версію в браузері (друк — Ctrl+P)")
+            .clicked()
+        {
+            app.print_reader(ui.ctx());
+        }
         ui.separator();
         // Reader font zoom: A−  100%  A+   (persisted in settings.ini).
         let z = app.settings.zoom;
