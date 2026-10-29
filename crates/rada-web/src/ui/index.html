@@ -351,6 +351,17 @@
     border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
   }
   #active-filters .chip:hover { color: var(--text); border-color: var(--accent); }
+  /* «статус» quick chips under the search filters: one-click shortcuts for
+     the frequent dictionary statuses + «Усі», same chip language as the
+     active-filter and sort rows, the selected status takes the accent. */
+  #status-chips .chip {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #status-chips .chip:hover { color: var(--text); border-color: var(--accent); }
+  #status-chips .chip.active {
+    background: var(--accent); color: var(--accent-text); border-color: var(--accent);
+  }
   /* «недавні запити» row (the GUI search page parity): one chip per stored
      search term + «очистити», same chip language as the filter rows. */
   #recent-q .chip {
@@ -612,6 +623,7 @@
       <button class="primary" type="submit">Пошук</button>
       <button id="btn-cache-search" type="button" title="Повнотекстовий пошук у кешованих тілах документів (офлайн, без мережі)">Пошук у тексті</button>
     </form>
+    <div id="status-chips" class="row" hidden></div>
     <div id="active-filters" class="row" hidden></div>
     <div id="recent-q" class="row" hidden></div>
     <div id="cache-mode" class="row" hidden></div>
@@ -965,7 +977,7 @@ async function refreshFoot() {
 
 async function init() {
   await refreshFoot();
-  fillDict("f-status", "stan");
+  fillDict("f-status", "stan").then(buildStatusChips);
   fillDict("f-typ", "typs");
   fillDict("f-org", "organs");
   renderRecent();
@@ -1177,6 +1189,62 @@ function renderActiveFilters() {
   row.appendChild(all);
 }
 
+// ---- status quick chips (one-click «статус» shortcuts under the filters) ----
+// The frequent statuses are one click away instead of a dropdown detour: the
+// chips are built DYNAMICALLY from the dictionary options already loaded into
+// #f-status (the first STATUS_CHIPS_MAX real entries after the empty «усі»
+// option; label = the dict label, value = the dict id — no hardcoded ids),
+// plus a trailing «Усі» chip that clears the select. Clicking a chip sets the
+// select and re-runs the search from the first page, exactly like the
+// «Активні фільтри» chips do.
+const STATUS_CHIPS_MAX = 3;
+
+/// Rebuild the chip row from the current #f-status options (run once the
+/// dictionary load finished); the row stays hidden while no dict option was
+/// loaded (e.g. the /api/dict/stan fetch failed) — no chips, no lies.
+function buildStatusChips() {
+  const row = $("status-chips");
+  row.innerHTML = "";
+  const items = [];
+  for (const o of $("f-status").options) {
+    if (!o.value) continue; // the «Статус (усі)» entry becomes the «Усі» chip below
+    if (items.length >= STATUS_CHIPS_MAX) break;
+    items.push({ value: o.value, label: statusLabel(o.value) });
+  }
+  if (!items.length) { row.hidden = true; return; }
+  const mk = (value, text, title) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "chip";
+    b.textContent = text;
+    b.title = title;
+    b.dataset.value = value;
+    b.onclick = () => { $("f-status").value = value; doSearch(0); };
+    row.appendChild(b);
+  };
+  for (const it of items) mk(it.value, it.label, "фільтр за статусом: " + it.label);
+  mk("", "Усі", "будь-який статус");
+  row.hidden = false;
+  syncStatusChips();
+}
+
+/// Paint the chips from the select's current value (never from chip clicks):
+/// the chip whose value equals #f-status takes the accent, «Усі» (empty
+/// value) is active while the select is empty. Called on every search run
+/// (init, deep-link preselects and active-filter clears all go through
+/// doSearch) and on dropdown changes, so the row can never drift from the
+/// filter state.
+function syncStatusChips() {
+  const row = $("status-chips");
+  if (row.hidden) return;
+  const v = $("f-status").value;
+  for (const b of row.querySelectorAll(".chip")) {
+    const on = (b.dataset.value || "") === v;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+}
+
 // ---- recent search terms («недавні запити» row, the GUI search page parity) --
 // localStorage key holding the last RECENT_Q_MAX search terms (trimmed
 // non-empty strings, newest first, deduped by term; JSON errors are
@@ -1288,6 +1356,7 @@ async function doSearch(offset) {
   $("sort-bar").hidden = true;
   resetFacetLabels(); // never show counts from the previous result set
   renderActiveFilters(); // the chips mirror exactly the filters this query goes out with
+  syncStatusChips(); // the quick status chips mirror the select the query goes out with
   try {
     const d = await api("/api/search?" + p.toString());
     // Offline number search: exact nreg hit opens the document directly.
@@ -3062,6 +3131,9 @@ $("search-form").addEventListener("submit", (ev) => {
   ev.preventDefault();
   doSearch(0);
 });
+// Dropdown edits repaint the quick status chips too (chip clicks and the
+// «Активні фільтри» clears re-search, and doSearch repaints them itself).
+$("f-status").addEventListener("change", () => syncStatusChips());
 $("prev").onclick = () => doSearch(Math.max(0, state.offset - state.limit));
 $("next").onclick = () => doSearch(state.offset + state.limit);
 document.querySelectorAll("#sort-bar .chip").forEach(b =>

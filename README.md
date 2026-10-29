@@ -132,7 +132,8 @@ official open-data API:
     Save/open dialogs remember the last used folder.
   - **Читалка** — live JSON card + clean text with an **edition switcher**, an
     **edition comparison** («Порівняти редакції» — word/char/reading-time per
-    edition plus the signed «різниця: ±N слів») and
+    edition plus the signed «різниця: ±N слів», exportable to .txt via
+    «експорт звіту») and
     **structured rendering**: the act header/name line, publication & amendments
     blocks («(Відомості …)», `{Із змінами …}`), «РОЗДІЛ/ГЛАВА» and «Стаття N»
     headings and numbered items are all styled (same classification in the web
@@ -211,6 +212,9 @@ official open-data API:
   one source of truth; closes on Esc or an outside click),
   **active-filter chips** («Активні фільтри»: one chip per set filter with a ×
   that clears it and re-searches, plus «скинути все»),
+  **status quick chips** (up to three frequent statuses from the dictionary +
+  «Усі», built from the status select itself; clicking re-searches, and the
+  active chip stays in sync with deep links and the dropdown),
   **arrivals feed with «НОВЕ» badges** (viewed nregs remembered in
   localStorage, «нових: N» + «лише нові» + text filter + an «автооновлення»
   chip that refreshes the feed once a minute while the tab is open + an
@@ -306,6 +310,7 @@ Launch arguments:
 .\rada-client.exe stats --json           # machine-readable
 .\rada-client.exe cache --purge 2755-17 # drop one document's cached text
 .\rada-client.exe backfill --query "податковий кодекс" --limit 5   # pre-cache top hits' texts for offline reading (--dry-run lists without network)
+.\rada-client.exe backfill --query "податковий кодекс" --out bf.txt  # summary report to file (BOM; progress stays on stdout); --json → BOM-less
 .\rada-client.exe cache --search "освіту" --limit 10   # offline full-text over cached bodies
 .\rada-client.exe cache --search "освіту" --out hits.txt  # report to file (BOM); --json → BOM-less JSON
 .\rada-client.exe cache --dump C:\archiv                   # offline: write EVERY cached body to DIR as {nreg}.txt (BOM), quiet summary

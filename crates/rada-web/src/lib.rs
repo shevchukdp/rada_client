@@ -3920,4 +3920,60 @@ mod tests {
         let repaint = s.find("setFindCount();").expect("counter refresh on next/prev");
         assert!(step < repaint, "the counter follows the moved index");
     }
+
+    #[test]
+    fn ui_page_has_status_quick_chips() {
+        // «статус» quick chips row under the search filters: one-click
+        // shortcuts for the frequent statuses, built DYNAMICALLY from the
+        // dictionary options already loaded into #f-status (the first
+        // STATUS_CHIPS_MAX real entries after the empty «усі» option, label
+        // from the dict label, value = the dict id — no hardcoded ids) plus
+        // a trailing «Усі» chip that clears the select; the chips reuse the
+        // existing .chip styling language with the accent for the selection.
+        assert!(ui::INDEX_HTML.contains("<div id=\"status-chips\" class=\"row\" hidden></div>"));
+        assert!(ui::INDEX_HTML.contains("const STATUS_CHIPS_MAX = 3;"));
+        let b = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function buildStatusChips() {")
+            .expect("buildStatusChips")..];
+        let b = &b[..b.find("\n}").expect("buildStatusChips end")];
+        assert!(b.contains(r#"for (const o of $("f-status").options)"#), "chips build from the status select options");
+        assert!(b.contains("if (!o.value) continue;"), "the empty «усі» option is skipped");
+        assert!(b.contains("items.length >= STATUS_CHIPS_MAX"), "at most three dict chips");
+        assert!(b.contains("statusLabel(o.value)"), "chip label from the dict label, not a hardcoded string");
+        assert!(b.contains(r#"mk("", "Усі""#), "the trailing «Усі» chip (value \"\")");
+        assert!(b.contains("b.className = \"chip\";"), "shared chip styling class");
+        assert!(ui::INDEX_HTML.contains("#status-chips .chip {"), "chip CSS reuses the row-chip language");
+        assert!(ui::INDEX_HTML.contains("#status-chips .chip.active {"), "the selected chip takes the accent");
+    }
+
+    #[test]
+    fn ui_page_has_status_chips_sync() {
+        // Clicking a chip sets #f-status and re-runs the current search
+        // through the existing entry point (doSearch(0), the same call the
+        // «Активні фільтри» chips make); the chips are rebuilt once the
+        // dictionary load finished, painted from the select's state on every
+        // search run (deep-link preselects and active-filter clears all go
+        // through doSearch) and on dropdown changes; «Усі» (empty value) is
+        // the active chip while the select is empty.
+        assert!(ui::INDEX_HTML.contains(r#"fillDict("f-status", "stan").then(buildStatusChips);"#),
+            "chips are built after the status dict populates the select");
+        assert!(ui::INDEX_HTML.contains(r#"$("f-status").value = value; doSearch(0);"#),
+            "a chip click sets the select and re-searches via doSearch");
+        assert!(ui::INDEX_HTML.contains(r#"$("f-status").addEventListener("change", () => syncStatusChips());"#),
+            "dropdown edits repaint the chips");
+        let d = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function doSearch(offset) {")
+            .expect("doSearch")..];
+        let d = &d[..d.find("\n}").expect("doSearch end")];
+        let reset = d.find("resetFacetLabels();").expect("facet reset");
+        let sync = d.find("syncStatusChips();").expect("chips painted per search run");
+        assert!(reset < sync, "the chips repaint with the search state, like the facet labels");
+        let s = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function syncStatusChips() {")
+            .expect("syncStatusChips")..];
+        let s = &s[..s.find("\n}").expect("syncStatusChips end")];
+        assert!(s.contains(r#"const v = $("f-status").value;"#), "painted from the select, not from chip clicks");
+        assert!(s.contains(r#"(b.dataset.value || "") === v"#), "«Усі» (empty value) matches the empty select");
+        assert!(s.contains(r#"b.classList.toggle("active", on)"#), "selected chip styling class reuse");
+    }
 }

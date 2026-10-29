@@ -651,6 +651,19 @@ fn edition_compare(app: &mut App, ui: &mut egui::Ui, eds: &[rada_core::models::E
         for line in &lines {
             ui.label(egui::RichText::new(line).small());
         }
+        if !lines.is_empty() {
+            if ui
+                .button(egui::RichText::new("експорт звіту").small())
+                .on_hover_text("зберегти звіт порівняння у текстовий файл")
+                .clicked()
+            {
+                let (nreg, a, b) = {
+                    let r = app.reader.as_ref().unwrap();
+                    (r.hit.nreg.clone(), r.cmp_a.clone(), r.cmp_b.clone())
+                };
+                app.export_compare(&lines, &nreg, a.as_deref(), b.as_deref());
+            }
+        }
         if let Some(e) = &error {
             ui.label(egui::RichText::new(format!("порівняння: {e}")).small().color(err()));
         }
@@ -1568,6 +1581,27 @@ pub fn citation_line(title: &str, nreg: &str, edition: Option<&str>) -> String {
     s
 }
 
+/// Body of the compare-panel report saved via «експорт звіту»: a header
+/// (nreg + the two edition labels in the combo's own wording) and the
+/// rendered lines verbatim. One source for the file content.
+pub fn cmp_export_body(
+    lines: &[String],
+    nreg: &str,
+    a: Option<&str>,
+    b: Option<&str>,
+) -> String {
+    let lab = |ed: Option<&str>| match ed {
+        Some(d) => format!("ред. {}", fmt_date(d)),
+        None => "поточна ред.".to_string(),
+    };
+    let mut out = format!("Порівняння редакцій {nreg}\nA: {}\nB: {}\n\n", lab(a), lab(b));
+    for l in lines {
+        out.push_str(l);
+        out.push('\n');
+    }
+    out
+}
+
 /// Cycle the reader edition with Alt+Up/Down: the combo list is
 /// [поточна (`None`), eds[0], eds[1], …] and `delta` steps through it with
 /// wrap-around (`+1` = down, `-1` = up). `None` means nothing to do
@@ -1925,6 +1959,24 @@ mod tests {
         // A zero delta normalises the unset value to 100.
         assert_eq!(zoom_step(0, 0), 100);
         assert_eq!(zoom_step(180, 0), 180);
+    }
+
+    #[test]
+    fn cmp_export_body_has_header_and_lines() {
+        let lines = vec!["A · поточна ред.: 1000 слів".to_string(), "різниця: +120 слів".to_string()];
+        let body = cmp_export_body(&lines, "2755-17", None, Some("20230505"));
+        let mut it = body.lines();
+        assert_eq!(it.next().unwrap(), "Порівняння редакцій 2755-17");
+        assert_eq!(it.next().unwrap(), "A: поточна ред.");
+        assert_eq!(it.next().unwrap(), "B: ред. 05.05.2023");
+        assert_eq!(it.next().unwrap(), "");
+        assert_eq!(it.next().unwrap(), "A · поточна ред.: 1000 слів");
+        assert_eq!(it.next().unwrap(), "різниця: +120 слів");
+        assert_eq!(it.next(), None, "body ends with the last line + newline");
+        // both dated
+        let body2 = cmp_export_body(&[], "1-23", Some("20200101"), Some("20210202"));
+        assert!(body2.contains("A: ред. 01.01.2020"));
+        assert!(body2.contains("B: ред. 02.02.2021"));
     }
 
     #[test]

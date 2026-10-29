@@ -1345,6 +1345,32 @@ impl App {
         });
     }
 
+    /// Export the compare-panel report (offline, from the already rendered
+    /// lines) as a UTF-8 .txt through a save dialog.
+    pub fn export_compare(
+        &mut self,
+        lines: &[String],
+        nreg: &str,
+        a: Option<&str>,
+        b: Option<&str>,
+    ) {
+        if lines.is_empty() {
+            self.toast("нічого експортувати — спочатку порівняйте", err());
+            return;
+        }
+        let body = views::reader::cmp_export_body(lines, nreg, a, b);
+        let default_name = format!("porivnyannya-{}.txt", sanitize(nreg));
+        let Some(path) = self.dlg_save(default_name) else {
+            return;
+        };
+        self.spawn(move |tx| {
+            let res = std::fs::write(&path, body.as_bytes())
+                .map(|_| path)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Exported(res));
+        });
+    }
+
     /// Export the current search results page (offline, from the index)
     /// as md/txt through a save dialog.
     pub fn export_search_list(&mut self, md: bool) {

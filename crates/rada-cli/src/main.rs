@@ -9,7 +9,9 @@
 //!               `--grep TERM` greps the body with `--context N` windows);
 //! - `backfill`  fetch and cache the act texts of the top hits of a local
 //!               title search, so later reading works offline
-//!               (`--dry-run` lists cached/missing without fetching);
+//!               (`--dry-run` lists cached/missing without fetching;
+//!               `--out` writes the final summary report, the progress
+//!               lines stay on stdout);
 //! - `dict`      load reference dictionaries (stan/typs/organs) from the live API,
 //!               seed one offline from a file (`--from-file`) or report
 //!               local freshness (`--fresh`);
@@ -205,6 +207,16 @@ enum Cmd {
         /// Emit JSON instead of the progress lines.
         #[arg(long)]
         json: bool,
+        /// Write the final summary report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less. The per-document progress lines are progress, not body:
+        /// they stay on stdout even with `--out` (only the summary moves to
+        /// the file). On «нічого не знайдено» the file receives the BOM
+        /// alone and the report line stays on stdout (the house `search
+        /// --out` zero-hit rule); the note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
     },
     /// Offline report on the local index: file, documents, annotations,
     /// dictionaries, text cache, last import (`--json` for machine-readable
@@ -537,8 +549,8 @@ fn run() -> Result<()> {
         Cmd::Cache { purge, search, limit, nreg, json, out, dump } => {
             cmd_cache(&cli.db, purge, search.as_deref(), limit, nreg.as_deref(), json, out.as_deref(), dump.as_deref())
         }
-        Cmd::Backfill { query, limit, dry_run, json } => {
-            cmd_backfill(&cli.db, &query, limit, dry_run, json, cli.pace)
+        Cmd::Backfill { query, limit, dry_run, json, out } => {
+            cmd_backfill(&cli.db, &query, limit, dry_run, json, out.as_deref(), cli.pace)
         }
         Cmd::Stats { json, out } => cmd_stats(&cli.db, json, out.as_deref()),
         Cmd::Verify { json, out } => cmd_verify(&cli.db, json, out.as_deref()),
@@ -1942,6 +1954,61 @@ fn backfill_summary(fetched: usize, cached_already: usize, failed: usize, total_
     )
 }
 
+/// The summary-report body of `backfill` (shared by stdout and `--out` so
+/// the two cannot drift): the single [`backfill_summary`] counter line,
+/// carrying the ` (сухий прогін)` tail on a `--dry-run`. The live per-doc
+/// progress lines are progress, not body: they never enter this builder
+/// (and never enter the `--out` file).
+fn backfill_summary_lines(
+    fetched: usize,
+    cached_already: usize,
+    failed: usize,
+    total_rows: i64,
+    dry_run: bool,
+) -> Vec<String> {
+    let line = backfill_summary(fetched, cached_already, failed, total_rows);
+    vec![if dry_run {
+        format!("{line} (сухий прогін)")
+    } else {
+        line
+    }]
+}
+
+/// The `--json` body of `backfill` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty `{"cached_already":…,"failed":…,"fetched":…,"rows":…}`
+/// object over the run counters (map keys sort, the historical inline
+/// shape). stdout prints exactly this string plus a trailing newline; the
+/// `--out` file receives the same bytes BOM-less (machine data, the house
+/// JSON rule).
+fn backfill_json_body(
+    fetched: usize,
+    cached_already: usize,
+    failed: usize,
+    total_rows: i64,
+) -> Result<String> {
+    let value = serde_json::json!({
+        "fetched": fetched,
+        "cached_already": cached_already,
+        "failed": failed,
+        "rows": total_rows,
+    });
+    serde_json::to_string_pretty(&value).map_err(anyhow::Error::from)
+}
+
+/// The stderr note printed after `backfill --out` has written the summary
+/// report (`n_lines` report lines) to `file`.
+fn backfill_out_note(n_lines: usize, file: &Path) -> String {
+    format!("[backfill] записано {n_lines} рядків звіту → {}", file.display())
+}
+
+/// The stderr note printed after `backfill --json --out` has written the
+/// JSON body to `file` (`[backfill] записано JSON → {file}` — the same
+/// wording as the `search` / `cache` / `annot list` / `resolve` / `dict` /
+/// `related` JSON notes).
+fn backfill_json_out_note(file: &Path) -> String {
+    format!("[backfill] записано JSON → {}", file.display())
+}
+
 /// Fetch and cache the act texts of the top hits of a local title search so
 /// later reading is offline. The hits come from `rada_db::search::search`
 /// (`nazva` only, `limit` clamped to 1..=25); already-cached documents are
@@ -1950,12 +2017,21 @@ fn backfill_summary(fetched: usize, cached_already: usize, failed: usize, total_
 /// A single fetch failure prints a muted line and never aborts the loop —
 /// the command is best-effort and exits 0 even when every fetch fails.
 /// `--dry-run` only lists the cached/missing state: no network, no writes.
+/// With `--out` the exact stdout summary report (or the `--json` body) goes
+/// to the file (parent dirs created) and does not print to stdout: the
+/// plain report is written UTF-8 with a BOM (Excel-friendly, like
+/// search/arrivals/related), the `--json` body BOM-less; one
+/// `[backfill] записано …` note goes to stderr. The per-doc progress lines
+/// are progress, not body: they stay on stdout even with `--out`. On
+/// «нічого не знайдено» the report line stays stdout-only and the file
+/// receives the BOM alone (the house `search --out` zero-hit rule).
 fn cmd_backfill(
     db: &PathBuf,
     query: &str,
     limit: usize,
     dry_run: bool,
     json: bool,
+    out: Option<&Path>,
     pace: u64,
 ) -> Result<()> {
     let limit = limit.clamp(1, 25);
@@ -1968,7 +2044,15 @@ fn cmd_backfill(
     };
     let (hits, _total) = rada_db::search::search(&conn, &q)?;
     if hits.is_empty() {
+        // The stdout-only zero-hit report line (the house `search --out`
+        // rule): with `--out` the file carries the summary body, which is
+        // empty here, so it receives the BOM alone and the note goes to
+        // stderr.
         println!("нічого не знайдено");
+        if let Some(p) = out {
+            write_out_file(p, "\u{FEFF}".as_bytes())?;
+            eprintln!("{}", backfill_out_note(0, p));
+        }
         return Ok(());
     }
     let n = hits.len();
@@ -2012,20 +2096,32 @@ fn cmd_backfill(
     }
     let (rows, _bytes) = rada_db::textcache::stats(&conn).unwrap_or((0, 0));
     if json {
-        let out = serde_json::json!({
-            "fetched": fetched,
-            "cached_already": cached_already,
-            "failed": failed,
-            "rows": rows,
-        });
-        println!("{}", serde_json::to_string_pretty(&out).map_err(anyhow::Error::from)?);
+        let body = backfill_json_body(fetched, cached_already, failed, rows)?;
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", backfill_json_out_note(p));
+            }
+            None => println!("{body}"),
+        }
         return Ok(());
     }
-    let summary = backfill_summary(fetched, cached_already, failed, rows);
-    if dry_run {
-        println!("{summary} (сухий прогін)");
-    } else {
-        println!("{summary}");
+    let lines = backfill_summary_lines(fetched, cached_already, failed, rows, dry_run);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/resolve/related; the bytes are exactly the
+            // stdout summary report (the per-doc progress lines printed
+            // above are progress, not body, and stayed on stdout).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", backfill_out_note(lines.len(), p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
     }
     Ok(())
 }
@@ -3344,7 +3440,8 @@ mod tests {
         annot_json_body, annot_json_out_note, annot_list_out_note, annot_out_note,
         annot_search_lines, annot_search_match, annot_search_out_note, annot_table_lines,
         annot_text_file_note, arrivals_date_key,
-        arrivals_out_note, backfill_summary, cache_dump_filename, cache_dump_lines,
+        arrivals_out_note, backfill_out_note, backfill_summary, backfill_summary_lines,
+        cache_dump_filename, cache_dump_lines,
         cache_search_out_note, card_out_note, dict_fresh_json, dict_fresh_lines, dict_json_body,
         dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, dict_stats_json,
         dict_stats_lines, dict_stats_out_note, export_html,
@@ -4110,6 +4207,38 @@ mod tests {
         assert!(line.contains("вже в кеші 1"));
         assert!(line.contains("помилок 0"));
         assert!(line.contains("; кеш тепер: 42 тіл"));
+    }
+
+    #[test]
+    fn backfill_summary_lines_renders_counters() {
+        // live run: the single counter line, exact wording, comma/semicolon
+        // separators (the bytes stdout prints and the `--out` file carries)
+        assert_eq!(
+            backfill_summary_lines(3, 5, 1, 1234, false),
+            vec!["отримано 3, вже в кеші 5, помилок 1; кеш тепер: 1234 тіл".to_string()]
+        );
+        // dry run: the same line with the «(сухий прогін)» tail
+        assert_eq!(
+            backfill_summary_lines(0, 2, 0, 7, true),
+            vec!["отримано 0, вже в кеші 2, помилок 0; кеш тепер: 7 тіл (сухий прогін)".to_string()]
+        );
+        // zero-run shape: all counters render their zeros (never omitted)
+        assert_eq!(
+            backfill_summary_lines(0, 0, 0, 0, false),
+            vec!["отримано 0, вже в кеші 0, помилок 0; кеш тепер: 0 тіл".to_string()]
+        );
+    }
+
+    #[test]
+    fn backfill_out_note_formats_lines_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//b.txt");
+        let line = backfill_out_note(1, file);
+        assert!(line.starts_with("[backfill] записано "));
+        assert!(line.contains("1"));
+        assert!(line.contains("рядків звіту"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
     }
 
     #[test]

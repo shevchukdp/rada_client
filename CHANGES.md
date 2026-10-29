@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.41: швидкі чипи статусу у веб, `backfill --out` та експорт порівняння редакцій / status quick chips, backfill --out & compare export
+
+- **UKR:** 1) **Чипи статусу під фільтрами веб-пошуку**: до трьох частих статусів зі словника одним кліком (без розгорнутого списку) плюс «Усі»; чипи беруться з самого списку статусів, підсвічують обраний і повторюють пошук; працюють і для посилань `?status=`. 2) **CLI `backfill --out FILE`**: підсумковий звіт доповнення кеша тепер їде у файл (таблиця з BOM / `--json` без BOM), рядки прогресу лишаються у stdout; порожній пошук — лише BOM. 3) **«експорт звіту» у панелі «Порівняти редакції»** програми: зберігає порівняння двох редакцій у .txt — з назвою акта, номером, обома редакціями й усіма рядками звіту. 4) Тести: 285/285.
+- **ENG:** 1) **Status quick chips under the web search filters**: up to three frequent dictionary statuses in one click (no dropdown) plus «Усі»; built from the status select itself, they highlight the active choice and re-run the search, and stay correct for `?status=` deep links. 2) **CLI `backfill --out FILE`**: the cache-fill summary now lands in a file (BOM table / BOM-less `--json`) while progress lines stay on stdout; a zero-hit run writes only the BOM. 3) **An «експорт звіту» button in the desktop «Порівняти редакції» panel** saves the two-edition comparison as .txt — act title, number, both editions and every report line. 4) Tests: 285/285.
+
+---
+
+## 2026-10-29
+
 ### 0.10.40: лічильник збігів у веб-пошуку, `dict-stats` та Alt+↑/↓ для редакцій / find match counter, dict-stats & edition hotkeys
 
 - **UKR:** 1) **«N з M» у пошуку по тексту веб-читалки**: лічильник показує, який збіг зараз і скільки їх усього; «нічого не знайдено» замість тиші, ховається при порожньому запиті й переході на інший акт. 2) **CLI `dict-stats`**: офлайн звіт заповненості словників довідників — «стани: 10 / типи: 138 / органи: 799» + загальна кількість; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 3) **Alt+↑/↓ у читалці програми** гортають редакції: поточна ↔ dated по колу, один вивірений запит. 4) Тести: 280/280.
