@@ -1111,10 +1111,15 @@ async function fillDict(selectId, kind) {
 // After every search the «Статус» / «Тип» / «Видавник» options carry the
 // number of hits each would yield in the current result set, e.g.
 // «5 — Чинний (1204)». Options without a match keep the plain label.
+// The payload is /api/search's «facets»: one array of [id, count] pairs per
+// axis; a null/missing axis (facet error, nreg-exact answer) or any option
+// with no entry simply paints that option from its clean cached label.
 function applyFacets(selectId, counts) {
   const cache = optionLabels[selectId] || {};
   const byId = {};
-  for (const pair of counts || []) byId[String(pair[0])] = pair[1];
+  // A malformed (non-array) axis counts like a missing one: every option
+  // rebuilds from its clean label instead of throwing mid-search.
+  for (const pair of Array.isArray(counts) ? counts : []) byId[String(pair[0])] = pair[1];
   for (const o of $(selectId).options) {
     const label = cache[o.value];
     if (label === undefined) continue; // «усі» and non-dict options stay as-is

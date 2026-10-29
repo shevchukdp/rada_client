@@ -253,6 +253,13 @@ impl App {
         }
         // The arrivals text filter survives restarts.
         app.arrivals.filter = app.settings.arr_filter.clone();
+        // So does the Favorites view: kind/sort chips, grouping, filter.
+        app.fav.kind_sel = app.settings.fav_kind.min(3);
+        app.fav.sort_sel = app.settings.fav_sort.min(2);
+        if let Some(g) = app.settings.fav_grouped {
+            app.fav.grouped = g;
+        }
+        app.fav.filter = app.settings.fav_filter.clone();
         // So does the chosen result sort («date_desc» etc., lenient parse).
         app.search.sort = rada_db::search::Sort::parse(&app.settings.sort);
         // And the dictionary filters of the last searched query (0 = unset).

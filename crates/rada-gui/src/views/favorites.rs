@@ -333,11 +333,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
         // ---- toolbar: text filter + kind chips + grouping toggle -----
         ui.horizontal_wrapped(|ui| {
-            ui.add_sized(
+            let fr = ui.add_sized(
                 [300.0, 24.0],
                 egui::TextEdit::singleline(&mut app.fav.filter)
                     .hint_text("фільтр тексту чи назви…"),
             );
+            // Persist when the edit commits (focus lost) — not per keystroke.
+            if fr.lost_focus() && app.settings.fav_filter != app.fav.filter {
+                app.settings.fav_filter = app.fav.filter.clone();
+                crate::settings::save(&app.settings);
+            }
             let counts = kind_counts(&app.fav.items);
             for (i, lab) in KIND_FILTERS.iter().enumerate() {
                 let active = app.fav.kind_sel == i;
@@ -347,6 +352,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     .clicked()
                 {
                     app.fav.kind_sel = i;
+                    app.settings.fav_kind = i;
+                    crate::settings::save(&app.settings);
                 }
             }
             ui.separator();
@@ -359,6 +366,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                 .clicked()
             {
                 app.fav.grouped = !app.fav.grouped;
+                app.settings.fav_grouped = Some(app.fav.grouped);
+                crate::settings::save(&app.settings);
             }
             ui.separator();
             for (i, lab, tip) in [
@@ -373,6 +382,8 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     .clicked()
                 {
                     app.fav.sort_sel = i;
+                    app.settings.fav_sort = i;
+                    crate::settings::save(&app.settings);
                 }
             }
             if app.fav.grouped && !app.fav.collapsed.is_empty() {

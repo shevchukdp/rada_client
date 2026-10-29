@@ -40,6 +40,11 @@
 //!               offline `organs` dictionary
 //!               (`--json` for machine-readable output, `--out` to write
 //!               the report; informational — never exits nonzero);
+//! - `statuses`  offline document-status histogram on `status` — how many
+//!               documents are чинний / не чинний / …, labels from the
+//!               offline `stan` dictionary
+//!               (`--json` for machine-readable output, `--out` to write
+//!               the report; informational — never exits nonzero);
 //! - `export`    offline export of a cached document body as md / txt / html
 //!               (text cache only — never touches the network);
 //! - `toc`       offline outline (зміст) of a cached document: «Розділ/Глава»
@@ -499,6 +504,25 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Offline «what condition is my index in»: document-status
+    /// distribution on the `status` column of `docs` — how many documents
+    /// are чинний / не чинний / …, with labels resolved from the offline
+    /// `stan` dictionary. Complements `dates` / `orgs`, shows the index
+    /// freshness mix, and helps pick the status filters. Pure offline: the
+    /// command never touches the network; informational — always exits 0.
+    Statuses {
+        /// Emit the JSON body
+        /// (`{"statuses":[{count,id,label},…],"total":N}`) instead of the
+        /// report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less; the `[statuses] записано …` note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Offline export of a CACHED document body as md / txt / html: the
     /// text comes from the local text cache only — the command never
     /// touches the network. Export the current edition; read the document
@@ -726,6 +750,9 @@ fn run() -> Result<()> {
         Cmd::Dates { json, out } => cmd_dates(&cli.db, json, out.as_deref()),
         Cmd::Orgs { limit, json, out } => {
             cmd_orgs(&cli.db, limit, json, out.as_deref())
+        }
+        Cmd::Statuses { json, out } => {
+            cmd_statuses(&cli.db, json, out.as_deref())
         }
         Cmd::Export { nreg, fmt, out } => {
             cmd_export(&cli.db, &nreg, &fmt, out.as_deref())
@@ -4482,6 +4509,168 @@ fn cmd_orgs(db: &PathBuf, limit: usize, json: bool, out: Option<&Path>) -> Resul
     Ok(())
 }
 
+/// One `statuses` histogram row: the status id as stored in the INTEGER
+/// `status` column (0 is the «status unknown» default), its label resolved
+/// from the offline `stan` dictionary (fallback: the built-in
+/// `StatusId::label`, or the «— не визначено» placeholder), and the number
+/// of documents carrying it.
+struct StatusRow {
+    id: i64,
+    label: String,
+    count: i64,
+}
+
+/// The report body of `statuses` (shared by stdout and `--out` so the two
+/// cannot drift): «Розподіл за статусами:» header, then one
+/// `{label} [{id}]: {count}` line per status in input order (the SQL sorts
+/// by count descending — no rank prefix, mirroring the
+/// `dates`/`dict-stats` body style, counts render plain like the
+/// `stats`/`verify` numbers), then the «всього документів: {total}»
+/// verdict, or «індекс порожній» when the histogram has no rows at all
+/// (the `dates_lines` empty idiom). Informational: an empty histogram
+/// never fails the run.
+fn statuses_lines(rows: &[StatusRow], total: i64) -> Vec<String> {
+    let mut lines = vec!["Розподіл за статусами:".to_string()];
+    for r in rows {
+        lines.push(format!("{} [{}]: {}", r.label, r.id, r.count));
+    }
+    match rows.first() {
+        Some(_) => lines.push(format!("всього документів: {total}")),
+        None => lines.push("індекс порожній".to_string()),
+    }
+    lines
+}
+
+/// The `--json` body of `statuses` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty
+/// `{"statuses":[{count,id,label},…],"total":N}` object over the rows,
+/// built as hand-rolled `serde_json::Value`s like the other commands'
+/// JSON bodies (map keys sort, so `statuses` precedes `total` and
+/// `count`/`id`/`label` keep their alphabetical order inside every entry).
+/// stdout prints exactly this string plus a trailing newline; the `--out`
+/// file receives the same bytes BOM-less (machine data, the house JSON
+/// rule).
+fn statuses_json(rows: &[StatusRow], total: i64) -> String {
+    let statuses: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "id": r.id,
+                "label": r.label,
+                "count": r.count,
+            })
+        })
+        .collect();
+    let value = serde_json::json!({ "statuses": statuses, "total": total });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `statuses --out` has written `file`
+/// (`n` status rows, the same wording in both modes):
+/// `[statuses] записано {n} статусів → {file}`.
+fn statuses_out_note(n: usize, file: &Path) -> String {
+    format!("[statuses] записано {n} статусів → {}", file.display())
+}
+
+/// Offline «what condition is my index in» (`statuses`): the
+/// document-status distribution over the INTEGER `status` column of `docs`
+/// — complements `dates` / `orgs`, shows the freshness mix, and helps the
+/// user pick the status filters. Never builds a client, never touches the
+/// network. A missing index file is a hard error («індекс не знайдено: …»,
+/// the `stats`/`verify` rule). The histogram comes straight from `docs`
+/// through the connection `rada_db::open` returns (the `verify` /
+/// `dict-stats` direct-SQL idiom): `GROUP BY status ORDER BY COUNT(*)
+/// DESC` (there are few statuses — the `stan` dictionary holds ~10, so no
+/// `--limit`). The label comes from the offline `stan` dictionary — one
+/// `query_row` per distinct status cached in a `HashMap` (the `orgs`
+/// idiom), so the output is identical to `dict --kind stan` where
+/// populated — and falls back to the built-in `StatusId(id).label()` when
+/// the dict row is missing; an empty label renders the «— не визначено»
+/// placeholder. The `total` is the whole index (`COUNT(*) FROM docs`, the
+/// `dates` rule). Informational: the run always exits 0. With `--out` the
+/// exact stdout body goes to the file (parent dirs created) and nothing
+/// prints to stdout: the plain report is written UTF-8 with a BOM
+/// (Excel-friendly, like search/arrivals/stats/verify), the `--json` body
+/// BOM-less; one `[statuses] записано {n} статусів → {file}` note goes to
+/// stderr. The header always renders, so the file is never BOM-alone.
+fn cmd_statuses(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
+        .unwrap_or(0);
+    let mut stmt = conn
+        .prepare(
+            "SELECT status, COUNT(*) AS c FROM docs
+             GROUP BY status ORDER BY c DESC",
+        )
+        .context("prepare statuses histogram")?;
+    let mut mapped = stmt
+        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+        .context("run statuses histogram")?;
+    // Offline label lookup cached per distinct status (the `orgs`
+    // label-cache idiom): the `stan` dictionary wins where populated (the
+    // output then matches `dict --kind stan` byte for byte), a dict miss
+    // falls back to the built-in `StatusId` label, and an empty label
+    // renders the «— не визначено» placeholder.
+    let mut labels: std::collections::HashMap<i64, String> =
+        std::collections::HashMap::new();
+    let mut rows: Vec<StatusRow> = Vec::new();
+    while let Some((id, count)) = mapped.next().transpose()? {
+        let label = labels
+            .entry(id)
+            .or_insert_with(|| {
+                conn.query_row(
+                    "SELECT label FROM dict WHERE kind = 'stan' AND id = ?1",
+                    [id],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap_or_else(|_| rada_core::models::StatusId(id).label().to_string())
+            })
+            .clone();
+        rows.push(StatusRow {
+            id,
+            label: if label.is_empty() {
+                "— не визначено".to_string()
+            } else {
+                label
+            },
+            count,
+        });
+    }
+    if json {
+        let body = statuses_json(&rows, total);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", statuses_out_note(rows.len(), p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = statuses_lines(&rows, total);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout report (the header always renders, so never
+            // BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", statuses_out_note(rows.len(), p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_status(db: &PathBuf) -> Result<()> {
     if !db.exists() {
         eprintln!("no index at {} (run `rada-client init` first)", db.display());
@@ -4575,10 +4764,11 @@ mod tests {
         recent_json_body, recent_json_out_note, recent_lines,
         recent_out_note, related_json_body, related_json_out_note, related_out_note,
         resolve_out_note, search_out_note, since_note,
-        stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
+        stats_lines, stats_out_note, statuses_json, statuses_lines, statuses_out_note,
+        text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
         toc_out_note, verify_lines, verify_out_note, DictStat, FavRow, FavSort, HitsFormat,
         OrgRow,
-        RecentRow, StatsInfo, TocEntry, YearRow,
+        RecentRow, StatsInfo, StatusRow, TocEntry, YearRow,
         VerifyCheck, VerifyStatus,
     };
 
@@ -6560,6 +6750,106 @@ mod tests {
         assert_eq!(
             orgs_out_note(0, file),
             format!("[orgs] записано 0 видавців → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn statuses_lines_renders_rows_and_total() {
+        // header + one «{label} [{id}]: {count}» line per status in input
+        // order (the SQL sorts by count descending — the ranking lives in
+        // the order, no rank prefix, mirroring the `dates`/`dict-stats`
+        // body), an unresolved status (the 0 / dict-miss-with-empty-label
+        // case, already mapped by the caller) renders the «— не визначено»
+        // placeholder, then the «всього документів» line (informational —
+        // the command still exits 0)
+        let rows = vec![
+            StatusRow {
+                id: 5,
+                label: "Чинний".into(),
+                count: 200000,
+            },
+            StatusRow {
+                id: 1,
+                label: "Втратив чинність".into(),
+                count: 95339,
+            },
+            StatusRow {
+                id: 0,
+                label: "— не визначено".into(),
+                count: 1,
+            },
+        ];
+        assert_eq!(
+            statuses_lines(&rows, 295340),
+            vec![
+                "Розподіл за статусами:".to_string(),
+                "Чинний [5]: 200000".to_string(),
+                "Втратив чинність [1]: 95339".to_string(),
+                "— не визначено [0]: 1".to_string(),
+                "всього документів: 295340".to_string(),
+            ]
+        );
+        // empty index: the header still renders (the `--out` file is never
+        // BOM-alone) and the verdict flips to «індекс порожній» (the
+        // `dates_lines` empty idiom)
+        assert_eq!(
+            statuses_lines(&[], 0),
+            vec![
+                "Розподіл за статусами:".to_string(),
+                "індекс порожній".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn statuses_json_renders_statuses_and_total() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «statuses» precedes «total» and «count»/«id»/«label»
+        // keep their alphabetical order inside every entry.
+        let rows = vec![
+            StatusRow {
+                id: 5,
+                label: "Чинний".into(),
+                count: 2,
+            },
+            StatusRow {
+                id: 0,
+                label: "— не визначено".into(),
+                count: 3,
+            },
+        ];
+        let body = statuses_json(&rows, 5);
+        assert_eq!(
+            body,
+            "{\n  \"statuses\": [\n    {\n      \"count\": 2,\n      \"id\": 5,\n      \"label\": \"Чинний\"\n    },\n    {\n      \"count\": 3,\n      \"id\": 0,\n      \"label\": \"— не визначено\"\n    }\n  ],\n  \"total\": 5\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // empty histogram: a well-formed empty report with total 0
+        assert_eq!(
+            statuses_json(&[], 0),
+            "{\n  \"statuses\": [],\n  \"total\": 0\n}"
+        );
+    }
+
+    #[test]
+    fn statuses_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//s.txt");
+        let line = statuses_out_note(10, file);
+        assert_eq!(
+            line,
+            format!("[statuses] записано 10 статусів → {}", file.display())
+        );
+        assert!(line.starts_with("[statuses] "));
+        assert!(line.contains("10"));
+        assert!(line.contains("статусів"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the informational zero rule: the note still formats with 0 rows
+        assert_eq!(
+            statuses_out_note(0, file),
+            format!("[statuses] записано 0 статусів → {}", file.display())
         );
     }
 }

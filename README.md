@@ -125,7 +125,8 @@ official open-data API:
   - **Favorites (Обране)** — every saved annotation across all documents on one
     page: kind filters, one-click open, «цилата» (copy the full act reference),
     «копія» (copy nreg), «сайт» (open on zakon.rada.gov.ua), «експорт .txt»
-    (exactly the filtered/sorted view, web parity), delete; bare bookmarks show
+    (exactly the filtered/sorted view, web parity), delete; the filter, kind
+    chip, sort and grouping choices persist across restarts; bare bookmarks show
     an italic context snippet from the offline text cache (GUI and web).
   - **Bandwidth-friendly** — repeated dictionary / arrivals-feed fetches use
     conditional HTTP (`ETag`/`If-None-Match`, `Last-Modified`/`If-Modified-Since`);
@@ -343,6 +344,7 @@ Launch arguments:
 .\rada-client.exe dict-stats             # offline population report: стани / типи / органи + total; --json / --out too
 .\rada-client.exe dates                  # offline year histogram of adoption dates («без дати» + «найновіший рік»); --json / --out too
 .\rada-client.exe orgs                   # offline top publishers by document count + «всього документів»; --limit ≤200, --json / --out too
+.\rada-client.exe statuses               # offline status distribution (dict labels) + «всього документів»; --json / --out too
 
 # 4) Keep the index current.
 .\rada-client.exe sync                   # dictionaries + updated-documents feed

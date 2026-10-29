@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.48: `statuses` з CLI, стійкий вигляд Обраних та надійні лічби фільтрів у веб / statuses histogram, durable favorites view & robust facet counts
+
+- **UKR:** 1) **CLI `statuses`**: офлайн розподіл документів за статусами («Чинний [5]: 122522 …») з міткою зі словника «стани» і підсумком «всього документів»; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 2) **Вигляд Обраних у програмі тепер стійкий**: текстовий фільтр, чип виду, сортування й «групувати» повертаються після перезапуску. 3) **Лічби збігів у випадаючих списках фільтрів веб-пошуку** стали надійнішими: некоректні дані фільтрів більше не ламають пошук, мітки списків, чипів і друку лишаються чистими. 4) Тести: 328/328.
+- **ENG:** 1) **CLI `statuses`**: an offline document-status distribution («Чинний [5]: 122522 …») with dictionary labels and a «всього документів» footer; `--json` and `--out FILE` (BOM table / BOM-less JSON). 2) **The desktop Favorites view is now durable**: the text filter, kind chip, sort and «групувати» toggle come back after a restart. 3) **Facet counts in the web search dropdowns got sturdier**: a malformed facet payload can no longer break a healthy search, and filter/chip/print labels stay clean. 4) Tests: 328/328.
+
+---
+
+## 2026-10-29
+
 ### 0.10.47: CSV-експорт оновлень у веб, `orgs` з CLI та Ctrl+Enter на Оновленнях / arrivals CSV export, orgs histogram & arrivals Ctrl+Enter
 
 - **UKR:** 1) **«експорт .csv» на «Нових документах» у веб**: завантажує саме показаний перелік (текстовий фільтр і «лише нові» враховуються), той самий формат, що й у програмі — UTF-8 з BOM, рядок заголовків, правильне лапкове екранування; порожній перелік — файл із одним заголовком. 2) **CLI `orgs [--limit N]`**: офлайн рейтинг видавців за кількістю документів (словник «органи» + лічба по індексу), «всього документів» у підсумку; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 3) **Ctrl+Enter на сторінці Оновлень** відкриває перший показаний документ у читалці — спільний код фільтрації з CSV-експортом; «клавіші» оновлено. 4) Тести: 322/322.

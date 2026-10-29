@@ -3105,6 +3105,73 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_select_facet_counts() {
+        // Paint pass: every dictionary select gets the current query's facet
+        // counts in its option labels («Кабінет Міністрів України (275)»),
+        // built FRESH from the cached clean label plus the count, so a
+        // repaint can never stack (« (5) (7)» is impossible).
+        let h = ui::INDEX_HTML;
+        let f = &h[h.find("function applyFacets(").expect("applyFacets")..];
+        let f = &f[..f.find("\n}").expect("applyFacets end")];
+        assert!(f.contains("optionLabels[selectId]"),
+            "labels rebuild from the clean cache, never from the painted text");
+        assert!(f.contains("byId[String(pair[0])] = pair[1]"),
+            "the payload is [id, count] pairs from the search response's facets");
+        assert!(f.contains(r##"o.textContent = n === undefined ? label : label + " (" + n + ")";"##),
+            "count appended to the clean label; an option with no facet entry stays clean");
+        assert!(f.contains("Array.isArray(counts) ? counts : []"),
+            "a malformed (missing or non-array) axis paints every option clean instead of throwing");
+        // All three axes are fed from the search payload after a successful
+        // search (the facet data the /api/search response already carries).
+        assert!(h.contains(r##"applyFacets("f-status", d.facets && d.facets.status)"##));
+        assert!(h.contains(r##"applyFacets("f-typ", d.facets && d.facets.typ)"##));
+        assert!(h.contains(r##"applyFacets("f-org", d.facets && d.facets.org)"##));
+        // The counts reach the options only through these labels: the clean
+        // label is captured once in fillDict, before any painting happens.
+        let fd = &h[h.find("async function fillDict(").expect("fillDict")..];
+        let fd = &fd[..fd.find("\n}").expect("fillDict end")];
+        assert!(fd.contains(r##"optionLabels[selectId][o.value] = o.textContent;"##),
+            "the clean label is cached when the dictionary populates the select");
+    }
+
+    #[test]
+    fn ui_page_has_select_facet_counts_reset() {
+        // Reset pass: a new search strips every painted count before the
+        // fetch goes out, so facet-less results (null facets, the nreg-exact
+        // early return) and failed searches all leave the options clean.
+        let h = ui::INDEX_HTML;
+        let r = &h[h.find("function resetFacetLabels() {").expect("resetFacetLabels")..];
+        let r = &r[..r.find("\n}").expect("resetFacetLabels end")];
+        assert!(r.contains(r##"for (const selectId of ["f-status", "f-typ", "f-org"])"##),
+            "every dictionary select is restored, not just one");
+        assert!(r.contains(r##"o.textContent = label;"##),
+            "labels restored from the clean cache");
+        let d = &h[h.find("async function doSearch(offset) {").expect("doSearch")..];
+        let d = &d[..d.find("\n}").expect("doSearch end")];
+        let reset = d.find("resetFacetLabels();").expect("facet reset");
+        let fetch = d.find("await api(").expect("search fetch");
+        assert!(reset < fetch,
+            "stale counts die before the fetch: a failed or facet-less search repaints clean");
+        // Chip and export label sources read the clean caches, never the
+        // painted option text, so counts never leak out of the dropdowns.
+        let bc = &h[h.find("function buildStatusChips() {").expect("buildStatusChips")..];
+        let bc = &bc[..bc.find("\n}").expect("buildStatusChips end")];
+        assert!(bc.contains(r##"items.push({ value: o.value, label: statusLabel(o.value) });"##),
+            "quick status chips take the clean dict label through statusLabel(), not option text");
+        let ac = &h[h.find("function activeChips() {").expect("activeChips")..];
+        let ac = &ac[..ac.find("\n}").expect("activeChips end")];
+        assert!(ac.contains(r##"const cache = optionLabels[id] || {};"##),
+            "active-filter chips take the cached clean label, not the painted option text");
+        assert!(ac.contains(r##"return cache[v] === undefined ? v : cache[v];"##),
+            "a cached label always wins over the raw value");
+        // syncStatusChips only toggles chip state; it never rewrites labels,
+        // so the quick-chip row cannot pick up a count suffix either.
+        let sc = &h[h.find("function syncStatusChips() {").expect("syncStatusChips")..];
+        let sc = &sc[..sc.find("\n}").expect("syncStatusChips end")];
+        assert!(!sc.contains("textContent"), "the chip repaint never rewrites labels");
+    }
+
+    #[test]
     fn ui_page_print_passes_theme() {
         // The «Друк» button appends the current theme id so the print view
         // restyles headings with the theme accent (per-theme print CSS).

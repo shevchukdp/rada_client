@@ -44,6 +44,14 @@ pub struct Settings {
     /// Publisher label belonging to `f_org` (shown on the active-filter chip
     /// before the dictionaries are loaded).
     pub f_org_label: String,
+    /// Favorites page view: kind chip index (0 = усі), sort chip index
+    /// (0 = новіші, 1 = старіші, 2 = за назвою), grouped-by-document toggle
+    /// (`None` = never stored → the page default «grouped»), and the text
+    /// filter. Restored on launch.
+    pub fav_kind: usize,
+    pub fav_sort: usize,
+    pub fav_grouped: Option<bool>,
+    pub fav_filter: String,
 }
 
 impl Settings {
@@ -177,6 +185,13 @@ fn parse(text: &str) -> Settings {
                 "typ" => s.f_typ = v.trim().parse().unwrap_or(0),
                 "org" => s.f_org = v.trim().parse().unwrap_or(0),
                 "orglabel" => s.f_org_label = v.trim().to_string(),
+                "favkind" => s.fav_kind = v.trim().parse().unwrap_or(0),
+                "favsort" => s.fav_sort = v.trim().parse().unwrap_or(0),
+                "favgrouped" => {
+                    let v = v.trim();
+                    s.fav_grouped = Some(v != "0");
+                }
+                "favfilter" => s.fav_filter = v.trim().to_string(),
                 "recent" => {
                     let mut f = v.split('\t');
                     if let (Some(n), Some(t)) = (f.next(), f.next()) {
@@ -239,6 +254,15 @@ fn render(s: &Settings) -> String {
     for n in &s.arr_seen {
         out.push_str(&format!("arrseen={}\n", clean(n)));
     }
+    out.push_str(&format!(
+        "favkind={}\nfavsort={}\nfavfilter={}\n",
+        s.fav_kind,
+        s.fav_sort,
+        clean(&s.fav_filter),
+    ));
+    if let Some(g) = s.fav_grouped {
+        out.push_str(&format!("favgrouped={}\n", if g { 1 } else { 0 }));
+    }
     out
 }
 
@@ -269,6 +293,7 @@ mod tests {
             f_typ: 12,
             f_org: 45,
             f_org_label: "Міністерство юстиції".into(),
+            ..Settings::default()
         };
         let p = std::env::temp_dir().join("rada-settings-test.ini");
         save_to(&p, &s).unwrap();
@@ -382,6 +407,29 @@ mod tests {
         assert_eq!(s.recent_q.len(), 10);
         let legacy = parse("last_query=податковий кодекс\n");
         assert_eq!(legacy.recent_q, vec!["податковий кодекс".to_string()]);
+    }
+
+    #[test]
+    fn favorites_view_roundtrip_and_grouped_default() {
+        // absent keys = untouched defaults (grouped stays None → page default)
+        let d = parse("last_nreg=x\n");
+        assert_eq!((d.fav_kind, d.fav_sort, d.fav_grouped, d.fav_filter.as_str()), (0, 0, None, ""));
+        // stored values come back verbatim, incl. the three-state grouped
+        let mut s = Settings::default();
+        s.fav_kind = 3;
+        s.fav_sort = 2;
+        s.fav_grouped = Some(false);
+        s.fav_filter = "податков".into();
+        let got = parse(&render(&s));
+        assert_eq!((got.fav_kind, got.fav_sort), (3, 2));
+        assert_eq!(got.fav_grouped, Some(false));
+        assert_eq!(got.fav_filter, "податков");
+        // grouped=true round-trips too; garbage kind/sort falls back to 0
+        s.fav_grouped = Some(true);
+        assert_eq!(parse(&render(&s)).fav_grouped, Some(true));
+        let g = parse("favkind=abc\nfavsort=9x\nfavgrouped=notanumber\n");
+        assert_eq!((g.fav_kind, g.fav_sort), (0, 0));
+        assert_eq!(g.fav_grouped, Some(true), "anything but 0 means grouped");
     }
 
     #[test]
