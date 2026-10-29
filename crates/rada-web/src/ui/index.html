@@ -676,6 +676,7 @@
       <button id="fav-refresh" type="button">оновити</button>
       <span id="fav-count" class="hint"></span>
       <button id="fav-export" type="button" title="Резервна копія всіх анотацій у файл JSON">⬇ Експорт .json</button>
+      <button id="btn-fav-export-txt" type="button" title="Вивантажити показані анотації у текстовий файл">експорт .txt</button>
       <button id="fav-import" type="button" title="Додати анотації з резервної копії JSON">⬆ Імпорт .json</button>
       <input id="fav-import-file" type="file" accept=".json,application/json" hidden>
       <span id="fav-status" class="hint"></span>
@@ -2931,6 +2932,34 @@ async function favJump(a) {
 
 $("fav-refresh").onclick = loadFavorites;
 $("fav-export").onclick = () => { location.href = "/api/annotations/export"; };
+// «експорт .txt»: a plain-text dump of exactly the rows currently on
+// screen — the same kind chip + #fav-filter + sort pipeline renderFavorites
+// runs (favSorted + favRowMatches, same order) — handed over through the
+// reader export's Blob / object-URL idiom under the fixed annots.txt name.
+function exportFavTxt() {
+  const sorted = favSorted(favItems, favSort);
+  const needle = $("fav-filter").value;
+  const items = sorted
+    .filter(a => !favKind || a.kind === favKind)
+    .filter(a => favRowMatches(a, needle));
+  const parts = ["Обрані анотації — " + items.length + " з " + favItems.length];
+  for (const it of items) {
+    let head = "[" + it.kind + "] " + (it.title || it.nreg || "");
+    if (it.nreg) head += " (" + it.nreg + ")";
+    parts.push("", head, (it.text || "").trimEnd());
+  }
+  const doc = parts.join("\n") + "\n";
+  const blob = new Blob([doc], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "annots.txt";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+$("btn-fav-export-txt").onclick = () => exportFavTxt();
 $("fav-import").onclick = () => $("fav-import-file").click();
 $("fav-import-file").addEventListener("change", async (ev) => {
   const f = ev.target.files && ev.target.files[0];

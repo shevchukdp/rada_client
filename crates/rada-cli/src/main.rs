@@ -2875,12 +2875,12 @@ fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
                 }
             };
             if json {
-                let body = serde_json::to_string_pretty(&items)?;
+                let body = annot_json_body(&items);
                 match out {
                     Some(p) => {
                         // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
                         write_out_file(p, format!("{body}\n").as_bytes())?;
-                        eprintln!("[annot] записано JSON → {}", p.display());
+                        eprintln!("{}", annot_json_out_note(p));
                     }
                     None => println!("{body}"),
                 }
@@ -2926,13 +2926,14 @@ fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
                 .filter(|a| annot_search_match(a, &needle))
                 .collect();
             if json {
-                // the same array shape as `annot list --json`
-                let body = serde_json::to_string_pretty(&items)?;
+                // the same array shape as `annot list --json`: both commands
+                // print through the one shared [`annot_json_body`] builder
+                let body = annot_json_body(&items);
                 match out {
                     Some(p) => {
                         // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
                         write_out_file(p, format!("{body}\n").as_bytes())?;
-                        eprintln!("[annot] записано JSON → {}", p.display());
+                        eprintln!("{}", annot_json_out_note(p));
                     }
                     None => println!("{body}"),
                 }
@@ -3066,6 +3067,27 @@ fn annot_list_out_note(n: usize, file: &Path) -> String {
     format!("[annot] записано {n} анотацій → {}", file.display())
 }
 
+/// The `--json` body of `annot list` and `annot search` (one shared builder
+/// so the two commands, and stdout vs `--out` within each, cannot drift):
+/// the pretty `[{id,nreg,kind,text,span_start,span_end,created_at},…]`
+/// array — the field order of [`rada_db::Annotation`] itself (the
+/// historical inline shape). stdout prints exactly this string plus a
+/// trailing newline; the `--out` file receives the same bytes BOM-less
+/// (machine data, the house JSON rule). Empty: both commands render the
+/// same `[]` (the shared empty form; these field types always serialize,
+/// so the fallback keeps the array shape and never fires).
+fn annot_json_body(items: &[rada_db::Annotation]) -> String {
+    serde_json::to_string_pretty(items).unwrap_or_else(|_| "[]".to_string())
+}
+
+/// The stderr note printed after `annot list --json --out` or
+/// `annot search --json --out` has written the JSON body to `file`
+/// (`[annot] записано JSON → {file}` — the same wording as the `search` /
+/// `cache` / `resolve` / `related` / `dict` JSON notes).
+fn annot_json_out_note(file: &Path) -> String {
+    format!("[annot] записано JSON → {}", file.display())
+}
+
 /// Case-insensitive substring test behind `annot search` (the GUI
 /// favorites filter, mirrored onto the three annotation surfaces): the
 /// needle must occur in the annotation `text`, `kind` or `nreg`, all
@@ -3181,8 +3203,9 @@ fn fmt_date(d: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        annot_list_out_note, annot_out_note, annot_search_lines, annot_search_match,
-        annot_search_out_note, annot_table_lines, annot_text_file_note, arrivals_date_key,
+        annot_json_body, annot_json_out_note, annot_list_out_note, annot_out_note,
+        annot_search_lines, annot_search_match, annot_search_out_note, annot_table_lines,
+        annot_text_file_note, arrivals_date_key,
         arrivals_out_note, backfill_summary, cache_dump_filename, cache_dump_lines,
         cache_search_out_note, card_out_note, dict_fresh_json, dict_fresh_lines, dict_json_body,
         dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, export_html,
@@ -3454,6 +3477,56 @@ mod tests {
             annot_search_lines(&[], "нічого"),
             vec!["0 анотацій з «нічого»:".to_string()]
         );
+    }
+
+    #[test]
+    fn annot_json_body_renders_fields_and_empty() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline) — shared by
+        // `annot list --json` and `annot search --json` so neither pair can
+        // drift. Field order follows `rada_db::Annotation` (the historical
+        // inline shape); missing spans render as `null`.
+        let items = vec![
+            rada_db::Annotation {
+                id: 7,
+                nreg: "1556-18".into(),
+                kind: "highlight".into(),
+                text: "Стаття 3 — Вища освіта".into(),
+                span_start: Some(12),
+                span_end: Some(17),
+                created_at: "2026-10-28 07:30:00".into(),
+            },
+            rada_db::Annotation {
+                id: 8,
+                nreg: "2341-14".into(),
+                kind: "bookmark".into(),
+                text: String::new(),
+                span_start: None,
+                span_end: None,
+                created_at: "2026-10-29 09:00:00".into(),
+            },
+        ];
+        let body = annot_json_body(&items);
+        assert_eq!(
+            body,
+            "[\n  {\n    \"id\": 7,\n    \"nreg\": \"1556-18\",\n    \"kind\": \"highlight\",\n    \"text\": \"Стаття 3 — Вища освіта\",\n    \"span_start\": 12,\n    \"span_end\": 17,\n    \"created_at\": \"2026-10-28 07:30:00\"\n  },\n  {\n    \"id\": 8,\n    \"nreg\": \"2341-14\",\n    \"kind\": \"bookmark\",\n    \"text\": \"\",\n    \"span_start\": null,\n    \"span_end\": null,\n    \"created_at\": \"2026-10-29 09:00:00\"\n  }\n]"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // the shared empty form: both commands print a pretty `[]` array
+        // (zero annotations for the nreg / zero matches for the term)
+        assert_eq!(annot_json_body(&[]), "[]");
+    }
+
+    #[test]
+    fn annot_json_out_note_formats_json_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//a.json");
+        let line = annot_json_out_note(file);
+        assert_eq!(line, format!("[annot] записано JSON → {}", file.display()));
+        assert!(line.starts_with("[annot] записано "));
+        assert!(line.contains("JSON"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
     }
 
     #[test]

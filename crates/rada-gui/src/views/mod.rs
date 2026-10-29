@@ -135,6 +135,10 @@ pub fn help_lines() -> Vec<(&'static str, &'static str)> {
             "Ctrl+B",
             "зберегти закладку поточного документа (читалка)",
         ),
+        (
+            "Ctrl+M",
+            "перемкнути форматований / простий текст (читалка)",
+        ),
         ("Enter", "виконати пошук / відкрити документ за номером"),
         (
             "Enter / Shift+Enter",
@@ -441,6 +445,7 @@ mod tests {
             "Ctrl+F",
             "Ctrl+K",
             "Ctrl+B",
+            "Ctrl+M",
             "Enter",
             "Enter / Shift+Enter",
             "Esc",

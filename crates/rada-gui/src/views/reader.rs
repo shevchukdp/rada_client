@@ -1568,6 +1568,16 @@ pub fn citation_line(title: &str, nreg: &str, edition: Option<&str>) -> String {
     s
 }
 
+/// Toggle the reader text mode (Ctrl+M / the Форматований-Простий buttons):
+/// returns `(new_raw, toast_label)` — `true` = plain single-style text.
+pub fn toggle_raw_mode(current_raw: bool) -> (bool, &'static str) {
+    if current_raw {
+        (false, "форматований текст")
+    } else {
+        (true, "простий текст")
+    }
+}
+
 /// Word/char/time stats of one edition for the compare panel
 /// (««ред. 12.03.2020»: 401 слів · 2 406 симв. · ~2 хв»), same wording as
 /// the web UI's `cmpSummaryLine`.
@@ -1891,6 +1901,12 @@ mod tests {
         // A zero delta normalises the unset value to 100.
         assert_eq!(zoom_step(0, 0), 100);
         assert_eq!(zoom_step(180, 0), 180);
+    }
+
+    #[test]
+    fn toggle_raw_mode_flips_with_labels() {
+        assert_eq!(toggle_raw_mode(false), (true, "простий текст"));
+        assert_eq!(toggle_raw_mode(true), (false, "форматований текст"));
     }
 
     #[test]

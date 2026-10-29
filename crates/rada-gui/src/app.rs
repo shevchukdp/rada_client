@@ -1967,6 +1967,15 @@ impl eframe::App for App {
         {
             self.reload_reader();
         }
+        // Ctrl+M on the reader page: toggle форматований/простий text mode.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M))
+            && self.page == Page::Reader
+        {
+            let (new_raw, label) = crate::views::reader::toggle_raw_mode(self.settings.raw);
+            self.settings.raw = new_raw;
+            crate::settings::save(&self.settings);
+            self.toast(label, ok());
+        }
         // Ctrl+B on the reader page: save a quick bookmark of the open act.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B))
             && self.page == Page::Reader

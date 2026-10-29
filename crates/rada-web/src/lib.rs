@@ -2642,6 +2642,59 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_favorites_txt_export_button() {
+        // «експорт .txt» in the favorites controls row right after the JSON
+        // backup button (the CLI annot/export plain-text parity): a plain
+        // label and a click wired to the exportFavTxt builder.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-fav-export-txt\""));
+        assert!(ui::INDEX_HTML.contains(">експорт .txt</button>"));
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"btn-fav-export-txt\").onclick = () => exportFavTxt();"
+        ));
+        let json = ui::INDEX_HTML.find("id=\"fav-export\"").unwrap();
+        let txt = ui::INDEX_HTML.find("id=\"btn-fav-export-txt\"").unwrap();
+        assert!(txt > json && txt - json < 400, "button sits next to fav-export");
+    }
+
+    #[test]
+    fn ui_page_has_favorites_txt_export_builder() {
+        // exportFavTxt reuses the favorites filter+sort pipeline (favSorted
+        // + the active kind chip + favRowMatches over the #fav-filter box)
+        // so the file mirrors the on-screen order, opens with the
+        // «Обрані анотації — X з Y» header, renders each row as
+        // «[kind] title (nreg)» + trailing-trimmed text + a blank line, and
+        // downloads through the reader export's Blob / object-URL idiom
+        // under the fixed annots.txt name (revoked right after the click).
+        let start = ui::INDEX_HTML
+            .find("function exportFavTxt()")
+            .expect("exportFavTxt defined");
+        let end = start + ui::INDEX_HTML[start..]
+            .find("btn-fav-export-txt")
+            .expect("exportFavTxt wired to its button");
+        let body = &ui::INDEX_HTML[start..end];
+        // the same pipeline renderFavorites runs: sort, kind chip, text filter
+        assert!(body.contains("favSorted(favItems, favSort)"));
+        assert!(body.contains(".filter(a => !favKind || a.kind === favKind)"));
+        assert!(body.contains(".filter(a => favRowMatches(a, needle))"));
+        // header line «Обрані анотації — {shown} з {total}»
+        assert!(body.contains(
+            "\"Обрані анотації \u{2014} \" + items.length + \" з \" + favItems.length"
+        ));
+        // per-item «[kind] title (nreg)» line + trimmed text
+        assert!(body.contains("\"[\" + it.kind + \"] \""));
+        assert!(body.contains("(it.title || it.nreg || \"\")"));
+        assert!(body.contains("head += \" (\" + it.nreg + \")\""));
+        assert!(body.contains("(it.text || \"\").trimEnd()"));
+        // the reader export's Blob download idiom under annots.txt
+        assert!(body.contains("new Blob([doc], { type:"));
+        assert!(body.contains("URL.createObjectURL(blob)"));
+        assert!(body.contains("a.download = \"annots.txt\";"));
+        assert!(body.contains("a.click();"));
+        assert!(body.contains("a.remove();"));
+        assert!(body.contains("URL.revokeObjectURL(url);"));
+    }
+
+    #[test]
     fn fmt_yyyymmdd_passthrough() {
         assert_eq!(fmt_yyyymmdd(20261015), "15.10.2026");
         assert_eq!(fmt_yyyymmdd(42), "42");

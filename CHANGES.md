@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.39: текстовий експорт обраних у веб, спільний JSON анотацій та Ctrl+M / favorites .txt export, shared annotation JSON & Ctrl+M
+
+- **UKR:** 1) **«експорт .txt» на Обраних у веб**: завантажує саме те, що бачиш — поточний фільтр, чип виду і сортування враховуються; перший рядок «Обрані анотації — X з Y», далі кожна анотація у форматі «[вид] назва (номер)» і текст. 2) **CLI `annot`**: `list --json` і `search --json` тепер будуються одним спільним кодом (ті самі сім полів, той самий вигляд байт у байт) із спільною нотаткою «[annot] записано JSON»; нульова таблиця `--out` перевірена — лише BOM. 3) **Ctrl+M у читалці програми** перемкнути форматований/простий текст одним клажем; рядок додано у «клавіші». 4) Тести: 274/274.
+- **ENG:** 1) **An «експорт .txt» button on the web Favorites page** downloads exactly what is on screen — the text filter, kind chip and sort all apply; a «Обрані анотації — X з Y» header followed by «[kind] title (nreg)» lines with the annotation text. 2) **CLI `annot`**: `list --json` and `search --json` now share one body builder (the same seven fields, byte-identical output) and one «[annot] записано JSON» note; the zero-hit `--out` table was audited — BOM only. 3) **Ctrl+M in the desktop reader** toggles форматований/простий text mode with a single keypress; the «клавіші» sheet gained the row. 4) Tests: 274/274.
+
+---
+
+## 2026-10-29
+
 ### 0.10.38: експорт актів із веб-читалки, `Ctrl+B` та доведений до тями `related` / web export buttons, Ctrl+B bookmark & tidy related
 
 - **UKR:** 1) **Експорт у веб-читалці**: кнопки `.md` / `.txt` / `.html` завантажують поточний акт з браузера без зайвих запитів (тіло бере з уже завантаженого) — у той самий формат, що й CLI `export`; назви файлів без небезпечних символів. 2) **Ctrl+B у програмі** зберігає закладку поточного акта прямо з читалки — без клацання по панелі анотацій. 3) **CLI `related`** доведений до спільного стандарту: `--json` будується одним кодом зі stdout, `--out` при нулі пише лише BOM (рядок «не знайдено» лишається у stdout), нотатки — чисті функції. 4) Тести: 269/269.
