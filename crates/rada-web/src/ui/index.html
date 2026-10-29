@@ -280,6 +280,10 @@
   .hit:hover { background: var(--panel); border-color: var(--accent); }
   .hit a { color: var(--link); text-decoration: none; font-weight: 500; }
   .hit .sub { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  /* Offline-cache badge on the hit's meta line (the desktop cache_badge
+     twin): appended outside the title link, so find-in-page and the query
+     highlight never touch it. */
+  .hit .sub .cache-badge { color: var(--muted); }
   /* Per-hit quick actions (the GUI's «копія»/«сайт» buttons): a chip-styled
      pair in its own row under the meta line, outside the title link. */
   .hit-actions { display: flex; gap: 6px; margin-top: 4px; }
@@ -1512,6 +1516,7 @@ async function doSearch(offset) {
     for (const h of d.hits) {
       const div = document.createElement("div");
       div.className = "hit";
+      div.dataset.nreg = h.nreg; // badge paint matches rows by nreg (no HTML injection)
       const a = document.createElement("a");
       if (queryTerms.length) a.innerHTML = markTerms(escHtml(h.nazva || h.nreg), queryTerms);
       else a.textContent = h.nazva || h.nreg;
@@ -1545,6 +1550,7 @@ async function doSearch(offset) {
       list.appendChild(div);
     }
     fillNavList(d.hits.map((h) => h.nreg)); // reader prev/next over this page
+    paintCacheBadges(d.hits.map((h) => h.nreg)); // « · кеш» badges (fire-and-forget)
     if (!d.hits.length) {
       // Zero hits: the meta line alone is a dead end — render the GUI-style
       // suggestions block (reset, cache search, per-filter clears).
@@ -1554,6 +1560,36 @@ async function doSearch(offset) {
   } catch (e) {
     meta.textContent = "Помилка: " + e.message;
   }
+}
+
+/// Offline-cache badge on a result row's meta line (the desktop
+/// `cache_badge` twin): '' when `nreg` has no body in `docs_text`, otherwise
+/// the muted span to append. Pure: no fetching, no DOM, single wording.
+function cacheBadgeHtml(cachedSet, nreg) {
+  if (!cachedSet || !cachedSet.has(nreg)) return "";
+  return '<span class="cache-badge" title="текст уже в офлайн-кеші — відкриється без мережі"> · кеш</span>';
+}
+
+/// Paint the « · кеш» badges after the rows rendered: one batched probe to
+/// /api/cache/cached for the current page's nregs decorates the meta lines
+/// through the pure builder, OUTSIDE the title <a> (query-word highlighting
+/// and find-in-page never see the badge). Decorative only: a failed probe
+/// silently leaves the rendered results fully usable, and re-renders refill
+/// the container, so every search repaints fresh badges.
+async function paintCacheBadges(nregs) {
+  if (!nregs || !nregs.length) return;
+  try {
+    const d = await api("/api/cache/cached?nregs=" + nregs.slice(0, 200).map(encodeURIComponent).join(","));
+    const set = new Set((d && d.cached) || []);
+    if (!set.size) return;
+    for (const row of $("results").querySelectorAll(".hit[data-nreg]")) {
+      const nreg = row.getAttribute("data-nreg");
+      if (!set.has(nreg)) continue;
+      const sub = row.querySelector(".sub");
+      if (!sub || sub.querySelector(".cache-badge")) continue;
+      sub.insertAdjacentHTML("beforeend", cacheBadgeHtml(set, nreg));
+    }
+  } catch (_) { /* badges are decorative: never disturb the results */ }
 }
 
 // ---- offline full-text search over cached bodies («Пошук у тексті») --------

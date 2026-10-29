@@ -102,6 +102,11 @@ official open-data API:
     an offline **«Свіжі документи (за датою)»** card — the freshest cards by
     adoption date straight from the index (no network; same anchor rules as the
     CLI `recent` command), each row opening the reader with one click.
+  - **Reader tabs** — every document you open becomes a tab («Вкладки:» above
+    the title): tabs keep their text, find query and edition when you switch
+    between them; **Ctrl+Tab / Ctrl+Shift+Tab** cycle them, **×** closes one,
+    opening an already-open act just activates its tab; the open set (up to 12)
+    is saved and comes back as instant shells on the next launch.
   - **Reader outline («Зміст»)** — a collapsible panel listing every
     «Розділ/Глава/Стаття» heading; one click scrolls straight to it (shown for
     acts with at least two headings, e.g. 604 entries in the Criminal Code).
@@ -125,6 +130,7 @@ official open-data API:
     focused; **Ctrl+B** bookmarks the open act; **Ctrl+M** toggles the reader's
     форматований/простий text mode; **Ctrl+Enter** opens the top search hit (or
     the top visible arrival) in the reader; **F5** re-fetches the reader text; **Esc** clears the find query;
+    **Ctrl+Tab / Ctrl+Shift+Tab** cycle the reader's document tabs;
     **Alt+←/→**
     pages through the results list from inside the reader; **Alt+↑/↓** cycles
     the reader's edition combo (поточна ↔ dated, wrap-around); **Shift+Enter** steps

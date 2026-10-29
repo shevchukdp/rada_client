@@ -653,8 +653,8 @@ pub fn dict_hits(dicts: &[(i64, String)], needle: &str, cap: usize) -> Vec<(i64,
         .collect()
 }
 
-/// Row label for the home «Свіжі документи» card:
-/// «dd.mm.yyyy  nreg  title», with the date shown only when it is a full
+/// Row label for the home «Свіжі документи» card: «dd.mm.yyyy  nreg  title»,
+/// with the date shown only when it is a full
 /// 8-digit YYYYMMDD and the title truncated to 60 chars (+ ellipsis).
 /// An empty/blank title falls back to the bare nreg.
 pub fn fresh_row_label(date: &str, nreg: &str, title: &str) -> String {

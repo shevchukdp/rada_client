@@ -6,6 +6,7 @@ use rada_core::models::{LawCardJson, StatusId};
 use crate::app::{err, gold, App};
 use crate::views::search::fmt_date;
 
+#[derive(Clone)]
 pub struct ReaderState {
     pub hit: rada_db::SearchHit,
     pub card_run: u64,
@@ -67,6 +68,22 @@ pub struct ReaderState {
 }
 
 pub const ANN_KINDS: [&str; 3] = ["Коментар", "Закладка", "Виділення"];
+
+/// Tab-strip label for a document: the title trimmed and truncated to 36
+/// chars (+ ellipsis); untitled cards fall back to the bare nreg.
+pub fn tab_label(title: &str, nreg: &str) -> String {
+    let t = title.trim();
+    if t.is_empty() {
+        return nreg.to_string();
+    }
+    let full: Vec<char> = t.chars().collect();
+    if full.len() <= 36 {
+        full.into_iter().collect()
+    } else {
+        let s: String = full.iter().take(36).collect();
+        format!("{s}…")
+    }
+}
 
 impl ReaderState {
     pub fn new(hit: rada_db::SearchHit) -> Self {
@@ -317,6 +334,46 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         .show(ctx, |ui| {
             annotations_panel(app, ui);
         });
+
+    // ---- document tab strip (Ctrl+Tab / Ctrl+Shift+Tab cycles) ----------
+    if !app.tabs.is_empty() {
+        let active = app.active_tab;
+        let tabs = app.tabs.clone();
+        let mut activate: Option<usize> = None;
+        let mut close: Option<usize> = None;
+        egui::TopBottomPanel::top("reader_tabs").show(ctx, |ui| {
+            ui.horizontal_wrapped(|ui| {
+                ui.label(egui::RichText::new("Вкладки:").small().weak());
+                for (i, t) in tabs.iter().enumerate() {
+                    let sel = active == Some(i);
+                    let label = tab_label(&t.title, &t.nreg);
+                    let b = egui::Button::new(egui::RichText::new(label).small()).selected(sel);
+                    if ui
+                        .add(b)
+                        .on_hover_text(format!("{}\nвідкрити вкладку", t.nreg))
+                        .clicked()
+                    {
+                        activate = Some(i);
+                    }
+                    if ui
+                        .button(egui::RichText::new("×").small())
+                        .on_hover_text("закрити вкладку")
+                        .clicked()
+                    {
+                        close = Some(i);
+                    }
+                    if i + 1 < tabs.len() {
+                        ui.separator();
+                    }
+                }
+            });
+        });
+        if let Some(i) = activate {
+            app.tab_activate(i);
+        } else if let Some(i) = close {
+            app.tab_close(i);
+        }
+    }
 
     // «Догори» click from the previous frame: force the body back to the top.
     let jump = app.reader.as_ref().map(|r| r.scroll_to_top).unwrap_or(false);
@@ -2257,6 +2314,20 @@ mod tests {
         let s = r.print_doc_plain();
         assert!(!s.contains("<footer>"), "no footer without annotations");
         assert!(s.contains("<p>тільки текст</p>"));
+    }
+
+    #[test]
+    fn tab_label_truncates_and_falls_back_to_nreg() {
+        assert_eq!(tab_label(" Про освіту ", "1-1"), "Про освіту");
+        assert_eq!(tab_label("   ", "16-15"), "16-15", "blank title falls back");
+        assert_eq!(tab_label("", "16-15"), "16-15");
+        let long = "а".repeat(50);
+        let l = tab_label(&long, "n");
+        assert_eq!(l.chars().count(), 37, "36 chars + ellipsis");
+        assert!(l.ends_with('…'));
+        // exactly 36 chars stay untruncated
+        let edge = "б".repeat(36);
+        assert_eq!(tab_label(&edge, "n"), edge);
     }
 
     #[test]

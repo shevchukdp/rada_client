@@ -7,6 +7,11 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.53: вкладки читалки, `years` у CLI та «кеш» у веб-результатах / reader tabs, CLI `years` & web cache badges
+
+- **UKR:** 1) **Вкладки у читалці**: кожен відкритий акт стає вкладкою — перемикання зберігає текст, пошук по сторінці й вибрану редакцію; **Ctrl+Tab / Ctrl+Shift+Tab** гортають вкладки, **×** закриває; повторно відкритий акт просто активує свою вкладку; відкриті вкладки (до 12) повертаються після перезапуску миттєвими оболонками. 2) **`years` у CLI**: офлайн-розклад документів по роках закритого періоду (`--from РРРР --to РРРР`), з «разом» і «без дати»; `--json` і `--out` за загальним стандартом. 3) **Значок «· кеш» у веб-результатах пошуку**: той самий, що й у програмі, — акти з уже кешованим текстом відкриваються без мережі. 4) Тести: 373/373.
+- **ENG:** 1) **Reader tabs**: every opened act becomes a tab — switching keeps its text, find query and chosen edition; **Ctrl+Tab / Ctrl+Shift+Tab** cycle tabs, **×** closes one; reopening an act just activates its tab; the open set (up to 12) returns as instant shells after a restart. 2) **`years` in the CLI**: an offline per-year breakdown over a closed range (`--from YYYY --to YYYY`) with «разом» and «без дати», plus `--json`/`--out` to the common standard. 3) **A «· кеш» badge on web search rows** — same as the desktop app's: acts whose text is already cached open without network. 4) Tests: 373/373.
+
 ### 0.10.52: точні дати в CLI, «Друк (простий)» та статистика індексу в підвалі веб-клієнта / exact CLI dates, plain print & web footer index stats
 
 - **UKR:** 1) **Виправлено датну математику в CLI**: `arrivals --since` раніше плутав сусідні дні (кінець місяця зливався з наступним, від лютого до березня хибка сягала 3 днів); тепер лічба днів — за пролептичним григоріанським календарем, як у всього решти світу. 2) **«Друк (простий)» у читалці**: та сама друкована версія, але без форматування — тільки текст, без класів, золотих акцентів і підсвічувань виділень. 3) **Підвал веб-клієнта показує стан індексу**: «rada-client v… · 295 340 документів · 5 тіл у кеші · оновлено: 25.10.2026» (коли дату імпорту невідомо — «невідомо»). 4) Тести: 364/364.

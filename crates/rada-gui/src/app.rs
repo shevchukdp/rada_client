@@ -135,6 +135,17 @@ pub struct IndexStatus {
     pub fresh: Vec<(String, String, String)>,
 }
 
+/// One open document in the reader's tab strip. Only the ACTIVE tab keeps
+/// a live `ReaderState` (in `App::reader`); inactive tabs park theirs in
+/// `saved`. Tabs restored from settings.ini start as lazy shells
+/// (`saved: None`) and fetch their text on first activation.
+#[derive(Clone)]
+pub struct ReaderTab {
+    pub nreg: String,
+    pub title: String,
+    pub saved: Option<views::ReaderState>,
+}
+
 /// Which app page is on screen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
@@ -183,6 +194,10 @@ pub struct App {
     pub home: views::HomeState,
     pub search: views::SearchState,
     pub reader: Option<views::ReaderState>,
+    /// Reader tab strip: every tab opened this session (and restored ones).
+    /// `reader` mirrors the active tab's live state.
+    pub tabs: Vec<ReaderTab>,
+    pub active_tab: Option<usize>,
     /// Results list the reader was opened from (for prev/next paging).
     pub nav: Option<(Vec<rada_db::SearchHit>, usize)>,
     pub arrivals: views::ArrivalsState,
@@ -243,6 +258,8 @@ impl App {
             home: views::HomeState::default(),
             search: views::SearchState::default(),
             reader: None,
+            tabs: Vec::new(),
+            active_tab: None,
             nav: None,
             arrivals: views::ArrivalsState::default(),
             fav: views::FavoritesState::default(),
@@ -261,6 +278,17 @@ impl App {
         }
         // The arrivals text filter survives restarts.
         app.arrivals.filter = app.settings.arr_filter.clone();
+        // Open reader tabs come back as lazy shells (no fetch until clicked).
+        app.tabs = app
+            .settings
+            .tabs
+            .iter()
+            .map(|(n, t)| ReaderTab {
+                nreg: n.clone(),
+                title: t.clone(),
+                saved: None,
+            })
+            .collect();
         // So does the Favorites view: kind/sort chips, grouping, filter.
         app.fav.kind_sel = app.settings.fav_kind.min(3);
         app.fav.sort_sel = app.settings.fav_sort.min(2);
@@ -576,10 +604,29 @@ impl App {
     }
 
     /// Open a document in the reader: live card + text fetched in the
-    /// background (paced by the shared client).
+    /// background (paced by the shared client). Documents already present in
+    /// the tab strip are re-activated instead of opened twice.
     pub fn open_reader(&mut self, hit: rada_db::SearchHit) {
         self.page = Page::Reader;
         self.nav = None;
+        if let Some(i) = self.tabs.iter().position(|t| t.nreg == hit.nreg) {
+            self.tab_activate(i);
+            return;
+        }
+        self.tab_suspend_active();
+        self.tabs.push(ReaderTab {
+            nreg: hit.nreg.clone(),
+            title: hit.nazva.clone(),
+            saved: None,
+        });
+        self.active_tab = Some(self.tabs.len() - 1);
+        self.remember_tabs();
+        self.reader_launch(hit);
+    }
+
+    /// The shared launch sequence: remember the recents entry, build a fresh
+    /// `ReaderState` and kick off the paced card/text fetches.
+    fn reader_launch(&mut self, hit: rada_db::SearchHit) {
         crate::settings::remember(&mut self.settings, &hit.nreg, &hit.nazva);
         crate::settings::save(&self.settings);
         let mut r = views::ReaderState::new(hit);
@@ -593,6 +640,111 @@ impl App {
         self.load_annotations();
         self.fetch_card(card_run);
         self.fetch_text(text_run, None);
+    }
+
+    fn tab_suspend_active(&mut self) {
+        if let (Some(a), Some(r)) = (self.active_tab, self.reader.take()) {
+            if a < self.tabs.len() {
+                self.tabs[a].saved = Some(r);
+            }
+        }
+    }
+
+    /// Bring tab `i` to the front: park the current reader, then either
+    /// restore the tab's parked state (text, find query and edition kept
+    /// as-is) or fetch it from scratch when the tab is still a lazy shell.
+    /// A tab suspended mid-fetch is re-armed here, because background results
+    /// are routed only to the active reader.
+    pub fn tab_activate(&mut self, i: usize) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        if self.active_tab == Some(i) && self.reader.is_some() {
+            self.page = Page::Reader;
+            return;
+        }
+        let st = self.tabs[i].saved.take();
+        self.tab_suspend_active();
+        self.active_tab = Some(i);
+        self.page = Page::Reader;
+        self.nav = None;
+        match st {
+            Some(st) => {
+                let (redo_card, redo_text, edition) =
+                    (st.card_loading, st.text_loading, st.cur_edition.clone());
+                self.reader = Some(st);
+                self.load_annotations();
+                if redo_card {
+                    let run = self.next_run();
+                    if let Some(r) = self.reader.as_mut() {
+                        r.card_run = run;
+                        r.card_loading = true;
+                    }
+                    self.fetch_card(run);
+                }
+                if redo_text {
+                    let run = self.next_run();
+                    self.fetch_text(run, edition);
+                }
+            }
+            None => {
+                let (n, t) = (self.tabs[i].nreg.clone(), self.tabs[i].title.clone());
+                self.reader_launch(rada_db::SearchHit {
+                    nreg: n,
+                    nazva: t,
+                    status: 0,
+                    org_date: String::new(),
+                    org_num: String::new(),
+                    poddat: String::new(),
+                });
+            }
+        }
+    }
+
+    /// Close tab `i`; its left neighbour (or the new first tab) takes focus.
+    pub fn tab_close(&mut self, i: usize) {
+        if i >= self.tabs.len() {
+            return;
+        }
+        let was_active = self.active_tab == Some(i);
+        self.tabs.remove(i);
+        if let Some(a) = self.active_tab {
+            if a > i {
+                self.active_tab = Some(a - 1);
+            } else if a == i {
+                self.active_tab = None;
+            }
+        }
+        if was_active {
+            self.reader = None;
+            if !self.tabs.is_empty() {
+                let j = i.min(self.tabs.len() - 1);
+                self.tab_activate(j);
+            }
+        }
+        self.remember_tabs();
+    }
+
+    /// Ctrl+Tab / Ctrl+Shift+Tab: cycle through the open tabs (wrap-around).
+    pub fn tab_cycle(&mut self, delta: i64) {
+        if self.tabs.len() < 2 {
+            return;
+        }
+        let n = self.tabs.len() as i64;
+        let cur = self.active_tab.unwrap_or(0) as i64;
+        let ni = (cur + delta).rem_euclid(n);
+        self.tab_activate(ni as usize);
+    }
+
+    /// Persist the open tabs (up to 12) to settings for the next launch.
+    fn remember_tabs(&mut self) {
+        self.settings.tabs = self
+            .tabs
+            .iter()
+            .take(12)
+            .map(|t| (t.nreg.clone(), t.title.clone()))
+            .collect();
+        crate::settings::save(&self.settings);
     }
 
     /// Open the document at `pos` of the visible results list and remember
@@ -1738,13 +1890,25 @@ impl App {
                     return;
                 }
                 r.card_loading = false;
+                let mut sync_title: Option<(String, String)> = None;
                 match res {
                     Ok(card) => {
+                        sync_title = Some((r.hit.nreg.clone(), card.nazva.clone()));
                         r.editions = card.eds.clone();
                         r.card = Some(card);
                         r.card_error = None;
                     }
                     Err(e) => r.card_error = Some(e),
+                }
+                // Give the tab strip the real title when it only holds the
+                // CLI placeholder or nothing at all.
+                if let Some((nreg, title)) = sync_title {
+                    if let Some(i) = self.tabs.iter().position(|t| t.nreg == nreg) {
+                        let cur = self.tabs[i].title.clone();
+                        if cur.trim().is_empty() || cur == "(відкрито з рядка команди)" {
+                            self.tabs[i].title = title;
+                        }
+                    }
                 }
             }
             Msg::Text { run, res } => {
@@ -2184,6 +2348,33 @@ impl eframe::App for App {
             self.zoom_reader(-10);
         } else if z_reset {
             self.zoom_reader(0);
+        }
+        // Ctrl+Tab / Ctrl+Shift+Tab: cycle the reader's document tabs
+        // (wrap-around). The Shift variant is consumed first. Only consumed
+        // when the reader actually has a strip — plain Tab stays usable for
+        // focus navigation everywhere else.
+        let tabs_cycling = self.page == Page::Reader && self.tabs.len() > 1;
+        let tab_shift = ctx.input_mut(|i| {
+            if tabs_cycling {
+                i.consume_key(
+                    egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+                    egui::Key::Tab,
+                )
+            } else {
+                false
+            }
+        });
+        let tab_plain = ctx.input_mut(|i| {
+            if tabs_cycling {
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Tab)
+            } else {
+                false
+            }
+        });
+        if tab_shift {
+            self.tab_cycle(-1);
+        } else if tab_plain {
+            self.tab_cycle(1);
         }
 
         // toast lifetime

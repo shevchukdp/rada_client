@@ -397,10 +397,14 @@ fn related_handler(method: &Method, rest: &str, st: &State) -> Resp {
 }
 
 /// `GET /api/cache/search?q=…` — offline full-text scan of the cached
-/// document bodies (`docs_text`), Unicode case-insensitive, ranked.
+/// document bodies (`docs_text`), Unicode case-insensitive, ranked; and
+/// `GET /api/cache/cached?nregs=…` — the batch cache probe below.
 fn cache_handler(method: &Method, rest: &str, q: &[(String, String)], st: &State) -> Resp {
     if method != &Method::Get {
         return json_err(405, "method not allowed");
+    }
+    if rest == "cache/cached" {
+        return cache_cached_handler(q, st);
     }
     if rest != "cache/search" {
         return json_err(404, "unknown cache path");
@@ -434,6 +438,45 @@ fn cache_handler(method: &Method, rest: &str, q: &[(String, String)], st: &State
         }
         Err(e) => json_err(500, &e.to_string()),
     }
+}
+
+/// Parse the batch probe's `nregs` parameter: comma-split, trimmed, empties
+/// dropped, duplicates removed (first occurrence wins, order kept), capped at
+/// 200 entries — extras are ignored. A missing or blank parameter yields an
+/// empty list.
+fn parse_nregs_param(raw: Option<&str>) -> Vec<String> {
+    const MAX_NREGS: usize = 200;
+    let Some(raw) = raw else { return Vec::new(); };
+    let mut out: Vec<String> = Vec::new();
+    for part in raw.split(',').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+        if out.len() >= MAX_NREGS {
+            break;
+        }
+        if !out.iter().any(|p| p == part) {
+            out.push(part.to_string());
+        }
+    }
+    out
+}
+
+/// `GET /api/cache/cached?nregs=a,b,c` — batch form of the single-nreg probe
+/// below: answers with only those nregs (in request order) that actually have
+/// a cached body in `docs_text`. The search page paints its « · кеш» row
+/// badges from this. Read-only.
+fn cache_cached_handler(q: &[(String, String)], st: &State) -> Resp {
+    let nregs = parse_nregs_param(qget(q, "nregs"));
+    if nregs.is_empty() {
+        return json_ok(&json!({ "cached": [] }));
+    }
+    let conn = match open_db(st) {
+        Ok(c) => c,
+        Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
+    };
+    let hits: Vec<String> = nregs
+        .into_iter()
+        .filter(|nreg| rada_db::textcache::cached(&conn, nreg).unwrap_or(false))
+        .collect();
+    json_ok(&json!({ "cached": hits }))
 }
 
 /// `GET /api/cached?nreg=` — whether *any* edition of the document already
@@ -4774,5 +4817,111 @@ mod tests {
         for field in ["\"docs\"", "\"cache_rows\"", "\"last_import\""] {
             assert!(src.contains(field), "/api/status must serialize {field}");
         }
+    }
+
+    /// Batch offline-cache probe (`GET /api/cache/cached?nregs=a,b,c`):
+    /// method/param validation, the docs_text filter (only nregs with a
+    /// cached body answer, seeded directly — no network), and the pure
+    /// `parse_nregs_param` parser (trim, empties, duplicates, 200 cap).
+    #[test]
+    fn cache_cached_endpoint_batch_probe() {
+        let st = favorites_state("cbatch");
+        {
+            let conn = db_open(&st.db_path).unwrap();
+            rada_db::textcache::put(&conn, "2341-14", "", "кешоване тіло").unwrap();
+        }
+        // Query-aware call (the plain `call` helper sends no params).
+        let get = |path: &str, query: &str| -> (u16, Value) {
+            let mut req: Request = TestRequest::new()
+                .with_method(Method::Get)
+                .with_path(path)
+                .into();
+            let resp = route(&Method::Get, path, &parse_query(query), &mut req, &st).unwrap();
+            let code = resp.status_code().0;
+            let bytes = resp.into_reader().into_inner();
+            (code, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        };
+        let (code, _) = call(&st, Method::Post, "/api/cache/cached", "");
+        assert_eq!(code, 405, "write methods rejected");
+        let (code, v) = get("/api/cache/cached", "");
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(
+            v["cached"].as_array().unwrap().len(),
+            0,
+            "missing param is an empty list: {v}"
+        );
+        let (code, v) = get("/api/cache/cached", "nregs=");
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(
+            v["cached"].as_array().unwrap().len(),
+            0,
+            "empty param is an empty list: {v}"
+        );
+        // Mixed page: only the seeded docs_text row answers; the blank part
+        // and the duplicate drop out, the unknown nreg stays out.
+        let (code, v) = get("/api/cache/cached", "nregs=9-9,2341-14,%20,2341-14");
+        assert_eq!(code, 200, "{v}");
+        let hits = v["cached"].as_array().unwrap();
+        assert_eq!(hits.len(), 1, "only the cached body: {hits:?}");
+        assert_eq!(hits[0], "2341-14");
+        // The pure parser: missing/blank → empty, trim, drop empties,
+        // de-duplicate keeping order, extras past 200 ignored.
+        assert_eq!(parse_nregs_param(None), Vec::<String>::new());
+        assert_eq!(parse_nregs_param(Some("  ")), Vec::<String>::new());
+        assert_eq!(
+            parse_nregs_param(Some(" a , ,a,b ")),
+            vec!["a".to_string(), "b".to_string()]
+        );
+        let many = (0..250).map(|i| format!("n{i}")).collect::<Vec<_>>().join(",");
+        assert_eq!(parse_nregs_param(Some(&many)).len(), 200, "extras past 200 ignored");
+    }
+
+    /// « · кеш» badges on the search result rows (the desktop cache_badge
+    /// twin): the pure `cacheBadgeHtml(cachedSet, nreg)` builder carries the
+    /// exact wording and hover title, the batch painter asks
+    /// `/api/cache/cached?nregs=` through it inside a try/catch (a failed
+    /// probe leaves the results usable), and the results renderer stamps
+    /// rows with `data-nreg` and calls the painter after the rows rendered.
+    #[test]
+    fn ui_page_has_cache_badges() {
+        let start = ui::INDEX_HTML
+            .find("function cacheBadgeHtml(cachedSet, nreg) {")
+            .expect("pure badge builder present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("cacheBadgeHtml end")];
+        assert!(body.contains(" · кеш</span>"), "badge wording mirrors the GUI");
+        assert!(
+            body.contains("текст уже в офлайн-кеші — відкриється без мережі"),
+            "hover title explains the offline copy"
+        );
+        assert!(body.contains("return \"\""), "uncached nreg paints nothing");
+        // The batch painter: asks the endpoint, paints through the builder,
+        // and swallows failures so the results stay fully usable.
+        let start = ui::INDEX_HTML
+            .find("async function paintCacheBadges(nregs) {")
+            .expect("badge painter present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("paintCacheBadges end")];
+        assert!(body.contains("/api/cache/cached?nregs="), "batch probe");
+        assert!(
+            body.contains("cacheBadgeHtml(set, nreg)"),
+            "badges painted through the pure builder"
+        );
+        assert!(body.contains("catch"), "a failed probe never disturbs the results");
+        assert!(body.contains(".hit[data-nreg]"), "rows matched by the stamped nreg");
+        // The results renderer: rows stamped, painter called after they render.
+        let start = ui::INDEX_HTML
+            .find("async function doSearch(offset) {")
+            .expect("doSearch defined");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("doSearch end")];
+        assert!(body.contains("div.dataset.nreg = h.nreg;"), "rows carry their nreg");
+        let nav = body
+            .find("fillNavList(d.hits.map((h) => h.nreg));")
+            .expect("nav fill after the rows");
+        let paint = body
+            .find("paintCacheBadges(d.hits.map((h) => h.nreg));")
+            .expect("renderer calls the painter");
+        assert!(nav < paint, "badges paint after the rows rendered");
     }
 }

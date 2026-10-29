@@ -32,6 +32,9 @@ pub struct Settings {
     /// Arrivals page text filter (persisted so a domain filter survives
     /// restarts).
     pub arr_filter: String,
+    /// Open reader tabs `(nreg, title)`, left to right; restored on the next
+    /// launch as lazy shells (fetched when first clicked). Cap 12.
+    pub tabs: Vec<(String, String)>,
     /// Chosen search sort as the stable id from `rada_db::search::Sort::as_str()`
     /// («relevance» / «date_desc» / …); empty = default. Parsed leniently.
     pub sort: String,
@@ -180,6 +183,14 @@ fn parse(text: &str) -> Settings {
                     }
                 }
                 "arrfilter" => s.arr_filter = v.trim().to_string(),
+                "opentab" => {
+                    if let Some((n, t)) = v.split_once('\t') {
+                        let n = n.trim();
+                        if !n.is_empty() && s.tabs.len() < 12 {
+                            s.tabs.push((n.to_string(), t.to_string()));
+                        }
+                    }
+                }
                 "sort" => s.sort = v.trim().to_string(),
                 "status" => s.f_status = v.trim().parse().unwrap_or(0),
                 "typ" => s.f_typ = v.trim().parse().unwrap_or(0),
@@ -253,6 +264,9 @@ fn render(s: &Settings) -> String {
     }
     for n in &s.arr_seen {
         out.push_str(&format!("arrseen={}\n", clean(n)));
+    }
+    for (n, t) in s.tabs.iter().take(12) {
+        out.push_str(&format!("opentab={}\t{}\n", clean(n), clean(t)));
     }
     out.push_str(&format!(
         "favkind={}\nfavsort={}\nfavfilter={}\n",
@@ -485,5 +499,34 @@ mod tests {
         // garbage stamps degrade to «unknown», never drop the row
         let g = parse("recent=2-2\tX\tnotanumber\n");
         assert_eq!(g.recents, vec![("2-2".into(), "X".into(), 0)]);
+    }
+
+    #[test]
+    fn open_tabs_roundtrip_in_order_and_drop_malformed() {
+        let s = parse("opentab=16-15\tПро освіту\nopentab=2-2\t\nopentab=без_табу\n");
+        assert_eq!(
+            s.tabs,
+            vec![("16-15".into(), "Про освіту".into()), ("2-2".into(), "".into())],
+            "lines without a tab separator are ignored"
+        );
+        let text = render(&s);
+        assert!(text.contains("opentab=16-15\tПро освіту\n"), "{text}");
+        assert_eq!(parse(&text), s);
+        // empty by default, and the key never appears then
+        let e = parse("");
+        assert!(e.tabs.is_empty());
+        assert!(!render(&e).contains("opentab="));
+    }
+
+    #[test]
+    fn open_tabs_capped_at_twelve_on_both_ends() {
+        let mut s = Settings::default();
+        s.tabs = (1..=20).map(|i| (format!("n{i}"), format!("Т{i}"))).collect();
+        let text = render(&s);
+        assert_eq!(text.matches("opentab=").count(), 12, "{text}");
+        let back = parse(&text);
+        assert_eq!(back.tabs.len(), 12);
+        assert_eq!(back.tabs[0], ("n1".into(), "Т1".into()));
+        assert_eq!(back.tabs[11], ("n12".into(), "Т12".into()));
     }
 }

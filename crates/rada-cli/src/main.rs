@@ -533,6 +533,43 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Offline «which years hold the documents»: document-date histogram by
+    /// year of `org_date` over a CLOSED year range — the range-selected
+    /// companion of `dates` (which always prints the whole histogram).
+    /// `--from YYYY` / `--to YYYY` default to the oldest / newest year
+    /// present in the index (the `dates` MIN/MAX rule). Unlike `months`
+    /// the grid is NOT zero-filled: a year inside the range without a
+    /// single document is simply omitted — only years the histogram has a
+    /// row for render, ascending. Only rows whose four-digit year parses
+    /// count; documents with a missing or malformed date report as
+    /// «без дати» over the WHOLE index (the `dates` rule, independent of
+    /// the range). Pure offline: the command never touches the network;
+    /// informational — always exits 0, even when the range holds nothing
+    /// (header + «немає документів за цей період» + «разом: 0» + the
+    /// undated line). A malformed `--from`/`--to` or a `--from` later
+    /// than `--to` is the only hard error (exit 1).
+    Years {
+        /// First year of the closed range: exactly 4 digits (e.g. 2020).
+        /// Default: the oldest year present in the index.
+        #[arg(long)]
+        from: Option<String>,
+        /// Last year of the closed range: exactly 4 digits (e.g. 2026).
+        /// Default: the newest year present in the index.
+        #[arg(long)]
+        to: Option<String>,
+        /// Emit the JSON body
+        /// (`{"count_total":N,"from":"YYYY","rows":[{count,year},…],
+        /// "to":"YYYY","undated":N}` — pretty, keys alphabetical) instead
+        /// of the report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less; the `[years] записано …` note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Offline «what is the freshest»: the newest documents by adoption
     /// date on the SAME primary date column `org_date` the
     /// `search --date-from/--date-to` filters use — the day-level
@@ -839,6 +876,13 @@ fn run() -> Result<()> {
         Cmd::Months { year, json, out } => {
             cmd_months(&cli.db, year.as_deref(), json, out.as_deref())
         }
+        Cmd::Years { from, to, json, out } => cmd_years(
+            &cli.db,
+            from.as_deref(),
+            to.as_deref(),
+            json,
+            out.as_deref(),
+        ),
         Cmd::Recent {
             days,
             limit,
@@ -4714,6 +4758,262 @@ fn cmd_months(db: &PathBuf, year: Option<&str>, json: bool, out: Option<&Path>) 
     Ok(())
 }
 
+/// Validate one `years --from` / `years --to` option (the
+/// `normalize_month_year` house rule: a clear Ukrainian error, exit 1
+/// through `main`): absent means "the caller resolves the bound from the
+/// index" (`Ok(0)` — the sentinel year `0000` never occurs in a real
+/// index, so the caller substitutes the `dates` MIN/MAX); present must be
+/// exactly four ASCII digits (`"2026"`, surrounding whitespace trimmed),
+/// anything else — `"26"`, `"abcd"`, the empty string — fails with
+/// «рік має бути РРРР (наприклад 2026)».
+fn normalize_year_arg(arg: Option<&str>) -> Result<u32> {
+    match arg {
+        None => Ok(0),
+        Some(y) => {
+            let y = y.trim();
+            if y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()) {
+                Ok(y.parse::<u32>().unwrap_or(0))
+            } else {
+                Err(anyhow::anyhow!("рік має бути РРРР (наприклад 2026)"))
+            }
+        }
+    }
+}
+
+/// Validate the resolved closed year range of `years` (the same house
+/// rule): the bounds must satisfy `from <= to` — a `--from` later than
+/// the `--to` (either side explicit or defaulted) fails with
+/// «початок періоду пізніший за кінець» (exit 1 through `main`).
+fn check_year_range(from: u32, to: u32) -> Result<()> {
+    if from > to {
+        Err(anyhow::anyhow!("початок періоду пізніший за кінець"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Keep the histogram rows the closed range `[from, to]` holds: a row
+/// survives when its `year` is exactly four digits that parse as a number
+/// (`dates`' GLOB already guards this, the parse is the belt) and the
+/// parsed year lies inside the range; the survivors sort ascending.
+/// Shared by [`years_lines`] and [`years_json`] so the two cannot drift.
+fn years_range_rows(from: u32, to: u32, rows: &[YearRow]) -> Vec<YearRow> {
+    let mut kept: Vec<YearRow> = rows
+        .iter()
+        .filter_map(|r| {
+            let y = r.year.as_str();
+            if y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()) {
+                let n = y.parse::<u32>().ok()?;
+                ((from..=to).contains(&n)).then(|| YearRow {
+                    year: r.year.clone(),
+                    count: r.count,
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    kept.sort_by_key(|r| r.year.clone());
+    kept
+}
+
+/// The report body of `years` (shared by stdout and `--out` so the two
+/// cannot drift): «Документи за роками:» header, then — when the closed
+/// range `[from, to]` holds no histogram row — «немає документів за цей
+/// період» (the `recent` zero rule); then one `{yyyy}: {count}` line per
+/// year the range holds, ascending (counts render plain like the
+/// `dates`/`stats` numbers). Unlike `months` the grid is NOT zero-filled:
+/// a year inside the range without documents simply has no row. Then the
+/// verdict «разом: {sum}» over the SHOWN rows, then the «без дати:
+/// {undated}» line only when `undated > 0` — the `dates` line, computed
+/// over the WHOLE index, independent of the range. Informational: an
+/// empty range still renders header + «немає документів за цей період» +
+/// «разом: 0» (+ the undated line), and the run exits 0.
+fn years_lines(from: u32, to: u32, rows: &[YearRow], undated: i64) -> Vec<String> {
+    let kept = years_range_rows(from, to, rows);
+    let mut lines = vec!["Документи за роками:".to_string()];
+    if kept.is_empty() {
+        lines.push("немає документів за цей період".to_string());
+    }
+    let mut total: i64 = 0;
+    for r in &kept {
+        total += r.count;
+        lines.push(format!("{}: {}", r.year, r.count));
+    }
+    lines.push(format!("разом: {total}"));
+    if undated > 0 {
+        lines.push(format!("без дати: {undated}"));
+    }
+    lines
+}
+
+/// The `--json` body of `years` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty
+/// `{"count_total":N,"from":"YYYY","rows":[{count,year},…],"to":"YYYY",
+/// "undated":N}` object built as hand-rolled `serde_json::Value`s like
+/// the other commands' JSON bodies (map keys sort, so `count_total`/
+/// `from`/`rows`/`to`/`undated` and the `count`/`year` inside every entry
+/// keep their alphabetical order — documented in `--help`). `from`/`to`
+/// are the resolved closed bounds (zero-padded `YYYY`); `rows` are the
+/// in-range rows only (the `years_lines` omit-zero-years rule);
+/// `count_total` sums the SHOWN rows; `undated` is the whole-index `dates`
+/// count. stdout prints exactly this string plus a trailing newline; the
+/// `--out` file receives the same bytes BOM-less (machine data, the house
+/// JSON rule).
+fn years_json(from: u32, to: u32, rows: &[YearRow], undated: i64) -> String {
+    let kept = years_range_rows(from, to, rows);
+    let total: i64 = kept.iter().map(|r| r.count).sum();
+    let entries: Vec<serde_json::Value> = kept
+        .iter()
+        .map(|r| serde_json::json!({ "year": r.year, "count": r.count }))
+        .collect();
+    let value = serde_json::json!({
+        "rows": entries,
+        "count_total": total,
+        "from": format!("{from:04}"),
+        "to": format!("{to:04}"),
+        "undated": undated,
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `years --out` has written `file` (the
+/// resolved closed period, the same wording in both modes):
+/// `[years] записано період {from}–{to} → {file}`.
+fn years_out_note(from: u32, to: u32, file: &Path) -> String {
+    format!(
+        "[years] записано період {from:04}–{to:04} → {}",
+        file.display()
+    )
+}
+
+/// Offline «which years hold the documents» (`years`): the document-date
+/// distribution by year of `org_date` over a CLOSED year range — the
+/// range-selected companion of `dates` (same column, same GLOB guard, so
+/// the histograms always agree), unlike `months` NOT zero-filling the
+/// empty years inside the range. Never builds a client, never touches the
+/// network. A missing index file is a hard error («індекс не знайдено: …»,
+/// the `stats`/`verify`/`months` rule); a malformed `--from`/`--to` or a
+/// `--from` later than the `--to` exits 1 via [`normalize_year_arg`] and
+/// [`check_year_range`]. The bounds default to the oldest / newest year
+/// present in the index — `MIN`/`MAX(substr(org_date,1,4))` over the same
+/// `GLOB '[0-9][0-9][0-9][0-9]*'` guard as `dates` (an index without a
+/// single dated row leaves the range `0000–0000`, which renders the zero
+/// report). The histogram comes straight from `docs` through the
+/// connection `rada_db::open` returns (the `verify` / `dict-stats`
+/// direct-SQL idiom, the `dates` query verbatim): `substr(org_date,1,4)`
+/// grouped over the rows passing the GLOB year-prefix guard, ordered
+/// ascending; the pure renderers keep the in-range rows whose four-digit
+/// year parses. Documents outside the histogram (missing or malformed
+/// date) are `total` minus the full histogram sum and render as
+/// «без дати» (the `dates` rule, range-independent). Informational: the
+/// run always exits 0. With `--out` the exact stdout body goes to the
+/// file (parent dirs created) and nothing prints to stdout: the plain
+/// report is written UTF-8 with a BOM (Excel-friendly, like
+/// search/arrivals/stats/verify), the `--json` body BOM-less; one
+/// `[years] записано період {from}–{to} → {file}` note goes to stderr.
+/// The header always renders, so the file is never BOM-alone.
+fn cmd_years(
+    db: &PathBuf,
+    from: Option<&str>,
+    to: Option<&str>,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    let from = normalize_year_arg(from)?;
+    let to = normalize_year_arg(to)?;
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    // Default bounds: the oldest / newest year present in the index (the
+    // `dates` MIN/MAX rule — same GLOB guard over the four-digit prefix);
+    // an index with no dated row at all leaves the `0` sentinel, which
+    // renders the zero report (the all-zero `0000` idiom of `months`).
+    let from = if from == 0 {
+        conn.query_row(
+            "SELECT MIN(substr(org_date,1,4)) FROM docs
+             WHERE org_date GLOB '[0-9][0-9][0-9][0-9]*'",
+            [],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None)
+        .and_then(|y| y.parse::<u32>().ok())
+        .unwrap_or(0)
+    } else {
+        from
+    };
+    let to = if to == 0 {
+        conn.query_row(
+            "SELECT MAX(substr(org_date,1,4)) FROM docs
+             WHERE org_date GLOB '[0-9][0-9][0-9][0-9]*'",
+            [],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .unwrap_or(None)
+        .and_then(|y| y.parse::<u32>().ok())
+        .unwrap_or(0)
+    } else {
+        to
+    };
+    check_year_range(from, to)?;
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
+        .unwrap_or(0);
+    let mut rows: Vec<YearRow> = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT substr(org_date,1,4) AS y, COUNT(*) FROM docs
+             WHERE org_date GLOB '[0-9][0-9][0-9][0-9]*'
+             GROUP BY y ORDER BY y",
+        )
+        .context("prepare years histogram")?;
+    let mut mapped = stmt
+        .query_map([], |r| {
+            Ok(YearRow {
+                year: r.get(0)?,
+                count: r.get(1)?,
+            })
+        })
+        .context("run years histogram")?;
+    while let Some(row) = mapped.next().transpose()? {
+        rows.push(row);
+    }
+    // `undated` mirrors `dates` exactly: the whole-index count minus the
+    // FULL histogram sum (range-independent).
+    let dated: i64 = rows.iter().map(|r| r.count).sum();
+    let undated = total - dated;
+    if json {
+        let body = years_json(from, to, &rows, undated);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", years_out_note(from, to, p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = years_lines(from, to, &rows, undated);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout report (the header always renders, so never
+            // BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", years_out_note(from, to, p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One `recent` document row: the registration number, the title as
 /// stored in the TEXT `nazva` column of `docs` (the index has no `title`
 /// column — `nazva` is the title), and the raw 8-digit `org_date`
@@ -5489,9 +5789,10 @@ mod tests {
         export_markdown, export_out_note, export_plain, favorites_json_body,
         favorites_json_out_note, favorites_lines, favorites_out_note, facet_lines, filter_since,
         new_nregs, normalize_fav_kind, normalize_hits_format, normalize_month_year,
-        normalize_recent_days, normalize_recent_limit,
+        normalize_recent_days, normalize_recent_limit, normalize_year_arg, check_year_range,
         hits_lines, hits_md_lines, hits_out_note,
         months_json, months_lines, months_out_note,
+        years_json, years_lines, years_out_note,
         normalize_fmt, out_note, orgs_json, orgs_lines, orgs_out_note,
         recent_cutoff, recent_docs_json, recent_docs_lines, recent_docs_out_note,
         recent_json_body, recent_json_out_note, recent_lines,
@@ -7490,6 +7791,132 @@ mod tests {
         assert_eq!(
             months_out_note("1701", file),
             format!("[months] записано 1701 рік → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn normalize_year_arg_rejects_garbage() {
+        // accepted: the absent option (None → the caller resolves the
+        // oldest / newest index year, the `dates` MIN/MAX rule, the `0`
+        // sentinel) and exactly four ASCII digits
+        assert_eq!(normalize_year_arg(None).unwrap(), 0);
+        assert_eq!(normalize_year_arg(Some("2026")).unwrap(), 2026);
+        // rejected: anything that is not РРРР — the exact house error
+        // text (exit 1 through `main`)
+        for bad in ["26", "abcd", ""] {
+            let err = normalize_year_arg(Some(bad)).unwrap_err().to_string();
+            assert_eq!(err, "рік має бути РРРР (наприклад 2026)");
+        }
+        // the closed-range rule: from <= to accepted, a `--from` later
+        // than the `--to` rejected with the exact house error text
+        assert!(check_year_range(2020, 2026).is_ok());
+        assert!(check_year_range(2026, 2026).is_ok());
+        let err = check_year_range(2026, 2020).unwrap_err().to_string();
+        assert_eq!(err, "початок періоду пізніший за кінець");
+    }
+
+    #[test]
+    fn years_lines_renders_range_rows_and_omits_zero_years() {
+        // header + one «{yyyy}: {count}» line per in-range year ascending
+        // (the SQL order, counts render plain), then the «разом» verdict
+        // over the SHOWN rows, then the «без дати» line only when the
+        // whole-index undated count is positive (the `dates` rule).
+        // Unlike `months` the grid is NOT zero-filled: 2025 — inside the
+        // range, absent from the histogram — simply has no row, and the
+        // out-of-range 2019 and the unparseable «abcd» rows drop out
+        // (informational — the command still exits 0)
+        let rows = vec![
+            YearRow { year: "2019".into(), count: 5 },
+            YearRow { year: "2024".into(), count: 7283 },
+            YearRow { year: "2026".into(), count: 5492 },
+            YearRow { year: "abcd".into(), count: 1 },
+        ];
+        assert_eq!(
+            years_lines(2020, 2026, &rows, 14669),
+            vec![
+                "Документи за роками:".to_string(),
+                "2024: 7283".to_string(),
+                "2026: 5492".to_string(),
+                "разом: 12775".to_string(),
+                "без дати: 14669".to_string(),
+            ]
+        );
+        // empty range: header + «немає документів за цей період» +
+        // «разом: 0» + the undated line (the `recent` zero rule, exit 0)
+        assert_eq!(
+            years_lines(1900, 1950, &rows, 3),
+            vec![
+                "Документи за роками:".to_string(),
+                "немає документів за цей період".to_string(),
+                "разом: 0".to_string(),
+                "без дати: 3".to_string(),
+            ]
+        );
+        // the `dates` rule: a fully dated index (undated == 0) prints no
+        // «без дати» line at all
+        assert_eq!(
+            years_lines(2026, 2026, &rows, 0),
+            vec![
+                "Документи за роками:".to_string(),
+                "2026: 5492".to_string(),
+                "разом: 5492".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn years_json_renders_rows_and_count_total() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «count_total»/«from»/«rows»/«to»/«undated» keep their
+        // alphabetical order, as do «count»/«year» inside every entry;
+        // «rows» carries only the in-range rows (the `years_lines`
+        // omit-zero-years rule) and «count_total» sums the SHOWN rows
+        let rows = vec![
+            YearRow { year: "2019".into(), count: 5 },
+            YearRow { year: "2024".into(), count: 4 },
+            YearRow { year: "2026".into(), count: 2 },
+        ];
+        let body = years_json(2020, 2026, &rows, 9);
+        let entries: Vec<String> = [("2024", 4), ("2026", 2)]
+            .iter()
+            .map(|(year, count)| {
+                format!("    {{\n      \"count\": {count},\n      \"year\": \"{year}\"\n    }}")
+            })
+            .collect();
+        let expected = format!(
+            "{{\n  \"count_total\": 6,\n  \"from\": \"2020\",\n  \"rows\": [\n{}\n  ],\n  \"to\": \"2026\",\n  \"undated\": 9\n}}",
+            entries.join(",\n")
+        );
+        assert_eq!(body, expected);
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // empty range: a well-formed zero report with no rows
+        let body = years_json(1900, 1950, &rows, 3);
+        assert!(body.contains("\"count_total\": 0"));
+        assert!(body.contains("\"rows\": []"));
+        assert!(body.contains("\"from\": \"1900\""));
+        assert!(body.contains("\"to\": \"1950\""));
+    }
+
+    #[test]
+    fn years_out_note_formats_period_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//y.txt");
+        let line = years_out_note(2020, 2026, file);
+        assert_eq!(
+            line,
+            format!("[years] записано період 2020–2026 → {}", file.display())
+        );
+        assert!(line.starts_with("[years] "));
+        assert!(line.contains("2020–2026"));
+        assert!(line.contains("період"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the informational zero rule: the note still formats for the
+        // all-zero `0000–0000` range
+        assert_eq!(
+            years_out_note(0, 0, file),
+            format!("[years] записано період 0000–0000 → {}", file.display())
         );
     }
 
