@@ -111,7 +111,7 @@ official open-data API:
     the web footer shows the same version (`version` in `/api/status`).
   - **Keyboard shortcuts** — **Ctrl+F** focuses the find-in-text field (reader)
     or the query field (search); **Ctrl+K** jumps to Пошук with the query
-    focused; **F5** re-fetches the reader text; **Esc** clears the find query;
+    focused; **Ctrl+B** bookmarks the open act; **F5** re-fetches the reader text; **Esc** clears the find query;
     **Alt+←/→**
     pages through the results list from inside the reader; **Shift+Enter** steps
     to the previous find match; **Ctrl+Plus / Ctrl+Minus / Ctrl+0** zoom the
@@ -199,6 +199,9 @@ official open-data API:
   smooth-scroll jump list of «Розділ/Глава/Стаття» headings),
   **reader copy-text + reading-time stats** (clipboard button and a muted
   «N слів · M симв. · ~K хв» label),
+  **reader export buttons** (`.md` / `.txt` / `.html` download the open act
+  client-side in the CLI `export` formats, reusing the loaded body and
+  sanitizing the filename),
   **a «клавіші» help popover** in the header (every real shortcut listed from
   one source of truth; closes on Esc or an outside click),
   **active-filter chips** («Активні фільтри»: one chip per set filter with a ×

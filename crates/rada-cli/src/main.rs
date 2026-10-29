@@ -320,7 +320,9 @@ enum Cmd {
         json: bool,
         /// Write to this file instead of stdout (parent dirs created).
         /// Plain table gets a UTF-8 BOM (Excel-friendly); with `--json` the
-        /// file is written BOM-less.
+        /// file is written BOM-less. Zero links write only the BOM — the
+        /// «не знайдено» line stays on stdout (the house `search --out`
+        /// zero-hit rule); the note goes to stderr.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -2706,7 +2708,8 @@ fn resolve_out_note(n: usize, file: &Path) -> String {
 /// page (one paced request), titles preferred from the offline index.
 /// With `--out` the exact stdout body goes to the file (parent dirs created)
 /// and nothing prints to stdout: the plain table is written UTF-8 with a BOM
-/// (Excel-friendly, like arrivals/resolve), the `--json` body BOM-less.
+/// (Excel-friendly, like arrivals/resolve), the `--json` body BOM-less;
+/// zero links write the BOM alone (n=0 note, the house `search --out` rule).
 fn cmd_related(
     db: &PathBuf,
     nreg: &str,
@@ -2728,17 +2731,12 @@ fn cmd_related(
         }
     }
     if json {
-        let items: Vec<serde_json::Value> = list
-            .iter()
-            .map(|r| serde_json::json!({ "nreg": r.nreg, "title": r.title }))
-            .collect();
-        let body = serde_json::to_string_pretty(&serde_json::json!({ "items": items }))
-            .map_err(anyhow::Error::from)?;
+        let body = related_json_body(&list)?;
         match out {
             Some(p) => {
                 // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
                 write_out_file(p, format!("{body}\n").as_bytes())?;
-                eprintln!("[related] записано JSON → {}", p.display());
+                eprintln!("{}", related_json_out_note(p));
             }
             None => println!("{body}"),
         }
@@ -2747,8 +2745,16 @@ fn cmd_related(
     let body = related_table(&list);
     match out {
         Some(p) => {
-            // UTF-8 BOM prefix: the same Excel-friendly convention as arrivals.
-            write_out_file(p, format!("\u{FEFF}{body}\n").as_bytes())?;
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // arrivals/resolve. Zero links write the BOM alone and no
+            // trailing newline: the «не знайдено» line is the stdout-only
+            // zero-hit message (the house `search --out` rule).
+            let text = if list.is_empty() {
+                "\u{FEFF}".to_string()
+            } else {
+                format!("\u{FEFF}{body}\n")
+            };
+            write_out_file(p, text.as_bytes())?;
             eprintln!("{}", related_out_note(list.len(), p));
         }
         None => println!("{body}"),
@@ -2771,10 +2777,32 @@ fn related_table(list: &[rada_core::related::RelatedDoc]) -> String {
     lines.join("\n")
 }
 
+/// The `--json` body of `related` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty `{"items":[{nreg,title},…]}` object over the
+/// parsed links (titles already index-enriched). stdout prints exactly this
+/// string plus a trailing newline; the `--out` file receives the same bytes
+/// BOM-less (machine data, the house JSON rule). No links: the wrapper
+/// renders `"items": []` (the `dict --json` empty style).
+fn related_json_body(list: &[rada_core::related::RelatedDoc]) -> Result<String> {
+    let items: Vec<serde_json::Value> = list
+        .iter()
+        .map(|r| serde_json::json!({ "nreg": r.nreg, "title": r.title }))
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "items": items }))
+        .map_err(anyhow::Error::from)
+}
+
 /// The stderr note printed after `related --out` has written the plain
 /// table (`n` links) to `file`.
 fn related_out_note(n: usize, file: &Path) -> String {
     format!("[related] записано {n} посилань → {}", file.display())
+}
+
+/// The stderr note printed after `related --json --out` has written the JSON
+/// body to `file` (`[related] записано JSON → {file}` — the same wording as
+/// the `search` / `cache` / `annot list` / `resolve` / `dict` JSON notes).
+fn related_json_out_note(file: &Path) -> String {
+    format!("[related] записано JSON → {}", file.display())
 }
 
 fn cmd_snapshot(db: &PathBuf, what: SnapCmd) -> Result<()> {
@@ -3160,7 +3188,8 @@ mod tests {
         dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, export_html,
         grep_body, grep_render,
         export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
-        normalize_fmt, out_note, related_out_note, resolve_out_note, search_out_note, since_note,
+        normalize_fmt, out_note, related_json_body, related_json_out_note, related_out_note,
+        resolve_out_note, search_out_note, since_note,
         stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
         toc_out_note, verify_lines, verify_out_note, StatsInfo, TocEntry, VerifyCheck,
         VerifyStatus,
@@ -3449,6 +3478,43 @@ mod tests {
         assert!(line.contains("посилань"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn related_json_out_note_formats_json_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//r.json");
+        let line = related_json_out_note(file);
+        assert_eq!(line, format!("[related] записано JSON → {}", file.display()));
+        assert!(line.starts_with("[related] записано "));
+        assert!(line.contains("JSON"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn related_json_body_renders_items_and_empty() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «nreg» precedes «title» (the historical inline shape).
+        let docs = vec![
+            rada_core::related::RelatedDoc {
+                nreg: "2341-14".to_string(),
+                title: "Про затвердження".to_string(),
+            },
+            rada_core::related::RelatedDoc {
+                nreg: "254к/96-вр".to_string(),
+                title: "Регламент".to_string(),
+            },
+        ];
+        let body = related_json_body(&docs).unwrap();
+        assert_eq!(
+            body,
+            "{\n  \"items\": [\n    {\n      \"nreg\": \"2341-14\",\n      \"title\": \"Про затвердження\"\n    },\n    {\n      \"nreg\": \"254к/96-вр\",\n      \"title\": \"Регламент\"\n    }\n  ]\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // zero links: a normal result, the dict empty style `"items": []`
+        assert_eq!(related_json_body(&[]).unwrap(), "{\n  \"items\": []\n}");
     }
 
     #[test]

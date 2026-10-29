@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.38: експорт актів із веб-читалки, `Ctrl+B` та доведений до тями `related` / web export buttons, Ctrl+B bookmark & tidy related
+
+- **UKR:** 1) **Експорт у веб-читалці**: кнопки `.md` / `.txt` / `.html` завантажують поточний акт з браузера без зайвих запитів (тіло бере з уже завантаженого) — у той самий формат, що й CLI `export`; назви файлів без небезпечних символів. 2) **Ctrl+B у програмі** зберігає закладку поточного акта прямо з читалки — без клацання по панелі анотацій. 3) **CLI `related`** доведений до спільного стандарту: `--json` будується одним кодом зі stdout, `--out` при нулі пише лише BOM (рядок «не знайдено» лишається у stdout), нотатки — чисті функції. 4) Тести: 269/269.
+- **ENG:** 1) **Web reader export**: `.md` / `.txt` / `.html` buttons download the current act straight from the browser (reusing the already-loaded body) in exactly the CLI `export` formats, with sanitized filenames. 2) **Ctrl+B in the app** bookmarks the open act right from the reader — no annotation-panel clicking. 3) **CLI `related`** brought to the shared standard: `--json` built by one code path with stdout, a zero-link `--out` writes only the BOM (the «не знайдено» line stays on stdout), notes are pure fns. 4) Tests: 269/269.
+
+---
+
+## 2026-10-29
+
 ### 0.10.37: веб-читалка тепер працює офлайн, повний `--out` для словників та Alt+1–5 / offline web reader, dict --out everywhere & Alt+digit pages
 
 - **UKR:** 1) **Офлайн-стійкість веб-читалки**: якщо живий запит тіла не вдався, сервер тепер віддає **кешовану** копію (як у програмі) і підсвічує підказку «кешовано» в шапці читалки; успішне читання поповнює кеш. 2) **CLI `dict`**: кожен офлайн-режим тепер чесно пише у файл — `--json` будується спільним кодом зі stdout (таблиця з BOM / JSON без BOM), нотатки «[dict] … записано» для всіх режимів. 3) **Alt+1…Alt+5 у програмі** — миттєвий перехід між Головна / Пошук / Читалка / Оновлення / Обране (Читалка — лише з відкритим актом); рядок додано у «клавіші». 4) Тести: 265/265.

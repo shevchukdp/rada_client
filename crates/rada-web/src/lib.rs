@@ -3717,4 +3717,81 @@ mod tests {
         assert_eq!(code, 200, "{v}");
         assert_eq!(v["cached"], false, "unknown nreg stays false: {v}");
     }
+
+    #[test]
+    fn ui_page_has_export_buttons() {
+        // «.md» / «.txt» / «.html» chips in the reader toolbar right after
+        // the copy-text/цилата buttons (the GUI reader's export_document
+        // parity): disabled in the markup until a document is open, re-
+        // disabled by openDoc while the card loads (a stale title must never
+        // leak into a file) and enabled on card success — the exact btn-cite
+        // mechanics; each click feeds its format through the shared
+        // exportDoc builder with the button itself as the busy target.
+        for (id, fmt) in [
+            ("btn-export-md", "md"),
+            ("btn-export-txt", "txt"),
+            ("btn-export-html", "html"),
+        ] {
+            assert!(
+                ui::INDEX_HTML
+                    .contains(&format!("<button id=\"{id}\" type=\"button\" disabled title=\"")),
+                "{id}: disabled in the markup: {id}"
+            );
+            assert!(
+                ui::INDEX_HTML.contains(&format!("$(\"{id}\").disabled = true; //")),
+                "{id}: re-disabled while a new card loads"
+            );
+            assert!(
+                ui::INDEX_HTML.contains(&format!("$(\"{id}\").disabled = false;")),
+                "{id}: enabled on card success"
+            );
+            assert!(
+                ui::INDEX_HTML.contains(&format!(
+                    "$(\"{id}\").onclick = () => exportDoc(\"{fmt}\", $(\"{id}\"));"
+                )),
+                "{id}: click goes through the shared exportDoc"
+            );
+        }
+        assert!(ui::INDEX_HTML.contains(">.md</button>"));
+        assert!(ui::INDEX_HTML.contains(">.txt</button>"));
+        assert!(ui::INDEX_HTML.contains(">.html</button>"));
+    }
+
+    #[test]
+    fn ui_page_has_export_document_builder() {
+        // Shared exportDoc(fmt, btn): the body comes from the loader cache
+        // (state.curText) or, when not fetched yet, from the reader's own
+        // text endpoint through api(); the md file opens with the «# title»
+        // heading and the «> nreg — rada-client» line, the txt file with a
+        // 60 '=' rule under the «title (nreg)» line, and the html file is a
+        // minimal standalone page whose title/nreg go through escHtml and
+        // whose paragraphs are split on blank lines and escHtml'd; the file
+        // is then handed over as a Blob object URL under the sanitized
+        // «{nreg}.{fmt}» name and revoked right after the click.
+        assert!(ui::INDEX_HTML.contains("async function exportDoc(fmt, btn)"));
+        assert!(ui::INDEX_HTML.contains("if (!state.curNreg || !state.curCard) return;"));
+        assert!(ui::INDEX_HTML.contains("let body = state.curText;"));
+        assert!(ui::INDEX_HTML.contains("\"/api/doc/\" + encNreg(nreg) + \"/text\""));
+        // md: heading + metadata line
+        assert!(ui::INDEX_HTML.contains("\"# \" + title"));
+        assert!(ui::INDEX_HTML.contains("+ nreg + \" \u{2014} rada-client\""));
+        // txt: title (nreg) + the 60-column rule
+        assert!(ui::INDEX_HTML.contains("const EXPORT_RULE = \""));
+        assert!(ui::INDEX_HTML.contains(&"=".repeat(60)));
+        assert!(ui::INDEX_HTML.contains("title + \" (\" + nreg + \")\\n\" + EXPORT_RULE"));
+        // html: standalone page, escaped strings, blank-line paragraph split
+        assert!(ui::INDEX_HTML.contains("<!doctype html>"));
+        assert!(ui::INDEX_HTML.contains("escHtml(title)"));
+        assert!(ui::INDEX_HTML.contains("escHtml(nreg)"));
+        assert!(ui::INDEX_HTML.contains(".split(/\\n\\s*\\n/)"));
+        assert!(ui::INDEX_HTML.contains("\"<p>\" + escHtml(p.trim())"));
+        // Blob download flow with the {nreg}.{fmt} name and the revoke
+        assert!(ui::INDEX_HTML.contains("new Blob([doc], { type:"));
+        assert!(ui::INDEX_HTML.contains("URL.createObjectURL(blob)"));
+        assert!(ui::INDEX_HTML.contains(
+            "a.download = nreg.replace(/[^A-Za-z0-9._-]/g, \"_\") + \".\" + fmt;"
+        ));
+        assert!(ui::INDEX_HTML.contains("a.click();"));
+        assert!(ui::INDEX_HTML.contains("URL.revokeObjectURL(url);"));
+    }
 }

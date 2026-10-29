@@ -131,6 +131,10 @@ pub fn help_lines() -> Vec<(&'static str, &'static str)> {
             "поле «Знайти в тексті» (читалка) або поле запиту (пошук)",
         ),
         ("Ctrl+K", "перейти до пошуку та сфокусувати поле запиту"),
+        (
+            "Ctrl+B",
+            "зберегти закладку поточного документа (читалка)",
+        ),
         ("Enter", "виконати пошук / відкрити документ за номером"),
         (
             "Enter / Shift+Enter",
@@ -436,6 +440,7 @@ mod tests {
         for expected in [
             "Ctrl+F",
             "Ctrl+K",
+            "Ctrl+B",
             "Enter",
             "Enter / Shift+Enter",
             "Esc",

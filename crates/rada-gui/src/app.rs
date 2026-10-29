@@ -1967,6 +1967,13 @@ impl eframe::App for App {
         {
             self.reload_reader();
         }
+        // Ctrl+B on the reader page: save a quick bookmark of the open act.
+        if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::B))
+            && self.page == Page::Reader
+            && self.reader.is_some()
+        {
+            self.save_annotation("bookmark", "");
+        }
         // Alt+1..5: quick page switching (Читалка only with an open document).
         let alt_page = ctx.input_mut(|i| {
             for (k, d) in [

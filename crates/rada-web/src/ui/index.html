@@ -809,6 +809,9 @@
       <button id="btn-raw" type="button" title="Простий текст без стилів заголовків/статей">Простий</button>
       <button id="btn-copy-text" type="button" title="Скопіювати весь текст акту в буфер обміну">Копіювати текст</button>
       <button id="btn-cite" type="button" disabled title="Скопіювати реквізити посилання на акт">цилата</button>
+      <button id="btn-export-md" type="button" disabled title="Завантажити текст акту файлом Markdown">.md</button>
+      <button id="btn-export-txt" type="button" disabled title="Завантажити текст акту файлом звичайного тексту">.txt</button>
+      <button id="btn-export-html" type="button" disabled title="Завантажити текст акту файлом HTML-сторінки">.html</button>
       <span id="copy-hint" class="hint"></span>
       <span id="doc-stats" class="hint"></span>
       <span id="doc-cached" class="hint" hidden>кешовано</span>
@@ -1518,6 +1521,9 @@ async function openDoc(nreg) {
   $("editions").disabled = true;
   $("editions").innerHTML = "";
   $("btn-cite").disabled = true; // needs the card title; enabled on card success
+  $("btn-export-md").disabled = true; // needs the card title too; enabled on card success
+  $("btn-export-txt").disabled = true; // ditto: no stale title may leak into a file
+  $("btn-export-html").disabled = true; // ditto
   $("doc-text").hidden = true;
   $("card-details").hidden = true;
   $("card-retry-row").hidden = true;
@@ -1565,6 +1571,9 @@ async function loadCard() {
     sel.disabled = false;
     $("btn-compare-editions").disabled = sel.options.length < 2;
     $("btn-cite").disabled = false;
+    $("btn-export-md").disabled = false;
+    $("btn-export-txt").disabled = false;
+    $("btn-export-html").disabled = false;
     loadAnnotations(nreg);
     loadText("");
     $("related-row").hidden = false;
@@ -3115,6 +3124,75 @@ $("btn-export").onclick = () => {
     "?fmt=" + $("export-fmt").value +
     ($("editions").value ? "&edition=" + encodeURIComponent($("editions").value) : "");
 };
+
+// «.md» / «.txt» / «.html»: client-side export of the open act (the GUI
+// reader's export_document parity). The body comes from the loader cache
+// (state.curText) or, when the text has not been fetched yet, from the very
+// endpoint the reader's text loader uses; the file is assembled in the
+// browser in the CLI `export` command's house format and handed over
+// through a Blob object URL — no extra server round-trip.
+const EXPORT_RULE = "============================================================"; // 60 columns
+
+/// Version string as displayed in the footer («rada_client v1.2.3 · …»);
+/// empty while the status fetch has not run or has failed.
+function clientVersion() {
+  const m = /^rada_client v([0-9][^ \u00b7]*)/.exec($("foot").textContent || "");
+  return m ? m[1] : "";
+}
+
+async function exportDoc(fmt, btn) {
+  if (!state.curNreg || !state.curCard) return; // same gate as «цилата»
+  const nreg = state.curNreg;
+  const edition = $("editions").value || "";
+  let body = state.curText;
+  if (!body) {
+    btn.disabled = true; // the paced text fetch may take a few seconds
+    try {
+      let url = "/api/doc/" + encNreg(nreg) + "/text";
+      if (edition) url += "?edition=" + encodeURIComponent(edition);
+      const d = await api(url);
+      if (state.curNreg !== nreg) return; // the document switched mid-flight
+      body = (d && d.text) || "";
+    } catch (e) {
+      alert("Помилка експорту: " + e.message);
+      return;
+    } finally {
+      btn.disabled = false;
+    }
+  }
+  const title = state.curCard.nazva || nreg;
+  let doc = "";
+  if (fmt === "md") {
+    const v = clientVersion();
+    doc = "# " + title + "\n> " + nreg + " — rada-client" + (v ? " " + v : "") +
+      "\n\n" + body + "\n";
+  } else if (fmt === "txt") {
+    doc = title + " (" + nreg + ")\n" + EXPORT_RULE + "\n\n" + body + "\n";
+  } else {
+    const paras = body
+      .split(/\n\s*\n/)
+      .filter((p) => p.trim())
+      .map((p) => "<p>" + escHtml(p.trim()) + "</p>")
+      .join("\n");
+    doc = "<!doctype html><meta charset=\"utf-8\"><title>" + escHtml(title) +
+      "</title><h1>" + escHtml(title) + "</h1><p class=\"meta\">" +
+      escHtml(nreg) + " · rada-client</p>" + paras + "\n";
+  }
+  const mime = fmt === "html" ? "text/html" : fmt === "md" ? "text/markdown" : "text/plain";
+  const blob = new Blob([doc], { type: mime + ";charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  // Same sanitizer as the server's export_filename: keep [A-Za-z0-9._-].
+  a.download = nreg.replace(/[^A-Za-z0-9._-]/g, "_") + "." + fmt;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+$("btn-export-md").onclick = () => exportDoc("md", $("btn-export-md"));
+$("btn-export-txt").onclick = () => exportDoc("txt", $("btn-export-txt"));
+$("btn-export-html").onclick = () => exportDoc("html", $("btn-export-html"));
 
 $("btn-print").onclick = () => {
   if (!state.curNreg) { return; }
