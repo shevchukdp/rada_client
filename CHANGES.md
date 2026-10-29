@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.49: статистика тексту у веб-читалці, «кеш» у результатах пошуку та `--out` усюди в CLI / reader doc-stats, cache badges & CLI --out everywhere
+
+- **UKR:** 1) **Статистика під заголовком акта у веб-читалці**: «43 733 слів · 340 212 симв. · ~110 хв» — той самий вигляд і та сама методика, що й у програмі; ховається, поки текст не завантажений. 2) **«· кеш» біля результатів пошуку в програмі**: позначка на тих актах, текст яких уже є в офлайн-кеші — відкриються без мережі. 3) **CLI доведений до єдиного стандарту `--out`**: `status` і `cache` (статистика) отримали запис у файл, а `cache --search --json`, `arrivals`, `resolve --json`, `text` та `annot export` — спільні будівники тіла й нотаток; файли збігаються з stdout байт у байт. 4) Тести: 342/342.
+- **ENG:** 1) **A stats line under the web reader's title**: «43 733 слів · 340 212 симв. · ~110 хв» — the same wording and counting rules as the desktop app; hidden until the text loads. 2) **A «· кеш» mark on the app's search rows** flags acts whose text is already cached for offline reading. 3) **The CLI now meets one uniform `--out` standard**: `status` and `cache` (stats) can write files, and `cache --search --json`, `arrivals`, `resolve --json`, `text` and `annot export` share the body builders and notes — files match stdout byte-for-byte. 4) Tests: 342/342.
+
+---
+
+## 2026-10-29
+
 ### 0.10.48: `statuses` з CLI, стійкий вигляд Обраних та надійні лічби фільтрів у веб / statuses histogram, durable favorites view & robust facet counts
 
 - **UKR:** 1) **CLI `statuses`**: офлайн розподіл документів за статусами («Чинний [5]: 122522 …») з міткою зі словника «стани» і підсумком «всього документів»; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 2) **Вигляд Обраних у програмі тепер стійкий**: текстовий фільтр, чип виду, сортування й «групувати» повертаються після перезапуску. 3) **Лічби збігів у випадаючих списках фільтрів веб-пошуку** стали надійнішими: некоректні дані фільтрів більше не ламають пошук, мітки списків, чипів і друку лишаються чистими. 4) Тести: 328/328.

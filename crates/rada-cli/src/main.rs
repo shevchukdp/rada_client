@@ -178,8 +178,10 @@ enum Cmd {
         #[arg(long)]
         edition: Option<String>,
         /// Write to this file instead of stdout (parent dirs created).
-        /// With `--grep` the file receives the grepped output instead of
-        /// the full body.
+        /// The full body is written verbatim (no BOM, no added trailing
+        /// newline — the exact cached text, unlike the BOM-prefixed
+        /// `export --out` document); with `--grep` the file receives the
+        /// grepped output (BOM-prefixed table) instead of the full body.
         #[arg(long)]
         out: Option<PathBuf>,
         /// Grep the body: print only lines containing this substring
@@ -213,11 +215,14 @@ enum Cmd {
         /// the table.
         #[arg(long)]
         json: bool,
-        /// With `--search`: write the exact stdout table (or the `--json`
-        /// body) to this file instead of stdout (parent dirs created).
-        /// Plain table gets a UTF-8 BOM (Excel-friendly); with `--json` the
-        /// file is written BOM-less. Zero hits write the BOM alone; the
-        /// «збігів … немає» message stays on stdout.
+        /// Write the exact stdout body to this file instead of stdout
+        /// (parent dirs created). With `--search`: the table (or the
+        /// `--json` body) — the plain table gets a UTF-8 BOM
+        /// (Excel-friendly), with `--json` the file is written BOM-less;
+        /// zero hits write the BOM alone and the «збігів … немає» message
+        /// stays on stdout. In the bare stats form: the one-line report
+        /// with a UTF-8 BOM (it always renders, so never BOM-alone).
+        /// `--purge` and `--dump` ignore `--out`.
         #[arg(long)]
         out: Option<PathBuf>,
         /// Export every cached document body into this directory as a
@@ -405,7 +410,15 @@ enum Cmd {
         what: SnapCmd,
     },
     /// Print index statistics.
-    Status,
+    Status {
+        /// Write the exact stdout report to this file instead of stdout
+        /// (parent dirs created). The report gets a UTF-8 BOM
+        /// (Excel-friendly, like `stats --out`) and the
+        /// `[status] записано → {file}` note goes to stderr. No `--json`
+        /// here: use `stats --json` for machine-readable output.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// User annotations (bookmarks / highlights / comments) stored in the index.
     Annot {
         #[command(subcommand)]
@@ -648,6 +661,10 @@ enum AnnCmd {
         /// Legacy positional target file (same effect as `--out`).
         file: Option<PathBuf>,
         /// Write the JSON to this file instead of stdout (parent dirs created).
+        /// The file receives exactly the stdout bytes (the pretty JSON array
+        /// with its trailing newline) BOM-less — machine data, the house
+        /// JSON rule; the `[annot] записано {n} анотацій → {file}` note goes
+        /// to stderr. No `--json` here: the export is already JSON.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -741,7 +758,7 @@ fn run() -> Result<()> {
             cmd_related(&cli.db, &nreg, json, out.as_deref(), cli.pace)
         }
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
-        Cmd::Status => cmd_status(&cli.db),
+        Cmd::Status { out } => cmd_status(&cli.db, out.as_deref()),
         Cmd::Annot { what } => cmd_annot(&cli.db, what),
         Cmd::Recent { limit, json, out } => cmd_recent(&cli.db, limit, json, out.as_deref()),
         Cmd::Favorites { kind, sort, json, out } => {
@@ -1708,13 +1725,9 @@ fn emit_text(
     }
     match out {
         Some(p) => {
-            if let Some(parent) = p.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("create dir {}", parent.display()))?;
-                }
-            }
-            std::fs::write(p, text).with_context(|| format!("запис {}", p.display()))?;
+            // the same verbatim body bytes through the shared
+            // `write_out_file` (parent dirs created, «запис {file}» context)
+            write_out_file(p, text.as_bytes())?;
             eprintln!("{}", out_note(text.chars().count(), p));
             Ok(())
         }
@@ -2099,8 +2112,11 @@ fn cmd_toc(db: &PathBuf, nreg: &str, json: bool, out: Option<&Path>) -> Result<(
 /// with a BOM (Excel-friendly, like search/arrivals/resolve/related), the
 /// `--json` body BOM-less; zero hits write the BOM alone (n=0 note). The
 /// «у кешованому тексті збігів … немає» line is stdout-only (the
-/// `search --facets` rule): it never enters the file. `--out` and `--json`
-/// apply to `--search` only (`--dump` ignores both).
+/// `search --facets` rule): it never enters the file. The bare stats form
+/// honors `--out` too: the one-line report ([`cache_stats_lines`]) goes to
+/// the file BOM-prefixed with a `[cache] записано → {file}` note (it always
+/// renders, so never BOM-alone). `--json` applies to `--search` only;
+/// `--dump` and `--purge` ignore `--out`.
 fn cmd_cache(
     db: &PathBuf,
     purge: bool,
@@ -2173,24 +2189,12 @@ fn cmd_cache(
             })
             .collect();
         if json {
-            let value = serde_json::json!({
-                "term": term,
-                "hits": rows
-                    .iter()
-                    .map(|(h, title)| serde_json::json!({
-                        "nreg": h.nreg,
-                        "title": title,
-                        "hits": h.hits,
-                        "snippet": h.snippet,
-                    }))
-                    .collect::<Vec<_>>(),
-            });
-            let body = serde_json::to_string_pretty(&value).map_err(anyhow::Error::from)?;
+            let body = cache_search_json_body(term, &rows)?;
             match out {
                 Some(p) => {
                     // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
                     write_out_file(p, format!("{body}\n").as_bytes())?;
-                    eprintln!("[cache] записано JSON → {}", p.display());
+                    eprintln!("{}", cache_search_json_out_note(p));
                 }
                 None => println!("{body}"),
             }
@@ -2234,10 +2238,22 @@ fn cmd_cache(
             .unwrap_or(0),
         None => rows,
     };
-    println!(
-        "rows={docs}  total_rows={rows}  size={:.2} MB",
-        bytes as f64 / 1_048_576.0
-    );
+    let lines = cache_stats_lines(docs, rows, bytes);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/resolve/related; the bytes are exactly the
+            // stdout report (the one line always renders, so the file is
+            // never BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", cache_stats_out_note(p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
     Ok(())
 }
 
@@ -2268,6 +2284,61 @@ fn cache_search_lines(
 /// plain table (`n` matched documents) to `file`.
 fn cache_search_out_note(n: usize, file: &Path) -> String {
     format!("[cache] записано {n} збігів → {}", file.display())
+}
+
+/// The `--json` body of `cache --search` (shared by stdout and `--out` so
+/// the two cannot drift): the pretty
+/// `{"term":…,"hits":[{nreg,title,hits,snippet},…]}` object over the
+/// resolved `(hit, title)` pairs (titles come from the offline index).
+/// stdout prints exactly this string plus a trailing newline; the `--out`
+/// file receives the same bytes BOM-less (machine data, the house JSON
+/// rule). Zero hits render `"hits": []` (the `dict --json` empty style).
+fn cache_search_json_body(
+    term: &str,
+    hits: &[(rada_db::textcache::CacheHit, String)],
+) -> Result<String> {
+    let value = serde_json::json!({
+        "term": term,
+        "hits": hits
+            .iter()
+            .map(|(h, title)| serde_json::json!({
+                "nreg": h.nreg,
+                "title": title,
+                "hits": h.hits,
+                "snippet": h.snippet,
+            }))
+            .collect::<Vec<_>>(),
+    });
+    serde_json::to_string_pretty(&value).map_err(anyhow::Error::from)
+}
+
+/// The stderr note printed after `cache --search --json --out` has written
+/// the JSON body to `file` (`[cache] записано JSON → {file}` — the same
+/// wording as the `search` / `annot list` / `resolve` / `dict` / `related`
+/// JSON notes).
+fn cache_search_json_out_note(file: &Path) -> String {
+    format!("[cache] записано JSON → {}", file.display())
+}
+
+/// The stdout report of the bare `cache` stats form (shared by stdout and
+/// `--out` so the two cannot drift): the single
+/// `rows={docs}  total_rows={rows}  size={:.2} MB` line (double-space
+/// separators, size in MB with two decimals). `docs` is the `--nreg` row
+/// count (or the global total when no `nreg` was given). An empty cache
+/// still renders `rows=0  total_rows=0  size=0.00 MB`, so the `--out` file
+/// never carries the BOM alone.
+fn cache_stats_lines(docs: i64, rows: i64, bytes: i64) -> Vec<String> {
+    vec![format!(
+        "rows={docs}  total_rows={rows}  size={:.2} MB",
+        bytes as f64 / 1_048_576.0
+    )]
+}
+
+/// The stderr note printed after the bare `cache` stats form wrote `file`
+/// (`[cache] записано → {file}` — the `stats` report-note style; the stats
+/// line carries no natural count to announce, like `stats` itself).
+fn cache_stats_out_note(file: &Path) -> String {
+    format!("[cache] записано → {}", file.display())
 }
 
 /// The dump filename stem behind `cache --dump` (pure): ASCII alphanumerics
@@ -2910,8 +2981,11 @@ fn new_nregs(live: &[String], seen: &[String]) -> Vec<String> {
 }
 
 /// Live updated-documents feed (r.tsv) diffed against the saved snapshot.
-/// With `--out` the exact stdout body goes to the file (parent dirs created)
-/// and nothing prints to stdout: the plain table is written UTF-8 with a BOM
+/// The table and the JSON body are built once through the shared pure
+/// builders [`arrivals_lines`] / [`arrivals_json_body`], so stdout and the
+/// file cannot drift. With `--out` the exact stdout body goes to the file
+/// (parent dirs created, via the shared [`write_out_file`]) and nothing
+/// prints to stdout: the plain table is written UTF-8 with a BOM
 /// (Excel-friendly, like the GUI CSV), the `--json` body BOM-less. `--save`
 /// persists the feed regardless of `--out` (after the diff, before returning)
 /// and regardless of `--since` (the snapshot always stores the full feed).
@@ -2972,22 +3046,12 @@ fn cmd_arrivals(
     }
 
     if json {
-        let body = serde_json::to_string_pretty(&serde_json::json!({
-            "items": feed,
-            "new_nregs": new,
-        }))
-        .map_err(anyhow::Error::from)?;
+        let body = arrivals_json_body(&feed, &new)?;
         match out {
             Some(p) => {
-                if let Some(parent) = p.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        std::fs::create_dir_all(parent)
-                            .with_context(|| format!("create dir {}", parent.display()))?;
-                    }
-                }
-                std::fs::write(p, format!("{body}\n"))
-                    .with_context(|| format!("запис {}", p.display()))?;
-                eprintln!("[arrivals] записано JSON → {}", p.display());
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", arrivals_json_out_note(p));
             }
             None => println!("{body}"),
         }
@@ -2999,31 +3063,18 @@ fn cmd_arrivals(
     }
     let limit = limit.clamp(1, 1000);
     let rows = feed.len().min(limit);
-    let newset: std::collections::HashSet<&str> = new.iter().map(String::as_str).collect();
-    let mut lines: Vec<String> = Vec::with_capacity(rows + 2);
-    lines.push(format!("{} документів, нових: {}", feed.len(), new.len()));
-    for d in feed.iter().take(limit) {
-        let marker = if newset.contains(d.nreg.as_str()) { "* " } else { "  " };
-        lines.push(format!("{marker}{}  [{}]  {}", d.nreg, d.status, d.nazva));
-    }
-    if feed.len() > limit {
-        lines.push(format!("… ще {} див. --limit", feed.len() - limit));
-    }
-    let body = lines.join("\n");
+    let lines = arrivals_lines(&feed, &new, limit);
     match out {
         Some(p) => {
-            if let Some(parent) = p.parent() {
-                if !parent.as_os_str().is_empty() {
-                    std::fs::create_dir_all(parent)
-                        .with_context(|| format!("create dir {}", parent.display()))?;
-                }
-            }
             // UTF-8 BOM prefix: the same Excel-friendly CSV convention as the GUI.
-            std::fs::write(p, format!("\u{FEFF}{body}\n"))
-                .with_context(|| format!("запис {}", p.display()))?;
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
             eprintln!("{}", arrivals_out_note(rows, p));
         }
-        None => println!("{body}"),
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
     }
     Ok(())
 }
@@ -3032,6 +3083,52 @@ fn cmd_arrivals(
 /// table (`rows` document rows) to `file`.
 fn arrivals_out_note(rows: usize, file: &Path) -> String {
     format!("[arrivals] записано {rows} рядків → {}", file.display())
+}
+
+/// The plain-table body of `arrivals` (shared by stdout and `--out` so the
+/// two cannot drift): «{total} документів, нових: {new}» header, then at
+/// most `limit` `«{marker}{nreg}  [{status}]  {nazva}»` rows — `* ` marks a
+/// nreg absent from the saved snapshot, `  ` a seen one — plus the
+/// `… ще {rest} див. --limit` tail when the feed exceeds `limit` (the
+/// caller clamps it to 1..=1000). The header always renders, so an empty
+/// feed is just the header line and the `--out` file is never BOM-alone.
+fn arrivals_lines(feed: &[rada_core::models::UpdatedDoc], new: &[String], limit: usize) -> Vec<String> {
+    let newset: std::collections::HashSet<&str> = new.iter().map(String::as_str).collect();
+    let mut lines: Vec<String> = Vec::with_capacity(feed.len().min(limit) + 2);
+    lines.push(format!("{} документів, нових: {}", feed.len(), new.len()));
+    for d in feed.iter().take(limit) {
+        let marker = if newset.contains(d.nreg.as_str()) { "* " } else { "  " };
+        lines.push(format!("{marker}{}  [{}]  {}", d.nreg, d.status, d.nazva));
+    }
+    if feed.len() > limit {
+        lines.push(format!("… ще {} див. --limit", feed.len() - limit));
+    }
+    lines
+}
+
+/// The `--json` body of `arrivals` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty `{"items":[…feed rows…],"new_nregs":[…]}`
+/// object (the historical inline shape; `--since` filtering already happened
+/// upstream, so both fields honor the filter). stdout prints exactly this
+/// string plus a trailing newline; the `--out` file receives the same bytes
+/// BOM-less (machine data, the house JSON rule).
+fn arrivals_json_body(
+    feed: &[rada_core::models::UpdatedDoc],
+    new: &[String],
+) -> Result<String> {
+    serde_json::to_string_pretty(&serde_json::json!({
+        "items": feed,
+        "new_nregs": new,
+    }))
+    .map_err(anyhow::Error::from)
+}
+
+/// The stderr note printed after `arrivals --json --out` has written the
+/// JSON body to `file` (`[arrivals] записано JSON → {file}` — the same
+/// wording as the `search` / `cache` / `annot list` / `resolve` / `dict` /
+/// `related` JSON notes).
+fn arrivals_json_out_note(file: &Path) -> String {
+    format!("[arrivals] записано JSON → {}", file.display())
 }
 
 /// Derive the YYYYMMDD edition date of an arrivals row the way the web UI
@@ -3188,12 +3285,12 @@ fn cmd_resolve(
         eprintln!("[resolve] локально");
         let hits = &hits[..hits.len().min(limit)];
         if json {
-            let body = serde_json::to_string_pretty(&serde_json::json!({ "candidates": hits }))
-                .map_err(anyhow::Error::from)?;
+            let body = resolve_json_body(hits)?;
             match out {
                 Some(p) => {
+                    // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
                     write_out_file(p, format!("{body}\n").as_bytes())?;
-                    eprintln!("[resolve] записано JSON → {}", p.display());
+                    eprintln!("{}", resolve_json_out_note(p));
                 }
                 None => println!("{body}"),
             }
@@ -3262,7 +3359,9 @@ fn local_candidates(db: &Path, text: &str, limit: usize) -> Vec<rada_db::SearchH
 
 /// Candidate table: «{n} варіантів:» header, then aligned
 /// `  {nreg}  {nazva}  [{status_label}]  {org_num}/{org_date}` rows
-/// (search-style formatting, dates through [`fmt_date`]).
+/// (search-style formatting, dates through [`fmt_date`]). Shared by stdout
+/// (multi-candidate case) and the BOM-prefixed `--out` file so the two
+/// cannot drift; a single local hit keeps its historical bare-nreg stdout.
 fn resolve_table(hits: &[rada_db::SearchHit]) -> String {
     let mut lines = vec![format!("{} варіантів:", hits.len())];
     for h in hits {
@@ -3294,6 +3393,26 @@ fn write_out_file(p: &Path, bytes: &[u8]) -> Result<()> {
 /// table (`n` variants) to `file`.
 fn resolve_out_note(n: usize, file: &Path) -> String {
     format!("[resolve] записано {n} варіантів → {}", file.display())
+}
+
+/// The `--json` body of `resolve` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty `{"candidates":[{nreg,nazva,status,org_date,
+/// org_num,poddat},…]}` object over the local candidate hits (the
+/// historical inline shape; the live fallback path never reaches it).
+/// stdout prints exactly this string plus a trailing newline; the `--out`
+/// file receives the same bytes BOM-less (machine data, the house JSON
+/// rule).
+fn resolve_json_body(hits: &[rada_db::SearchHit]) -> Result<String> {
+    serde_json::to_string_pretty(&serde_json::json!({ "candidates": hits }))
+        .map_err(anyhow::Error::from)
+}
+
+/// The stderr note printed after `resolve --json --out` has written the
+/// JSON body to `file` (`[resolve] записано JSON → {file}` — the same
+/// wording as the `search` / `cache` / `annot list` / `dict` / `related`
+/// JSON notes).
+fn resolve_json_out_note(file: &Path) -> String {
+    format!("[resolve] записано JSON → {}", file.display())
 }
 
 /// List «related documents» for `nreg`: links parsed from the live portal
@@ -3596,14 +3715,11 @@ fn cmd_annot(db: &PathBuf, what: AnnCmd) -> Result<()> {
         AnnCmd::Export { file, out } => {
             let json = rada_db::annotations::export_json(&conn)?;
             if let Some(p) = out.as_deref() {
-                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
-                if let Some(parent) = p.parent() {
-                    if !parent.as_os_str().is_empty() {
-                        std::fs::create_dir_all(parent)
-                            .with_context(|| format!("create dir {}", parent.display()))?;
-                    }
-                }
-                std::fs::write(p, &json).with_context(|| format!("запис {}", p.display()))?;
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout;
+                // the file receives exactly the stdout bytes — the shared
+                // `json` string plus the trailing newline `println!` adds
+                // (the house JSON rule).
+                write_out_file(p, format!("{json}\n").as_bytes())?;
                 let n = rada_db::annotations::all(&conn)?.len();
                 eprintln!("{}", annot_out_note(n, p));
             } else if let Some(p) = file.as_deref() {
@@ -4671,7 +4787,48 @@ fn cmd_statuses(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_status(db: &PathBuf) -> Result<()> {
+/// The stdout report of `status` (shared by stdout and `--out` so the two
+/// cannot drift): the four fixed `index`/`documents`/`last import`/`db size`
+/// rows (a missing `last import` timestamp renders «unknown», size in MB
+/// with one decimal), then one aligned `dict {kind:<7}: {n} entries` row
+/// per reference dictionary. The report always renders every row, so the
+/// `--out` file never carries the BOM alone.
+fn status_lines(
+    db: &Path,
+    docs: i64,
+    last_import: Option<&str>,
+    size_bytes: u64,
+    dicts: [(&str, i64); 3],
+) -> Vec<String> {
+    let mut lines = vec![
+        format!("index      : {}", db.display()),
+        format!("documents  : {docs}"),
+        format!("last import: {}", last_import.unwrap_or("unknown")),
+        format!(
+            "db size    : {:.1} MB",
+            size_bytes as f64 / 1_048_576.0
+        ),
+    ];
+    for (kind, c) in dicts {
+        lines.push(format!("dict {kind:<7}: {c} entries"));
+    }
+    lines
+}
+
+/// The stderr note printed after `status --out` has written `file`
+/// (`[status] записано → {file}` — the `[stats]` note style; there is no
+/// `--json` mode here, so no JSON note).
+fn status_out_note(file: &Path) -> String {
+    format!("[status] записано → {}", file.display())
+}
+
+/// Print index statistics. A missing index is the historical muted line on
+/// stderr plus exit 0 (the guard stays as-is: with `--out` no file is
+/// written). With `--out` the exact stdout report goes to the file (parent
+/// dirs created) and nothing prints to stdout: UTF-8 with a BOM
+/// (Excel-friendly, the `stats --out` rule), one `[status] записано →
+/// {file}` note on stderr.
+fn cmd_status(db: &PathBuf, out: Option<&Path>) -> Result<()> {
     if !db.exists() {
         eprintln!("no index at {} (run `rada-client init` first)", db.display());
         return Ok(());
@@ -4680,20 +4837,29 @@ fn cmd_status(db: &PathBuf) -> Result<()> {
     let n = rada_db::doc_count(&conn)?;
     let last = rada_db::last_import(&conn);
     let size = std::fs::metadata(db).map(|m| m.len()).unwrap_or(0);
-    println!("index      : {}", db.display());
-    println!("documents  : {n}");
-    println!("last import: {}", last.unwrap_or_else(|| "unknown".into()));
-    println!(
-        "db size    : {:.1} MB",
-        size as f64 / 1_048_576.0
-    );
+    let mut dicts = Vec::with_capacity(3);
     for kind in ["stan", "typs", "organs"] {
         let c: i64 = conn
             .query_row("SELECT COUNT(*) FROM dict WHERE kind=?1", [kind], |r| {
                 r.get(0)
             })
             .unwrap_or(0);
-        println!("dict {kind:<7}: {c} entries");
+        dicts.push((kind, c));
+    }
+    let lines = status_lines(db, n, last.as_deref(), size, dicts.try_into().unwrap());
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats; the bytes are exactly the stdout
+            // report (every row always renders, so never BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", status_out_note(p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
     }
     Ok(())
 }
@@ -4747,9 +4913,12 @@ mod tests {
     use super::{
         annot_json_body, annot_json_out_note, annot_list_out_note, annot_out_note,
         annot_search_lines, annot_search_match, annot_search_out_note, annot_table_lines,
-        annot_text_file_note, arrivals_date_key,
+        annot_text_file_note, arrivals_date_key, arrivals_json_body, arrivals_json_out_note,
+        arrivals_lines,
         arrivals_out_note, backfill_out_note, backfill_summary, backfill_summary_lines,
         cache_dump_filename, cache_dump_lines,
+        cache_search_json_body, cache_search_json_out_note, cache_stats_lines,
+        cache_stats_out_note,
         cache_search_out_note, card_json_body, card_json_out_note, card_lines, card_out_note,
         dict_fresh_json, dict_fresh_lines, dict_json_body,
         dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, dict_stats_json,
@@ -4763,7 +4932,8 @@ mod tests {
         normalize_fmt, out_note, orgs_json, orgs_lines, orgs_out_note,
         recent_json_body, recent_json_out_note, recent_lines,
         recent_out_note, related_json_body, related_json_out_note, related_out_note,
-        resolve_out_note, search_out_note, since_note,
+        resolve_json_body, resolve_json_out_note, resolve_out_note, search_out_note, since_note,
+        status_lines, status_out_note,
         stats_lines, stats_out_note, statuses_json, statuses_lines, statuses_out_note,
         text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
         toc_out_note, verify_lines, verify_out_note, DictStat, FavRow, FavSort, HitsFormat,
@@ -6851,5 +7021,265 @@ mod tests {
             statuses_out_note(0, file),
             format!("[statuses] записано 0 статусів → {}", file.display())
         );
+    }
+
+    #[test]
+    fn cache_search_json_body_renders_term_hits_and_empty() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «hits» precedes «term» and «hits»/«nreg»/«snippet»/
+        // «title» keep their alphabetical order inside every entry.
+        let rows = vec![
+            (
+                rada_db::textcache::CacheHit {
+                    nreg: "2755-17".into(),
+                    hits: 3,
+                    snippet: "…податок…".into(),
+                },
+                "Податковий кодекс".to_string(),
+            ),
+            (
+                rada_db::textcache::CacheHit {
+                    nreg: "9-9".into(),
+                    hits: 1,
+                    snippet: "податок".into(),
+                },
+                String::new(), // nreg missing from `docs`: empty title
+            ),
+        ];
+        let body = cache_search_json_body("податок", &rows).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["term"], "податок");
+        assert_eq!(v["hits"][0]["nreg"], "2755-17");
+        assert_eq!(v["hits"][0]["title"], "Податковий кодекс");
+        assert_eq!(v["hits"][0]["hits"], 3);
+        assert_eq!(v["hits"][0]["snippet"], "…податок…");
+        assert_eq!(v["hits"][1]["title"], "");
+        assert!(body.starts_with('{'), "pretty object, like the other JSON bodies");
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // zero hits: a well-formed empty body (the `dict --json` empty
+        // style) — the stdout-only «збігів … немає» line is NOT part of it
+        let empty = cache_search_json_body("ніщо", &[]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&empty).unwrap();
+        assert_eq!(v["term"], "ніщо");
+        assert_eq!(v["hits"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn cache_search_json_out_note_formats_json_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//c.json");
+        let line = cache_search_json_out_note(file);
+        assert_eq!(line, format!("[cache] записано JSON → {}", file.display()));
+        assert!(line.starts_with("[cache] "));
+        assert!(line.contains("записано JSON"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn cache_stats_lines_renders_counts_and_megabytes() {
+        // the bare `cache` report: one line, double-space separators, MB
+        // with two decimals — stdout prints it verbatim and the `--out`
+        // file receives the same bytes BOM-prefixed (+ trailing newline)
+        assert_eq!(
+            cache_stats_lines(5, 5, 5_075_943),
+            vec!["rows=5  total_rows=5  size=4.84 MB".to_string()]
+        );
+        // exact-MB value formats with the historical two-decimal rule
+        assert_eq!(
+            cache_stats_lines(3, 10, 1_048_576),
+            vec!["rows=3  total_rows=10  size=1.00 MB".to_string()]
+        );
+        // empty cache still renders its line: the `--out` file is never
+        // BOM-alone
+        assert_eq!(
+            cache_stats_lines(0, 0, 0),
+            vec!["rows=0  total_rows=0  size=0.00 MB".to_string()]
+        );
+    }
+
+    #[test]
+    fn cache_stats_out_note_formats_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//cache.txt");
+        let line = cache_stats_out_note(file);
+        assert_eq!(line, format!("[cache] записано → {}", file.display()));
+        assert!(line.starts_with("[cache] "));
+        assert!(line.contains("записано"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn arrivals_lines_renders_header_markers_and_tail() {
+        // stdout prints EXACTLY these lines (each + newline); the `--out`
+        // file receives the same bytes BOM-prefixed (+ trailing newline)
+        let doc = |nreg: &str, status: &str, nazva: &str| rada_core::models::UpdatedDoc {
+            num: 1,
+            nreg: nreg.into(),
+            nazva: nazva.into(),
+            status: status.into(),
+            publics: String::new(),
+            link: String::new(),
+            size: None,
+            file: String::new(),
+        };
+        let feed = vec![
+            doc("n1", "Чинний", "Акт перший"),
+            doc("n2", "Не чинний", "Акт другий"),
+            doc("n3", "Чинний", "Акт третій"),
+        ];
+        let new = vec!["n2".to_string()];
+        // limit truncates the rows but not the header; the unseen nreg gets
+        // the «* » marker, seen ones the «   » prefix; the tail counts the
+        // rows beyond the limit
+        assert_eq!(
+            arrivals_lines(&feed, &new, 2),
+            vec![
+                "3 документів, нових: 1".to_string(),
+                "  n1  [Чинний]  Акт перший".to_string(),
+                "* n2  [Не чинний]  Акт другий".to_string(),
+                "… ще 1 див. --limit".to_string(),
+            ]
+        );
+        // no truncation: no tail line
+        assert_eq!(arrivals_lines(&feed, &new, 30).len(), 4);
+        // empty feed: the header always renders (the `--out` file is never
+        // BOM-alone)
+        assert_eq!(
+            arrivals_lines(&[], &[], 30),
+            vec!["0 документів, нових: 0".to_string()]
+        );
+    }
+
+    #[test]
+    fn arrivals_json_body_renders_items_and_new_nregs() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline)
+        let doc = |nreg: &str| rada_core::models::UpdatedDoc {
+            num: 7,
+            nreg: nreg.into(),
+            nazva: "Про тест".into(),
+            status: "Чинний".into(),
+            publics: "20241115".into(),
+            link: "https://zakon.rada.gov.ua/go/1-2024/ed20241115".into(),
+            size: Some(123),
+            file: "d1.htm".into(),
+        };
+        let feed = vec![doc("n1")];
+        let new = vec!["n1".to_string()];
+        let body = arrivals_json_body(&feed, &new).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["items"][0]["nreg"], "n1");
+        assert_eq!(v["items"][0]["nazva"], "Про тест");
+        assert_eq!(v["new_nregs"][0], "n1");
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // empty feed: a well-formed empty body (the shared empty style)
+        let body = arrivals_json_body(&[], &[]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["items"].as_array().unwrap().len(), 0);
+        assert_eq!(v["new_nregs"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn arrivals_json_out_note_formats_json_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//a.json");
+        let line = arrivals_json_out_note(file);
+        assert_eq!(line, format!("[arrivals] записано JSON → {}", file.display()));
+        assert!(line.starts_with("[arrivals] "));
+        assert!(line.contains("записано JSON"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn resolve_json_body_renders_candidates_and_empty() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort: «candidates» wraps the serialized [`rada_db::SearchHit`]
+        // field order.
+        let hits = vec![rada_db::SearchHit {
+            nreg: "2755-17".into(),
+            nazva: "Податковий кодекс".into(),
+            status: 5,
+            org_date: "20101202".into(),
+            org_num: "2755-VIII".into(),
+            poddat: "20231102".into(),
+        }];
+        let body = resolve_json_body(&hits).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["candidates"][0]["nreg"], "2755-17");
+        assert_eq!(v["candidates"][0]["nazva"], "Податковий кодекс");
+        assert_eq!(v["candidates"][0]["status"], 5);
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // the live-path shape: an empty local candidate list renders the
+        // well-formed `{"candidates": []}` (the shared empty style)
+        let body = resolve_json_body(&[]).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["candidates"].as_array().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn resolve_json_out_note_formats_json_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//r.json");
+        let line = resolve_json_out_note(file);
+        assert_eq!(line, format!("[resolve] записано JSON → {}", file.display()));
+        assert!(line.starts_with("[resolve] "));
+        assert!(line.contains("записано JSON"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn status_lines_renders_all_rows_and_unknown_import() {
+        // stdout prints EXACTLY these lines (each + newline); the `--out`
+        // file receives the same bytes BOM-prefixed (+ trailing newline)
+        let db = std::path::Path::new("data//zakon-index.sqlite");
+        let lines = status_lines(
+            db,
+            10,
+            Some("2026-10-01 10:00:00"),
+            2_097_152, // exactly 2 MB
+            [("stan", 10i64), ("typs", 138), ("organs", 799)],
+        );
+        assert_eq!(
+            lines,
+            vec![
+                format!("index      : {}", db.display()),
+                "documents  : 10".to_string(),
+                "last import: 2026-10-01 10:00:00".to_string(),
+                "db size    : 2.0 MB".to_string(),
+                "dict stan   : 10 entries".to_string(),
+                "dict typs   : 138 entries".to_string(),
+                "dict organs : 799 entries".to_string(),
+            ]
+        );
+        // every row always renders: a missing import is «unknown», an empty
+        // index is a full zero report (the `--out` file is never BOM-alone)
+        let lines = status_lines(
+            std::path::Path::new("x.sqlite"),
+            0,
+            None,
+            0,
+            [("stan", 0), ("typs", 0), ("organs", 0)],
+        );
+        assert_eq!(lines[2], "last import: unknown");
+        assert_eq!(lines[3], "db size    : 0.0 MB");
+        assert_eq!(lines.len(), 7);
+    }
+
+    #[test]
+    fn status_out_note_formats_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//st.txt");
+        let line = status_out_note(file);
+        assert_eq!(line, format!("[status] записано → {}", file.display()));
+        assert!(line.starts_with("[status] "));
+        assert!(line.contains("записано"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
     }
 }

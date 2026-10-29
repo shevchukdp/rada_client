@@ -34,6 +34,9 @@ pub enum Msg {
     Search {
         run: u64,
         res: Outcome<(Vec<rada_db::SearchHit>, i64)>,
+        /// Nregs of the hits whose body text is in the offline cache
+        /// (the «кеш» badge); empty on error or for older senders.
+        cached: Vec<String>,
     },
     /// Per-option counts for the filter columns of a search (advisory:
     /// errors never disturb the hit list).
@@ -460,6 +463,7 @@ impl App {
         self.search.run = run;
         self.search.loading = true;
         self.search.searched = true;
+        self.search.cached.clear();
         crate::settings::remember_query(&mut self.settings, &self.search.query);
         // Snapshot the dictionary filters actually used in this search so the
         // next launch starts with the same domain (0 = unset).
@@ -474,7 +478,11 @@ impl App {
             let conn = match rada_db::open(&db) {
                 Ok(c) => c,
                 Err(e) => {
-                    let _ = tx.send(Msg::Search { run, res: Err(e.to_string()) });
+                    let _ = tx.send(Msg::Search {
+                        run,
+                        res: Err(e.to_string()),
+                        cached: Vec::new(),
+                    });
                     return;
                 }
             };
@@ -487,7 +495,19 @@ impl App {
                 }
             }
             let res = rada_db::search::search(&conn, &q).map_err(|e| e.to_string());
-            let _ = tx.send(Msg::Search { run, res });
+            // «кеш» badge: which of these hits can already be read offline
+            // (their body lives in the text cache). Best-effort: a cache
+            // probe failure just means no badge.
+            let cached: Vec<String> = res
+                .as_ref()
+                .map(|(hits, _)| {
+                    hits.iter()
+                        .filter(|h| rada_db::textcache::cached(&conn, &h.nreg).unwrap_or(false))
+                        .map(|h| h.nreg.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
+            let _ = tx.send(Msg::Search { run, res, cached });
         });
         // Advisory facet counts for the same query (separate worker + run id;
         // failures here never touch the hit list).
@@ -1655,18 +1675,20 @@ impl App {
                     self.nav = Some((keep, idx));
                 }
             }
-            Msg::Search { run, res } => {
+            Msg::Search { run, res, cached } => {
                 if run == self.search.run {
                     self.search.loading = false;
                     match res {
                         Ok((hits, total)) => {
                             self.search.total = total;
                             self.search.hits = hits;
+                            self.search.cached = cached;
                             self.search.selected.clear();
                             self.search.error = None;
                         }
                         Err(e) => {
                             self.search.hits.clear();
+                            self.search.cached.clear();
                             self.search.error = Some(e);
                         }
                     }

@@ -768,6 +768,7 @@
 
   <div id="doc-pane" hidden>
     <div id="doc-head"></div>
+    <div id="doc-stats" class="hint" hidden></div>
     <div class="row" id="doc-nav-row">
       <button id="nav-prev" type="button" disabled
         title="Попередній документ зі списку результатів">попередній</button>
@@ -845,7 +846,6 @@
       <button id="btn-export-txt" type="button" disabled title="Завантажити текст акту файлом звичайного тексту">.txt</button>
       <button id="btn-export-html" type="button" disabled title="Завантажити текст акту файлом HTML-сторінки">.html</button>
       <span id="copy-hint" class="hint"></span>
-      <span id="doc-stats" class="hint"></span>
       <span id="doc-cached" class="hint" hidden>кешовано</span>
       <a id="site-link" class="hint" target="_blank">на zakon.rada.gov.ua ↗</a>
     </div>
@@ -1678,6 +1678,7 @@ async function openDoc(nreg) {
   $("btn-top").hidden = true; // a fresh document starts at the top anyway
   resetCompare(); // a stale edition comparison must never linger either
   $("doc-stats").textContent = ""; // stale stats must never linger either
+  $("doc-stats").hidden = true; // and the line stays hidden until a body loads
   $("doc-cached").hidden = true; // a stale cache hint must not linger either
   $("copy-hint").textContent = "";
   const pane = $("doc-pane");
@@ -2294,17 +2295,34 @@ function groupTh(n) {
   return String(n).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
 }
 
-/// Muted stats line beside the export row, same format as the GUI reader
-/// toolbar: «{words} слів · {chars} симв. · ~{min} хв» (≈400 wpm, min 1,
-/// thousands grouped with spaces). Empty while no text is loaded.
-function renderDocStats() {
-  const el = $("doc-stats");
-  const t = state.curText;
-  if (!t) { el.textContent = ""; return; }
+/// The single PURE source of the reader stats string, a faithful mirror of
+/// the GUI reader's `reading_stats` (rada-gui/src/views/reader.rs): words
+/// are whitespace-separated tokens (the GUI's `split_whitespace().count()`
+/// — no letter/digit filter, Cyrillic words count like Latin ones), chars is
+/// the FULL character length (the GUI's `chars().count()`, Cyrillic-safe
+/// here via Array.from), reading time at the GUI's ≈400 words/min with the
+/// same `div_ceil(400).max(1)` floor of 1 хв, thousands grouped with plain
+/// spaces. Exact GUI labels, no emoji/arrows: «{words} слів · {chars}
+/// симв. · ~{min} хв». Empty or whitespace-only text returns "" so the line
+/// stays hidden — no «0 слів» noise for unloaded docs.
+function docStats(text) {
+  const t = text || "";
   const words = t.split(/\s+/).filter(Boolean).length;
+  if (!words) return "";
   const chars = Array.from(t).length;
   const min = Math.max(1, Math.ceil(words/400));
-  el.textContent = groupTh(words) + " слів · " + groupTh(chars) + " симв. · ~" + groupTh(min) + " хв";
+  return groupTh(words) + " слів · " + groupTh(chars) + " симв. · ~" + groupTh(min) + " хв";
+}
+
+/// The ONE paint point for the muted stats one-liner under the reader title:
+/// runFind — the only body renderer — calls it right after repainting
+/// #doc-text, always from the RAW state.curText (never innerHTML, so find
+/// <mark>s can never pollute the counts); empty text hides the line.
+function renderDocStats() {
+  const el = $("doc-stats");
+  const s = docStats(state.curText);
+  el.textContent = s;
+  el.hidden = !s;
 }
 
 /// Re-render the text (base gold HTML, no stale find marks), then wrap every

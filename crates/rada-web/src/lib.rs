@@ -4464,4 +4464,96 @@ mod tests {
         assert!(e.contains("cch.onclick = () => doCacheSearch();"),
             "the cache chip switches to cache-mode search with the current term");
     }
+
+    #[test]
+    fn ui_page_has_reader_doc_stats_line() {
+        // The GUI reader paints a compact muted stats one-liner beside the
+        // body (reading_stats in rada-gui/src/views/reader.rs); the web
+        // reader mirrors it under the doc title header: #doc-head (nazva +
+        // status) leads, then #doc-stats as a .hint one-liner (the panel's
+        // muted language), then the body area — hidden in the markup until a
+        // body paints.
+        assert!(ui::INDEX_HTML.contains(
+            "<div id=\"doc-stats\" class=\"hint\" hidden></div>"
+        ), "muted one-liner, hidden until a body is loaded");
+        let pane = ui::INDEX_HTML
+            .find("<div id=\"doc-pane\" hidden>")
+            .expect("doc pane");
+        let head = ui::INDEX_HTML
+            .find("<div id=\"doc-head\"></div>")
+            .expect("doc title header");
+        let stats = ui::INDEX_HTML
+            .find("id=\"doc-stats\"")
+            .expect("doc stats element");
+        let body = ui::INDEX_HTML
+            .find("id=\"doc-text\"")
+            .expect("doc body area");
+        assert!(pane < head && head < stats && stats < body,
+            "the stats line sits right under the title header, above the body");
+        // openDoc resets it (text AND hidden) so «401 слів …» of a previous
+        // act never follows the user into the next document, and unloaded
+        // docs show no «0 слів» noise.
+        let open = ui::INDEX_HTML
+            .find("async function openDoc(nreg) {")
+            .expect("openDoc");
+        let end = ui::INDEX_HTML
+            .find("async function loadCard() {")
+            .expect("loadCard");
+        let ob = &ui::INDEX_HTML[open..end];
+        assert!(ob.contains(r#"$("doc-stats").textContent = "";"#),
+            "openDoc clears a stale stats line");
+        assert!(ob.contains(r#"$("doc-stats").hidden = true;"#),
+            "openDoc hides it again until the next body renders");
+    }
+
+    #[test]
+    fn ui_page_has_reader_doc_stats_pure() {
+        // ONE pure docStats(text) returns the string, mirroring the GUI
+        // reader's reading_stats (rada-gui/src/views/reader.rs) definition
+        // for definition: words = whitespace-separated tokens (the GUI's
+        // text.split_whitespace().count() — no letter/digit filter, Cyrillic
+        // words count like Latin ones), chars = the FULL length (the GUI's
+        // text.chars().count(), Cyrillic-safe via Array.from), reading time
+        // at the GUI's ≈400 words/min with the same div_ceil(400).max(1)
+        // floor of 1 хв, thousands grouped with plain spaces, and the exact
+        // GUI labels «{words} слів · {chars} симв. · ~{min} хв» — no emoji,
+        // no arrows. Its own GUI test pins «401 слів · 2 406 симв. · ~2 хв»
+        // for 401 «слово» tokens; the same vectors hold here.
+        let d = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function docStats(text) {")
+            .expect("docStats")..];
+        let d = &d[..d.find("\n}").expect("docStats end")];
+        assert!(d.contains("t.split(/\\s+/).filter(Boolean).length"),
+            "words mirror the GUI's split_whitespace().count()");
+        assert!(d.contains("if (!words) return \"\";"),
+            "empty/whitespace-only text returns \"\" — empty-to-hidden contract");
+        assert!(d.contains("Array.from(t).length"),
+            "chars mirror the GUI's chars().count() (code points, not bytes)");
+        assert!(d.contains("Math.max(1, Math.ceil(words/400))"),
+            "≈400 words/min with the minimum-1 «~N хв» floor (the GUI's div_ceil(400).max(1))");
+        assert!(d.contains("\" слів · \"") && d.contains("\" симв. · ~\"") && d.contains("\" хв\""),
+            "the exact GUI reading_stats labels, no emoji or arrows");
+        assert!(d.contains("groupTh(words)") && d.contains("groupTh(chars)"),
+            "thousands grouped with plain spaces, like the GUI");
+        // ONE paint point: renderDocStats feeds on the RAW state.curText via
+        // docStats (never innerHTML — the find <mark>s must not pollute the
+        // counts) and hides the element on the empty string; runFind, the
+        // only body renderer, repaints the stats right after the body.
+        let r = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function renderDocStats() {")
+            .expect("renderDocStats")..];
+        let r = &r[..r.find("\n}").expect("renderDocStats end")];
+        assert!(r.contains("docStats(state.curText)"),
+            "painted from the raw loaded text, never from the marked-up DOM");
+        assert!(!r.contains("innerHTML"), "the counts never read the DOM");
+        assert!(r.contains("el.textContent = s;"), "the pure string is painted as-is");
+        assert!(r.contains("el.hidden = !s;"), "the empty string hides the line");
+        let f = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function runFind() {")
+            .expect("runFind")..];
+        let f = &f[..f.find("\n}").expect("runFind end")];
+        let paint = f.find("pre.innerHTML = goldHtml(state.curText);").expect("body paint");
+        let stats = f.find("renderDocStats();").expect("stats paint with the body");
+        assert!(paint < stats, "the stats line repaints on every body render");
+    }
 }

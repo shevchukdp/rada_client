@@ -79,6 +79,9 @@ official open-data API:
   - **Search facets** — after each search, chip rows «Статус/Тип/Видавник» show
     per-option result counts («Чинний (36)」); a click sets that filter and
     re-runs the search, a second click clears it.
+  - **Offline-readiness badge** — search rows whose act text is already in the
+    local text cache carry a «· кеш» mark on the meta line, so you know which
+    hits open without the network.
   - **Reading time** — the reader toolbar reports words, characters and an
     estimated reading time (≈400 wpm), e.g. «43 733 слів · 340 212 симв. ·
     ~110 хв».
@@ -206,6 +209,8 @@ official open-data API:
   copy-friendly `#doc=<nreg>` / `#q=<term>` fragment kept in sync without
   adding browser-history entries), a floating **«догори» button** in the reader
   (appears past 800 px of scroll, smooth-scrolls back to the top),
+  **reader doc-stats** (a muted «N слів · N симв. · ~N хв» line under the
+  title, the desktop app's own counting rules, hidden until the text loads),
   **web reader outline («Зміст»** —
   smooth-scroll jump list of «Розділ/Глава/Стаття» headings, collapsible with a
   persisted «— згорнуто» choice),
@@ -320,7 +325,7 @@ Launch arguments:
 .\rada-client.exe text 2755-17 --out zakon.txt   # write the text to a file (UTF-8)
 .\rada-client.exe text 2755-17 --edition 20101202
 .\rada-client.exe text 2755-17 --grep "стаття 7" --context 2   # grep the body: «N: line», «--» between blocks
-.\rada-client.exe cache                 # offline text-cache stats
+.\rada-client.exe cache                 # offline text-cache stats; --out FILE writes the line (BOM)
 .\rada-client.exe stats                  # offline index report (docs, dicts, cache, snapshot)
 .\rada-client.exe stats --json           # machine-readable
 .\rada-client.exe cache --purge 2755-17 # drop one document's cached text

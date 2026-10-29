@@ -532,13 +532,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     }
                 }
                 for (i, h) in hits.clone().into_iter().enumerate() {
+                    let badge = cache_badge(app.search.cached.iter().any(|n| n == &h.nreg));
                     let meta = format!(
-                        "{}   №{} від {}   [{}]   ред. {}",
+                        "{}   №{} від {}   [{}]   ред. {}{}",
                         h.nreg,
                         h.org_num,
                         fmt_date(&h.org_date),
                         stan_label(&app.dicts.stan, h.status),
                         fmt_date(&h.poddat),
+                        badge,
                     );
                     let avail = (ui.available_width() - 96.0).max(100.0);
                     let text =
@@ -935,6 +937,17 @@ enum ClearWhat {
 
 /// Generic dictionary label for the active-filter chips: dict hit → label,
 /// id 0 → «немає», unknown id → «id N».
+/// The trailing offline-cache badge on a hit's meta line: « · кеш» when the
+/// act's body text is already in the offline text cache (readable without
+/// network), empty string otherwise. Single source for the badge wording.
+pub fn cache_badge(cached: bool) -> &'static str {
+    if cached {
+        " · кеш"
+    } else {
+        ""
+    }
+}
+
 /// Ctrl+Enter on the search page: index of the hit to open (the top hit),
 /// or `None` when there is nothing to open (no results yet / failed search).
 pub fn top_hit_index(hits: &[rada_db::SearchHit], searched: bool) -> Option<usize> {
@@ -1070,6 +1083,7 @@ impl Default for SearchState {
             facets_loading: false,
             facets: None,
             facets_for: String::new(),
+            cached: Vec::new(),
         }
     }
 }
@@ -1127,6 +1141,9 @@ pub struct SearchState {
     pub facets: Option<rada_db::FacetCounts>,
     /// The query term the displayed facets belong to.
     pub facets_for: String,
+    /// Nregs of the current hits whose body is in the offline text cache
+    /// (drives the «кеш» badge; recomputed with every search).
+    pub cached: Vec<String>,
 }
 
 impl SearchState {
@@ -1561,6 +1578,12 @@ mod tests {
         assert_eq!(chips[5], ("б".to_string(), 4));
         // Empty input → no chips.
         assert!(facet_chips(&[], &dict).is_empty());
+    }
+
+    #[test]
+    fn cache_badge_has_a_single_wording() {
+        assert_eq!(cache_badge(true), " · кеш");
+        assert_eq!(cache_badge(false), "");
     }
 
     #[test]
