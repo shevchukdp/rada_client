@@ -35,6 +35,11 @@
 //!               `search --date-from/--date-to` filters use
 //!               (`--json` for machine-readable output, `--out` to write
 //!               the report; informational — never exits nonzero);
+//! - `orgs`      offline top-publishers histogram on `org_num` — which
+//!               «органи» issued the most documents, labels from the
+//!               offline `organs` dictionary
+//!               (`--json` for machine-readable output, `--out` to write
+//!               the report; informational — never exits nonzero);
 //! - `export`    offline export of a cached document body as md / txt / html
 //!               (text cache only — never touches the network);
 //! - `toc`       offline outline (зміст) of a cached document: «Розділ/Глава»
@@ -472,6 +477,28 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Offline «who publishes the most»: top publishers histogram on the
+    /// `org_num` column of `docs` — which «органи» issued the most
+    /// documents, with labels resolved from the offline `organs`
+    /// dictionary. Complements `dates` / `dict-stats` and helps pick the
+    /// `search --org` filters. Pure offline: the command never touches the
+    /// network; informational — always exits 0.
+    Orgs {
+        /// Max publishers to print (default 20, clamped to 1..=200).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Emit the JSON body
+        /// (`{"orgs":[{count,label,org_num},…],"total":N}`) instead of the
+        /// report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less; the `[orgs] записано …` note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Offline export of a CACHED document body as md / txt / html: the
     /// text comes from the local text cache only — the command never
     /// touches the network. Export the current edition; read the document
@@ -697,6 +724,9 @@ fn run() -> Result<()> {
             cmd_favorites(&cli.db, kind.as_deref(), &sort, json, out.as_deref())
         }
         Cmd::Dates { json, out } => cmd_dates(&cli.db, json, out.as_deref()),
+        Cmd::Orgs { limit, json, out } => {
+            cmd_orgs(&cli.db, limit, json, out.as_deref())
+        }
         Cmd::Export { nreg, fmt, out } => {
             cmd_export(&cli.db, &nreg, &fmt, out.as_deref())
         }
@@ -4292,6 +4322,166 @@ fn cmd_dates(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// One `orgs` histogram row: the publisher id as stored in the TEXT
+/// `org_num` column (the empty string is the «publisher unknown»
+/// convention), its label resolved from the offline `organs` dictionary
+/// (or the «— не вказано» placeholder), and the number of documents
+/// carrying it.
+struct OrgRow {
+    org_num: String,
+    label: String,
+    count: i64,
+}
+
+/// The report body of `orgs` (shared by stdout and `--out` so the two
+/// cannot drift): «Найкращі видавці (за документами):» header, then one
+/// `{label} [{org_num}]: {count}` line per publisher in input order (the
+/// SQL sorts by count descending — no rank prefix, mirroring the
+/// `dates`/`dict-stats` body style, counts render plain like the
+/// `stats`/`verify` numbers), then the «всього документів: {total}»
+/// verdict. Informational: an empty histogram never fails the run.
+fn orgs_lines(rows: &[OrgRow], total: i64) -> Vec<String> {
+    let mut lines = vec!["Найкращі видавці (за документами):".to_string()];
+    for r in rows {
+        lines.push(format!("{} [{}]: {}", r.label, r.org_num, r.count));
+    }
+    lines.push(format!("всього документів: {total}"));
+    lines
+}
+
+/// The `--json` body of `orgs` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty
+/// `{"orgs":[{count,label,org_num},…],"total":N}` object over the rows,
+/// built as hand-rolled `serde_json::Value`s like the other commands'
+/// JSON bodies (map keys sort, so `orgs` precedes `total` and
+/// `count`/`label`/`org_num` keep their alphabetical order inside every
+/// entry). stdout prints exactly this string plus a trailing newline; the
+/// `--out` file receives the same bytes BOM-less (machine data, the house
+/// JSON rule).
+fn orgs_json(rows: &[OrgRow], total: i64) -> String {
+    let orgs: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "org_num": r.org_num,
+                "label": r.label,
+                "count": r.count,
+            })
+        })
+        .collect();
+    let value = serde_json::json!({ "orgs": orgs, "total": total });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `orgs --out` has written `file`
+/// (`n` publisher rows, the same wording in both modes):
+/// `[orgs] записано {n} видавців → {file}`.
+fn orgs_out_note(n: usize, file: &Path) -> String {
+    format!("[orgs] записано {n} видавців → {}", file.display())
+}
+
+/// Offline «who publishes the most» (`orgs`): the top-publishers histogram
+/// over the `org_num` column of `docs` — complements `dates` /
+/// `dict-stats` and helps the user pick the `search --org` filters. Never
+/// builds a client, never touches the network. A missing index file is a
+/// hard error («індекс не знайдено: …», the `stats`/`verify` rule). The
+/// histogram comes straight from `docs` through the connection
+/// `rada_db::open` returns (the `verify` / `dict-stats` direct-SQL idiom):
+/// `GROUP BY org_num ORDER BY COUNT(*) DESC LIMIT` clamped to 1..=200.
+/// `org_num` is TEXT (`''` = publisher unknown), so the label comes from
+/// the offline `organs` dictionary only when it parses to a nonzero id —
+/// one `query_row` per distinct `org_num` (the `favorites` title-cache
+/// idiom), everything else renders the «— не вказано» placeholder. The
+/// `total` is the whole index (`COUNT(*) FROM docs`, the `dates` rule).
+/// Informational: the run always exits 0. With `--out` the exact stdout
+/// body goes to the file (parent dirs created) and nothing prints to
+/// stdout: the plain report is written UTF-8 with a BOM (Excel-friendly,
+/// like search/arrivals/stats/verify), the `--json` body BOM-less; one
+/// `[orgs] записано {n} видавців → {file}` note goes to stderr. The
+/// header always renders, so the file is never BOM-alone.
+fn cmd_orgs(db: &PathBuf, limit: usize, json: bool, out: Option<&Path>) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    let limit = limit.clamp(1, 200);
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
+        .unwrap_or(0);
+    let mut stmt = conn
+        .prepare(
+            "SELECT d.org_num, COUNT(*) AS c FROM docs d
+             GROUP BY d.org_num ORDER BY c DESC LIMIT ?1",
+        )
+        .context("prepare orgs histogram")?;
+    let mut mapped = stmt
+        .query_map([limit as i64], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
+        })
+        .context("run orgs histogram")?;
+    // Offline label lookup cached per distinct org_num (the `favorites`
+    // title-cache idiom): the TEXT `org_num` resolves through the
+    // `organs` dictionary only when it parses to a nonzero id; an empty /
+    // zero / non-numeric org_num or a dict miss keeps the empty label,
+    // and the row renders the «— не вказано» placeholder.
+    let mut labels: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+    let mut rows: Vec<OrgRow> = Vec::new();
+    while let Some((org_num, count)) = mapped.next().transpose()? {
+        let label = labels
+            .entry(org_num.clone())
+            .or_insert_with(|| match org_num.trim().parse::<i64>() {
+                Ok(id) if id != 0 => conn
+                    .query_row(
+                        "SELECT label FROM dict WHERE kind = 'organs' AND id = ?1",
+                        [id],
+                        |r| r.get::<_, String>(0),
+                    )
+                    .unwrap_or_default(),
+                _ => String::new(),
+            })
+            .clone();
+        rows.push(OrgRow {
+            org_num,
+            label: if label.is_empty() {
+                "— не вказано".to_string()
+            } else {
+                label
+            },
+            count,
+        });
+    }
+    if json {
+        let body = orgs_json(&rows, total);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", orgs_out_note(rows.len(), p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = orgs_lines(&rows, total);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout report (the header always renders, so never
+            // BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", orgs_out_note(rows.len(), p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_status(db: &PathBuf) -> Result<()> {
     if !db.exists() {
         eprintln!("no index at {} (run `rada-client init` first)", db.display());
@@ -4381,11 +4571,13 @@ mod tests {
         favorites_json_out_note, favorites_lines, favorites_out_note, facet_lines, filter_since,
         new_nregs, normalize_fav_kind, normalize_hits_format,
         hits_lines, hits_md_lines, hits_out_note,
-        normalize_fmt, out_note, recent_json_body, recent_json_out_note, recent_lines,
+        normalize_fmt, out_note, orgs_json, orgs_lines, orgs_out_note,
+        recent_json_body, recent_json_out_note, recent_lines,
         recent_out_note, related_json_body, related_json_out_note, related_out_note,
         resolve_out_note, search_out_note, since_note,
         stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
         toc_out_note, verify_lines, verify_out_note, DictStat, FavRow, FavSort, HitsFormat,
+        OrgRow,
         RecentRow, StatsInfo, TocEntry, YearRow,
         VerifyCheck, VerifyStatus,
     };
@@ -6272,6 +6464,102 @@ mod tests {
         assert_eq!(
             dates_out_note(0, file),
             format!("[dates] записано 0 років → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn orgs_lines_renders_ranked_rows_and_total() {
+        // header + one «{label} [{org_num}]: {count}» line per publisher in
+        // input order (the SQL sorts by count descending — the ranking
+        // lives in the order, no rank prefix, mirroring the
+        // `dates`/`dict-stats` body), an unresolved org_num (the empty /
+        // 0 / dict-miss case, already mapped by the caller) renders the
+        // «— не вказано» placeholder, then the «всього документів» line
+        // (informational — the command still exits 0)
+        let rows = vec![
+            OrgRow {
+                org_num: "2".into(),
+                label: "Кабінет Міністрів України".into(),
+                count: 89343,
+            },
+            OrgRow {
+                org_num: "4".into(),
+                label: "Президент України".into(),
+                count: 48780,
+            },
+            OrgRow {
+                org_num: "0".into(),
+                label: "— не вказано".into(),
+                count: 32857,
+            },
+        ];
+        assert_eq!(
+            orgs_lines(&rows, 295340),
+            vec![
+                "Найкращі видавці (за документами):".to_string(),
+                "Кабінет Міністрів України [2]: 89343".to_string(),
+                "Президент України [4]: 48780".to_string(),
+                "— не вказано [0]: 32857".to_string(),
+                "всього документів: 295340".to_string(),
+            ]
+        );
+        // empty index: the header and the zero total still render (the
+        // `--out` file is never BOM-alone)
+        assert_eq!(
+            orgs_lines(&[], 0),
+            vec![
+                "Найкращі видавці (за документами):".to_string(),
+                "всього документів: 0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn orgs_json_renders_orgs_and_total() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «orgs» precedes «total» and «count»/«label»/«org_num»
+        // keep their alphabetical order inside every entry.
+        let rows = vec![
+            OrgRow {
+                org_num: "2".into(),
+                label: "Кабінет Міністрів України".into(),
+                count: 2,
+            },
+            OrgRow {
+                org_num: "".into(),
+                label: "— не вказано".into(),
+                count: 3,
+            },
+        ];
+        let body = orgs_json(&rows, 5);
+        assert_eq!(
+            body,
+            "{\n  \"orgs\": [\n    {\n      \"count\": 2,\n      \"label\": \"Кабінет Міністрів України\",\n      \"org_num\": \"2\"\n    },\n    {\n      \"count\": 3,\n      \"label\": \"— не вказано\",\n      \"org_num\": \"\"\n    }\n  ],\n  \"total\": 5\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // empty histogram: a well-formed empty report with total 0
+        assert_eq!(orgs_json(&[], 0), "{\n  \"orgs\": [],\n  \"total\": 0\n}");
+    }
+
+    #[test]
+    fn orgs_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//o.txt");
+        let line = orgs_out_note(20, file);
+        assert_eq!(
+            line,
+            format!("[orgs] записано 20 видавців → {}", file.display())
+        );
+        assert!(line.starts_with("[orgs] "));
+        assert!(line.contains("20"));
+        assert!(line.contains("видавців"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the informational zero rule: the note still formats with 0 rows
+        assert_eq!(
+            orgs_out_note(0, file),
+            format!("[orgs] записано 0 видавців → {}", file.display())
         );
     }
 }

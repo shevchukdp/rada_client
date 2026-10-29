@@ -3774,6 +3774,89 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_arrivals_csv_button() {
+        // «експорт .csv» chip on the arrivals controls row: a plain-text
+        // button living beside the «лише нові» / «автооновлення» chips (same
+        // placement row and chip styling language), clicking it runs the
+        // client-side export through the shared exportArrivalsCsv entry point.
+        assert!(ui::INDEX_HTML.contains("<button id=\"arr-export-csv\" type=\"button\""));
+        assert!(ui::INDEX_HTML.contains(">експорт .csv</button>"));
+        // Same toolbar row as the filter + «лише нові» + «автооновлення»
+        // controls: everything between #arr-filter and the feed container.
+        let row = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("id=\"arr-filter\"")
+            .expect("arr-filter")..ui::INDEX_HTML
+            .find("<div id=\"arrivals\"></div>")
+            .expect("arrivals list")];
+        for id in ["arr-filter-clear", "arr-only-new", "arr-auto", "arr-export-csv"] {
+            assert!(row.contains(&format!("id=\"{id}\"")), "{id}: lives on the arrivals controls row");
+        }
+        let only = row.find("id=\"arr-only-new\"").expect("only-new chip");
+        let auto = row.find("id=\"arr-auto\"").expect("auto chip");
+        let csv = row.find("id=\"arr-export-csv\"").expect("csv chip");
+        assert!(only < auto && auto < csv, "the export chip trails the «лише нові» / «автооновлення» chips");
+        // Same chip styling language as the other two toggles.
+        assert!(ui::INDEX_HTML.contains("#arr-export-csv {"), "chip CSS reuses the arrivals chip language");
+        assert!(ui::INDEX_HTML.contains("#arr-export-csv:hover {"), "accent hover like the other chips");
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"arr-export-csv\").onclick = () => exportArrivalsCsv();"
+        ), "click goes through the shared export entry point");
+    }
+
+    #[test]
+    fn ui_page_has_arrivals_csv_builder() {
+        // ONE pure arrivalsCsv(docs) builder mirroring the GUI arrivals_csv
+        // (rada-gui src/views/arrivals.rs): UTF-8 BOM up front so Excel opens
+        // Cyrillic, the «nreg,status,nazva,publics» header, comma separator,
+        // and fields quoted with doubled quotes when they contain a quote,
+        // comma or line break. An empty visible list still yields the
+        // header-only file (no toast, no abort). The exporter feeds it the
+        // on-screen rows through visibleArrivals (the shared arrFilterMatch
+        // text predicate + the «лише нові» gate) and hands the BOM'd text
+        // over through the favorites .txt export's Blob / object-URL idiom.
+        assert!(ui::INDEX_HTML.contains("function arrivalsCsv(docs)"));
+        let b = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function arrivalsCsv(docs) {")
+            .expect("arrivalsCsv")..];
+        let b = &b[..b.find("\n}").expect("arrivalsCsv end")];
+        // BOM + header row mirroring the GUI columns, comma separator.
+        assert!(b.contains(r#""\uFEFFnreg,status,nazva,publics\n""#), "BOM + the GUI header row");
+        assert!(b.contains("nreg,status,nazva,publics"), "the GUI arrivals_csv header columns");
+        assert!(b.contains("arrCsvEsc(d.nreg) + \",\" + arrCsvEsc(d.status)"), "comma separator between escaped fields");
+        assert!(b.contains("arrCsvEsc(d.nazva) + \",\" + arrCsvEsc(d.publics)"), "nazva + publics columns");
+        // Quote-doubling escaper gated on quote/comma/CR/LF (GUI csv_esc parity).
+        let e = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function arrCsvEsc(s) {")
+            .expect("arrCsvEsc")..];
+        let e = &e[..e.find("\n}").expect("arrCsvEsc end")];
+        assert!(e.contains(r#"/["\n\r,]/.test(v)"#), "quote, comma and line breaks trigger quoting");
+        assert!(e.contains(r#".replace(/"/g, "\"\"")"#), "quotes are doubled inside the field");
+        // The exporter exports exactly the on-screen list: the shared
+        // arrFilterMatch text predicate plus the arrNewSet «лише нові» gate.
+        assert!(ui::INDEX_HTML.contains("function visibleArrivals()"));
+        let v = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function visibleArrivals() {")
+            .expect("visibleArrivals")..];
+        let v = &v[..v.find("\n}").expect("visibleArrivals end")];
+        assert!(v.contains("arrivalsDocs.filter((d) => arrFilterMatch(d, needle))"), "the shared text-filter predicate");
+        assert!(v.contains("arrOnlyNew ? items.filter((d) => arrNewSet.has(d.nreg)) : items"), "the «лише нові» gate");
+        let x = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function exportArrivalsCsv() {")
+            .expect("exportArrivalsCsv")..];
+        let x = &x[..x.find("\n}").expect("exportArrivalsCsv end")];
+        assert!(x.contains("arrivalsCsv(visibleArrivals());"), "exports the filtered list, not the raw feed");
+        // Blob download through the favorites .txt idiom under the fixed name.
+        assert!(x.contains("new Blob([csv], { type: \"text/csv;charset=utf-8\" });"), "the BOM'd text ships as the Blob content");
+        assert!(x.contains("URL.createObjectURL(blob)"));
+        assert!(x.contains("a.download = \"novy-dokumenty.csv\";"), "fixed Cyrillic-safe file name");
+        assert!(x.contains("a.click();"));
+        assert!(x.contains("URL.revokeObjectURL(url);"));
+        // Empty visible list: the header-only download is deliberate (no
+        // toast/abort) — documented in the builder's comment.
+        assert!(ui::INDEX_HTML.contains("header-only"), "the empty-list choice is documented");
+    }
+
+    #[test]
     fn ui_page_has_citation_button() {
         // «цилата» chip in the reader toolbar beside the copy-text/print
         // buttons (the GUI reader's context-menu copy-citation parity): no

@@ -315,6 +315,13 @@
   #arr-auto.active {
     background: var(--accent); color: var(--accent-text); border-color: var(--accent);
   }
+  /* «експорт .csv» chip on the arrivals controls row: same chip language as
+     the «лише нові» / «автооновлення» chips, accent hover. */
+  #arr-export-csv {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #arr-export-csv:hover { color: var(--text); border-color: var(--accent); }
   /* Date-group headers above the arrival rows: muted clickable hint lines
      (click collapses/expands the group; same accent hover as the chips). */
   .arr-date-hint {
@@ -687,6 +694,8 @@
       <button id="arr-auto" class="chip" type="button" aria-pressed="false"
         title="оновлювати живий фід щохвилини, доки відкрита ця сторінка">автооновлення</button>
       <span id="arr-auto-hint" class="hint" hidden>щохвилини</span>
+      <button id="arr-export-csv" type="button"
+        title="зберегти показані документи у файл .csv">експорт .csv</button>
     </div>
     <div id="arrivals"></div>
   </section>
@@ -2756,6 +2765,54 @@ try { arrAuto = localStorage.getItem(ARR_AUTO_KEY) === "1"; } catch (_) {}
 $("arr-auto").classList.toggle("active", arrAuto);
 $("arr-auto").setAttribute("aria-pressed", arrAuto ? "true" : "false");
 $("arr-auto-hint").hidden = !arrAuto;
+
+// ---- arrivals «експорт .csv» ------------------------------------------------
+// The rows currently on screen: the shared arrFilterMatch text predicate plus
+// the «лише нові» gate — the exact two-step pipeline applyArrFilter runs
+// before renderArrivals, shared here so the file always mirrors the list.
+function visibleArrivals() {
+  const needle = $("arr-filter").value;
+  const items = arrivalsDocs.filter((d) => arrFilterMatch(d, needle));
+  return arrOnlyNew ? items.filter((d) => arrNewSet.has(d.nreg)) : items;
+}
+
+/// CSV-quote one field (the GUI arrivals_csv parity): doubled quotes, the
+/// field wrapped in quotes when it contains a quote, comma, CR or LF.
+function arrCsvEsc(s) {
+  const v = String(s == null ? "" : s);
+  if (/["\n\r,]/.test(v)) return "\"" + v.replace(/"/g, "\"\"") + "\"";
+  return v;
+}
+
+/// One pure builder: feed docs → CSV text, mirroring the GUI arrivals_csv —
+/// UTF-8 BOM up front (Excel opens Cyrillic correctly), the header row
+/// «nreg,status,nazva,publics», comma separator, rows in the given order.
+/// An empty list still returns the header-only file: downloading it is a
+/// clearer «nothing on screen» answer than a silent toast or an abort.
+function arrivalsCsv(docs) {
+  let out = "\uFEFFnreg,status,nazva,publics\n";
+  for (const d of docs) {
+    out += arrCsvEsc(d.nreg) + "," + arrCsvEsc(d.status) + "," +
+      arrCsvEsc(d.nazva) + "," + arrCsvEsc(d.publics) + "\n";
+  }
+  return out;
+}
+
+// Hand the visible feed over through the favorites .txt export's Blob /
+// object-URL idiom under the fixed novy-dokumenty.csv name.
+function exportArrivalsCsv() {
+  const csv = arrivalsCsv(visibleArrivals());
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "novy-dokumenty.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+$("arr-export-csv").onclick = () => exportArrivalsCsv();
 
 async function loadStatusTab() {
   try {

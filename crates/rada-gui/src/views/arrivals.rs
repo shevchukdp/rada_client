@@ -49,6 +49,29 @@ pub fn unseen_docs(docs: &[rada_core::models::UpdatedDoc], seen: &[String]) -> V
         .collect()
 }
 
+/// The docs the arrivals page shows: «лише нові» (`only_new` keeps only
+/// `fresh` nregs) then the substring filter over title/nreg/publication
+/// (case-insensitive). One source for the list, the CSV export and the
+/// Ctrl+Enter «open the top arrival» shortcut.
+pub fn visible_arrivals(
+    docs: &[rada_core::models::UpdatedDoc],
+    filter: &str,
+    fresh: &[String],
+    only_new: bool,
+) -> Vec<rada_core::models::UpdatedDoc> {
+    let f = filter.trim().to_lowercase();
+    docs.iter()
+        .filter(|d| !only_new || fresh.contains(&d.nreg))
+        .filter(|d| {
+            f.is_empty()
+                || d.nazva.to_lowercase().contains(&f)
+                || d.nreg.to_lowercase().contains(&f)
+                || d.publics.to_lowercase().contains(&f)
+        })
+        .cloned()
+        .collect()
+}
+
 /// CSV-quote one field (doubled quotes; quoted when it contains a comma,
 /// quote or line break).
 fn csv_esc(s: &str) -> String {
@@ -156,22 +179,10 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     .on_hover_text("зберегти показаний перелік у файл CSV (UTF-8 з BOM)")
                     .clicked()
                 {
-                    let f = app.arrivals.filter.trim().to_lowercase();
+                    let f = app.arrivals.filter.clone();
                     let fresh = app.arrivals.new_nregs.clone();
                     let only_new = app.arrivals.only_new;
-                    let docs: Vec<rada_core::models::UpdatedDoc> = app
-                        .arrivals
-                        .docs
-                        .iter()
-                        .filter(|d| !only_new || fresh.contains(&d.nreg))
-                        .filter(|d| {
-                            f.is_empty()
-                                || d.nazva.to_lowercase().contains(&f)
-                                || d.nreg.to_lowercase().contains(&f)
-                                || d.publics.to_lowercase().contains(&f)
-                        })
-                        .cloned()
-                        .collect();
+                    let docs = visible_arrivals(&app.arrivals.docs, &f, &fresh, only_new);
                     app.export_arrivals_csv(docs);
                 }
             }
@@ -224,24 +235,11 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                let f = app.arrivals.filter.trim().to_lowercase();
+                let f = app.arrivals.filter.clone();
                 let fresh = app.arrivals.new_nregs.clone();
                 let only_new = app.arrivals.only_new;
-                let docs: Vec<rada_core::models::UpdatedDoc> = app
-                    .arrivals
-                    .docs
-                    .iter()
-                    .filter(|d| {
-                        !only_new || fresh.contains(&d.nreg)
-                    })
-                    .filter(|d| {
-                        f.is_empty()
-                            || d.nazva.to_lowercase().contains(&f)
-                            || d.nreg.to_lowercase().contains(&f)
-                            || d.publics.to_lowercase().contains(&f)
-                    })
-                    .cloned()
-                    .collect();
+                let docs = visible_arrivals(&app.arrivals.docs, &f, &fresh, only_new);
+                let f = f.trim().to_lowercase();
                 if docs.is_empty() && !f.is_empty() {
                     ui.label(
                         egui::RichText::new("під фільтр нічого не підійшло")
@@ -280,6 +278,49 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn visible_arrivals_applies_only_new_and_substring_filter() {
+        let doc = |num: i64, nreg: &str, nazva: &str, publics: &str| rada_core::models::UpdatedDoc {
+            num,
+            nreg: nreg.into(),
+            nazva: nazva.into(),
+            status: "Чинний".into(),
+            publics: publics.into(),
+            file: String::new(),
+            link: String::new(),
+            size: None,
+        };
+        let docs = vec![
+            doc(1, "1-23", "Про освіту", "Верховна Рада"),
+            doc(2, "2-24", "Податковий кодекс", "Верховна Рада"),
+            doc(3, "3-25", "Про практику", "Кабмін"),
+        ];
+        // no filter, no only_new: everything
+        assert_eq!(visible_arrivals(&docs, "", &[], false).len(), 3);
+        // substring on title / nreg / publication (case-insensitive, trimmed)
+        let n: Vec<String> = visible_arrivals(&docs, " освіт ", &[], false)
+            .into_iter()
+            .map(|d| d.nreg)
+            .collect();
+        assert_eq!(n, ["1-23"]);
+        assert_eq!(visible_arrivals(&docs, "2-24", &[], false)[0].nazva, "Податковий кодекс");
+        assert_eq!(visible_arrivals(&docs, "кабмін", &[], false).len(), 1);
+        // only_new keeps fresh nregs only, then the filter applies on top
+        let fresh = vec!["2-24".to_string(), "3-25".to_string()];
+        let n: Vec<String> = visible_arrivals(&docs, "", &fresh, true)
+            .into_iter()
+            .map(|d| d.nreg)
+            .collect();
+        assert_eq!(n, ["2-24", "3-25"]);
+        let n: Vec<String> = visible_arrivals(&docs, "практику", &fresh, true)
+            .into_iter()
+            .map(|d| d.nreg)
+            .collect();
+        assert_eq!(n, ["3-25"]);
+        // only_new with an empty fresh set shows nothing
+        assert!(visible_arrivals(&docs, "", &[], true).is_empty());
+    }
 
     #[test]
     fn fmt_since_relative_buckets() {

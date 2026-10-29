@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.47: CSV-експорт оновлень у веб, `orgs` з CLI та Ctrl+Enter на Оновленнях / arrivals CSV export, orgs histogram & arrivals Ctrl+Enter
+
+- **UKR:** 1) **«експорт .csv» на «Нових документах» у веб**: завантажує саме показаний перелік (текстовий фільтр і «лише нові» враховуються), той самий формат, що й у програмі — UTF-8 з BOM, рядок заголовків, правильне лапкове екранування; порожній перелік — файл із одним заголовком. 2) **CLI `orgs [--limit N]`**: офлайн рейтинг видавців за кількістю документів (словник «органи» + лічба по індексу), «всього документів» у підсумку; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 3) **Ctrl+Enter на сторінці Оновлень** відкриває перший показаний документ у читалці — спільний код фільтрації з CSV-експортом; «клавіші» оновлено. 4) Тести: 322/322.
+- **ENG:** 1) **An «експорт .csv» button on the web «Нові документи» feed**: downloads exactly the visible list (text filter and «лише нові» apply) in the app's own format — UTF-8 with BOM, header row, proper quote escaping; an empty list still yields a header-only file. 2) **CLI `orgs [--limit N]`**: an offline publisher ranking by document count (the «органи» dictionary joined with index counts) plus a «всього документів» footer; `--json` and `--out FILE` (BOM table / BOM-less JSON). 3) **Ctrl+Enter on the arrivals page** opens the first visible document in the reader, sharing one filter pipeline with the CSV export; the «клавіші» sheet updated. 4) Tests: 322/322.
+
+---
+
+## 2026-10-29
+
 ### 0.10.46: швидкі редакції у веб-читалці, `dates` з CLI та Ctrl+Enter у пошуку / edition quick-nav, dates histogram & Ctrl+Enter
 
 - **UKR:** 1) **Кнопки «попередня»/«наступна» біля списку редакцій у веб-читалці**: переходять редакціями по колу — поточна ↔ dated, тим самим кроком, що й випадаючий список; ховаються, коли редакція одна, і блокуються на час завантаження тексту. 2) **CLI `dates`**: офлайн розподіл документів за роками прийняття (та сама колонка, що фільтри `search --date-from/--date-to`) — «без дати» окремим рядком і вердикт «найновіший рік»; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 3) **Ctrl+Enter на сторінці пошуку** відкриває перший результат у читалці; рядок додано у «клавіші». 4) Тести: 316/316.

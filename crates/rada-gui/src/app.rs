@@ -2015,11 +2015,30 @@ impl eframe::App for App {
         {
             self.reload_reader();
         }
+        // Ctrl+Enter on the arrivals page: open the top visible arrival.
+        if self.page == Page::Arrivals
+            && ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+                    || i.consume_key(egui::Modifiers::ALT, egui::Key::Enter)
+            })
+        {
+            let f = self.arrivals.filter.clone();
+            let fresh = self.arrivals.new_nregs.clone();
+            let only_new = self.arrivals.only_new;
+            if let Some(d) =
+                crate::views::arrivals::visible_arrivals(&self.arrivals.docs, &f, &fresh, only_new)
+                    .into_iter()
+                    .next()
+            {
+                self.open_reader_by_nreg(&d.nreg, &d.nazva, 0, "", "", "");
+            }
+        }
         // Ctrl+Enter on the search page: open the top hit in the reader.
-        if ctx.input_mut(|i| {
-            i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
-                || i.consume_key(egui::Modifiers::ALT, egui::Key::Enter)
-        }) && self.page == Page::Search
+        if self.page == Page::Search
+            && ctx.input_mut(|i| {
+                i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+                    || i.consume_key(egui::Modifiers::ALT, egui::Key::Enter)
+            })
         {
             if let Some(idx) =
                 crate::views::search::top_hit_index(&self.search.hits, self.search.searched)
