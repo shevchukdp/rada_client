@@ -811,6 +811,7 @@
       <button id="btn-cite" type="button" disabled title="Скопіювати реквізити посилання на акт">цилата</button>
       <span id="copy-hint" class="hint"></span>
       <span id="doc-stats" class="hint"></span>
+      <span id="doc-cached" class="hint" hidden>кешовано</span>
       <a id="site-link" class="hint" target="_blank">на zakon.rada.gov.ua ↗</a>
     </div>
     <div class="row" id="related-row" hidden>
@@ -1508,6 +1509,7 @@ async function openDoc(nreg) {
   $("btn-top").hidden = true; // a fresh document starts at the top anyway
   resetCompare(); // a stale edition comparison must never linger either
   $("doc-stats").textContent = ""; // stale stats must never linger either
+  $("doc-cached").hidden = true; // a stale cache hint must not linger either
   $("copy-hint").textContent = "";
   const pane = $("doc-pane");
   pane.hidden = false;
@@ -1683,6 +1685,7 @@ async function loadText(edition) {
   const el = $("doc-text");
   el.hidden = false;
   el.textContent = "Завантаження тексту…";
+  $("doc-cached").hidden = true; // the source of the new body is not yet known
   resetToc(); // the body is about to be replaced — drop the old outline
   let url = "/api/doc/" + enc + "/text";
   if (edition) url += "?edition=" + encodeURIComponent(edition);
@@ -1693,11 +1696,32 @@ async function loadText(edition) {
     renderDocText();
     $("text-retry-row").hidden = true;
     setLive("");
+    showCachedHint(nreg, d);
   } catch (e) {
     el.textContent = "Помилка: " + e.message;
     $("text-retry-row").hidden = false;
     setLive("");
   }
+}
+
+/// Muted «кешовано» hint beside the stats label (the GUI reader's badge
+/// parity): it lights up ONLY when the displayed body was served from the
+/// offline cache, never merely because some copy sits there. The text
+/// endpoint is live-only today, so a body counts as cache-served only when
+/// its own response reports `cached`; the local cache is then consulted at
+/// /api/cached?nreg= as a second witness before un-hiding. Fire-and-forget:
+/// a failed probe stays silent and never blocks the reader.
+function showCachedHint(nreg, d) {
+  $("doc-cached").hidden = true;
+  if (!d || d.cached !== true) return; // live body: the hint stays hidden
+  fetch("/api/cached?nreg=" + encNreg(nreg))
+    .then((r) => (r.ok ? r.json() : null))
+    .then((s) => {
+      if (state.curNreg === nreg && s && s.cached === true) {
+        $("doc-cached").hidden = false;
+      }
+    })
+    .catch(() => {});
 }
 
 // ---- edition comparison («Порівняти редакції», GUI reader parity) ----------

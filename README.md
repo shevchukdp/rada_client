@@ -115,7 +115,9 @@ official open-data API:
     **Alt+←/→**
     pages through the results list from inside the reader; **Shift+Enter** steps
     to the previous find match; **Ctrl+Plus / Ctrl+Minus / Ctrl+0** zoom the
-    reader text (±10%, persisted); a topbar **«клавіші» button** opens the whole
+    reader text (±10%, persisted); **Alt+1…Alt+5** switch pages
+    (Головна / Пошук / Читалка / Оновлення / Обране); a topbar **«клавіші»
+    button** opens the whole
     list (same source as the About dialog's shortcut table).
   - **Favorites (Обране)** — every saved annotation across all documents on one
     page: kind filters, one-click open, delete; bare bookmarks show an italic
@@ -179,7 +181,10 @@ official open-data API:
   including a **full index rebuild from the official dump** as a background job,
   **offline full-text search over cached bodies** («Пошук у тексті»,
   `GET /api/cache/search?q=`, with a «× звичайний пошук» cache-mode banner and
-  query-word highlighting in hit titles and snippets), **date-range filters** (`date_from`/`date_to`,
+  query-word highlighting in hit titles and snippets),
+  **offline-resilient reader** (a failed live body fetch falls back to the
+  cached copy with a «кешовано» hint, `GET /api/cached?nreg=`; successful
+  reads refill the cache), **date-range filters** (`date_from`/`date_to`,
   validated 8-digit YYYYMMDD, never blocking),
   **dict facets** (the status/type/publisher dropdowns show per-option result
   counts after each search), **theme-colored printing** (the print view keeps

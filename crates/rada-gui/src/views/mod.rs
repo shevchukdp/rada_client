@@ -151,6 +151,10 @@ pub fn help_lines() -> Vec<(&'static str, &'static str)> {
         ),
         ("Ctrl+0", "скинути масштаб тексту читалки до 100%"),
         ("F5", "перезавантажити текст поточного документа (читалка)"),
+        (
+            "Alt+1 .. Alt+5",
+            "Головна / Пошук / Читалка / Оновлення / Обране",
+        ),
     ]
 }
 
@@ -440,6 +444,7 @@ mod tests {
             "Ctrl+Plus / Ctrl+Minus",
             "Ctrl+0",
             "F5",
+            "Alt+1 .. Alt+5",
         ] {
             assert!(keys.contains(&expected), "missing row for {expected:?}");
         }

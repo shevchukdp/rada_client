@@ -704,19 +704,7 @@ fn cmd_dict(
             .map(|k| (k.as_str(), rada_db::dict::all_labels(&conn, k).len() as i64))
             .collect();
         if json {
-            let mut fresh_map = serde_json::Map::new();
-            for (k, n) in &counts {
-                fresh_map.insert((*k).to_string(), serde_json::json!(n));
-            }
-            let report = serde_json::Value::Object(
-                [("fresh".to_string(), serde_json::Value::Object(fresh_map))]
-                    .into_iter()
-                    .collect(),
-            );
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&report).map_err(anyhow::Error::from)?
-            );
+            println!("{}", dict_fresh_json(&counts)?);
         } else {
             for line in dict_fresh_lines(&counts) {
                 println!("{line}");
@@ -743,25 +731,12 @@ fn cmd_dict(
         })
         .collect();
     if json {
-        let dicts: Vec<serde_json::Value> = groups
-            .iter()
-            .map(|(k, rows)| {
-                serde_json::json!({
-                    "kind": k,
-                    "items": rows
-                        .iter()
-                        .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
-                        .collect::<Vec<_>>(),
-                })
-            })
-            .collect();
-        let body = serde_json::to_string_pretty(&serde_json::json!({ "dicts": dicts }))
-            .map_err(anyhow::Error::from)?;
+        let body = dict_json_body(&groups)?;
         match out {
             Some(p) => {
                 // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
                 write_out_file(p, format!("{body}\n").as_bytes())?;
-                eprintln!("[dict] записано JSON → {}", p.display());
+                eprintln!("{}", dict_json_out_note(p));
             }
             None => println!("{body}"),
         }
@@ -869,6 +844,52 @@ fn dict_plain_lines(
 /// count (`[dict] stan: записано 10 записів → out\d.txt`).
 fn dict_out_note(kind: &str, n: usize, file: &Path) -> String {
     format!("[dict] {kind}: записано {n} записів → {}", file.display())
+}
+
+/// The `--json` body of `dict` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty `{"dicts":[{kind,items:[{id,label},…]},…]}`
+/// object over the (already `--search`-filtered) groups. stdout prints
+/// exactly this string plus a trailing newline; the `--out` file receives
+/// the same bytes BOM-less (machine data, the house JSON rule).
+fn dict_json_body(groups: &[(String, Vec<(i64, String)>)]) -> Result<String> {
+    let dicts: Vec<serde_json::Value> = groups
+        .iter()
+        .map(|(k, rows)| {
+            serde_json::json!({
+                "kind": k,
+                "items": rows
+                    .iter()
+                    .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
+                    .collect::<Vec<_>>(),
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::json!({ "dicts": dicts }))
+        .map_err(anyhow::Error::from)
+}
+
+/// The stderr note printed after `dict --json --out` has written the JSON
+/// body to `file` (`[dict] записано JSON → {file}` — the same wording as
+/// the `search` / `cache` / `annot list` / `resolve` / `related` JSON notes).
+fn dict_json_out_note(file: &Path) -> String {
+    format!("[dict] записано JSON → {}", file.display())
+}
+
+/// The `dict --fresh --json` body (shared stdout builder so the report
+/// renders identically from one run to the next): the pretty
+/// `{"fresh": {kind: n, …}}` object over the (kind, count) pairs; empty
+/// tables report `0` (the plain report renders those as «порожньо»).
+fn dict_fresh_json(counts: &[(&str, i64)]) -> Result<String> {
+    let mut fresh_map = serde_json::Map::new();
+    for (k, n) in counts {
+        fresh_map.insert((*k).to_string(), serde_json::json!(n));
+    }
+    let report = serde_json::Value::Object(
+        [("fresh".to_string(), serde_json::Value::Object(fresh_map))]
+            .into_iter()
+            .collect(),
+    );
+    serde_json::to_string_pretty(&report).map_err(anyhow::Error::from)
 }
 
 /// Offline FTS5 title search with filters. Default output is the hit table
@@ -3135,8 +3156,9 @@ mod tests {
         annot_list_out_note, annot_out_note, annot_search_lines, annot_search_match,
         annot_search_out_note, annot_table_lines, annot_text_file_note, arrivals_date_key,
         arrivals_out_note, backfill_summary, cache_dump_filename, cache_dump_lines,
-        cache_search_out_note, card_out_note, dict_fresh_lines,
-        dict_matches, dict_out_note, export_html, grep_body, grep_render,
+        cache_search_out_note, card_out_note, dict_fresh_json, dict_fresh_lines, dict_json_body,
+        dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, export_html,
+        grep_body, grep_render,
         export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
         normalize_fmt, out_note, related_out_note, resolve_out_note, search_out_note, since_note,
         stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
@@ -3502,6 +3524,113 @@ mod tests {
         assert!(line.contains("записів"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
+        // the house zero-result rule: every requested kind keeps its note
+        // even with n = 0 (the BOM-only file case, mirrored from `--search`
+        // zero matches)
+        assert_eq!(
+            dict_out_note("typs", 0, file),
+            format!("[dict] typs: записано 0 записів → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn dict_json_out_note_formats_json_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//d.json");
+        let line = dict_json_out_note(file);
+        assert_eq!(line, format!("[dict] записано JSON → {}", file.display()));
+        assert!(line.starts_with("[dict] записано "));
+        assert!(line.contains("JSON"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn dict_plain_lines_body_equals_stdout_rows_and_out_bytes() {
+        // the table body shared by stdout and `--out`: in all-dicts mode a
+        // `{k} (caption):` header precedes every non-empty group, rows are
+        // `  {id}  {label}`; empty groups print nothing (no header either)
+        let groups = vec![
+            (
+                "stan".to_string(),
+                vec![(0i64, "Не визначено".to_string()), (5i64, "Чинний".to_string())],
+            ),
+            ("typs".to_string(), Vec::new()),
+            ("organs".to_string(), vec![(1i64, "Президент".to_string())]),
+        ];
+        let lines = dict_plain_lines(&groups, true, false);
+        assert_eq!(
+            lines,
+            vec![
+                "stan (стани):".to_string(),
+                "  0  Не визначено".to_string(),
+                "  5  Чинний".to_string(),
+                "organs (органи):".to_string(),
+                "  1  Президент".to_string(),
+            ]
+        );
+        // the `--out` file body equals exactly those stdout lines with the
+        // Excel-friendly BOM prefix and one trailing newline (the bytes the
+        // cmd_dict --out branch writes)
+        let body = format!("\u{FEFF}{}\n", lines.join("\n"));
+        assert!(body.starts_with('\u{FEFF}'));
+        assert_eq!(&body.as_bytes()[3..], format!("{}\n", lines.join("\n")).as_bytes());
+        // single-kind mode (--kind): the same rows, no group header
+        let single = vec![("stan".to_string(), vec![(5i64, "Чинний".to_string())])];
+        assert_eq!(dict_plain_lines(&single, false, false), vec!["  5  Чинний".to_string()]);
+        // an unknown kind's caption repeats its own name
+        let weird = vec![("xyz".to_string(), vec![(7i64, "Етикетка".to_string())])];
+        assert_eq!(
+            dict_plain_lines(&weird, true, false),
+            vec!["xyz (xyz):".to_string(), "  7  Етикетка".to_string()]
+        );
+        // --search filtered every group to zero rows: the single
+        // «нічого не знайдено» line replaces the listing on stdout AND in
+        // the BOM body (this mode's established zero rule, unchanged)
+        let none = vec![
+            ("stan".to_string(), Vec::new()),
+            ("typs".to_string(), Vec::new()),
+        ];
+        assert_eq!(dict_plain_lines(&none, true, true), vec!["нічого не знайдено".to_string()]);
+        // without --search an all-empty listing renders no lines at all:
+        // empty stdout and a BOM-only `--out` file
+        assert!(dict_plain_lines(&none, true, false).is_empty());
+    }
+
+    #[test]
+    fn dict_json_body_renders_dicts_and_empty_items() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «items» precedes «kind» (the historical inline shape).
+        let groups = vec![(
+            "stan".to_string(),
+            vec![(0i64, "Не визначено".to_string()), (5i64, "Чинний".to_string())],
+        )];
+        let body = dict_json_body(&groups).unwrap();
+        assert_eq!(
+            body,
+            "{\n  \"dicts\": [\n    {\n      \"items\": [\n        {\n          \"id\": 0,\n          \"label\": \"Не визначено\"\n        },\n        {\n          \"id\": 5,\n          \"label\": \"Чинний\"\n        }\n      ],\n      \"kind\": \"stan\"\n    }\n  ]\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // an empty group is a normal result: `"items": []`, not an error
+        let empty = dict_json_body(&[("typs".to_string(), Vec::new())]).unwrap();
+        assert!(empty.contains("\"kind\": \"typs\""), "{empty}");
+        assert!(empty.contains("\"items\": []"), "{empty}");
+        assert!(dict_json_body(&[]).unwrap().contains("\"dicts\": []"));
+    }
+
+    #[test]
+    fn dict_fresh_json_renders_counts_and_zero() {
+        // pretty {"fresh": {kind: n}} over the (kind, count) pairs; Map
+        // orders keys, empty tables report 0 (plain report: «порожньо»)
+        let body = dict_fresh_json(&[("typs", 138), ("stan", 10), ("organs", 0)]).unwrap();
+        assert_eq!(
+            body,
+            "{\n  \"fresh\": {\n    \"organs\": 0,\n    \"stan\": 10,\n    \"typs\": 138\n  }\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON report stays BOM-less");
+        // no kinds at all: still a well-formed empty report
+        assert_eq!(dict_fresh_json(&[]).unwrap(), "{\n  \"fresh\": {}\n}");
     }
 
     #[test]

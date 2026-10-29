@@ -130,13 +130,26 @@ pub struct IndexStatus {
 }
 
 /// Which app page is on screen.
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
     Home,
     Search,
     Reader,
     Arrivals,
     Favorites,
+}
+
+/// Alt+digit quick switching: 1=Головна, 2=Пошук, 3=Читалка, 4=Оновлення,
+/// 5=Обране. Other digits (and 0) map to `None`.
+pub fn page_for_alt_digit(digit: u8) -> Option<Page> {
+    match digit {
+        1 => Some(Page::Home),
+        2 => Some(Page::Search),
+        3 => Some(Page::Reader),
+        4 => Some(Page::Arrivals),
+        5 => Some(Page::Favorites),
+        _ => None,
+    }
 }
 
 /// Launch-time options (CLI `--start`, `--query`, `--nreg`, `--cache-search`).
@@ -1954,6 +1967,26 @@ impl eframe::App for App {
         {
             self.reload_reader();
         }
+        // Alt+1..5: quick page switching (Читалка only with an open document).
+        let alt_page = ctx.input_mut(|i| {
+            for (k, d) in [
+                (egui::Key::Num1, 1u8),
+                (egui::Key::Num2, 2),
+                (egui::Key::Num3, 3),
+                (egui::Key::Num4, 4),
+                (egui::Key::Num5, 5),
+            ] {
+                if i.consume_key(egui::Modifiers::ALT, k) {
+                    return page_for_alt_digit(d);
+                }
+            }
+            None
+        });
+        if let Some(p) = alt_page {
+            if p != Page::Reader || self.reader.is_some() {
+                self.page = p;
+            }
+        }
         // Alt+Left/Right or Alt+PageUp/PageDown: prev/next document inside
         // the reader. The keys are consumed so PageUp/Down never also
         // scrolls the central area.
@@ -2142,7 +2175,19 @@ fn stamp_from_secs(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::stamp_from_secs;
+    use super::{page_for_alt_digit, stamp_from_secs, Page};
+
+    #[test]
+    fn alt_digits_map_to_the_five_pages() {
+        assert_eq!(page_for_alt_digit(1), Some(Page::Home));
+        assert_eq!(page_for_alt_digit(2), Some(Page::Search));
+        assert_eq!(page_for_alt_digit(3), Some(Page::Reader));
+        assert_eq!(page_for_alt_digit(4), Some(Page::Arrivals));
+        assert_eq!(page_for_alt_digit(5), Some(Page::Favorites));
+        assert_eq!(page_for_alt_digit(0), None);
+        assert_eq!(page_for_alt_digit(6), None);
+        assert_eq!(page_for_alt_digit(9), None);
+    }
 
     #[test]
     fn stamp_formats_utc_civil_date() {

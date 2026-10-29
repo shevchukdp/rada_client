@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.37: веб-читалка тепер працює офлайн, повний `--out` для словників та Alt+1–5 / offline web reader, dict --out everywhere & Alt+digit pages
+
+- **UKR:** 1) **Офлайн-стійкість веб-читалки**: якщо живий запит тіла не вдався, сервер тепер віддає **кешовану** копію (як у програмі) і підсвічує підказку «кешовано» в шапці читалки; успішне читання поповнює кеш. 2) **CLI `dict`**: кожен офлайн-режим тепер чесно пише у файл — `--json` будується спільним кодом зі stdout (таблиця з BOM / JSON без BOM), нотатки «[dict] … записано» для всіх режимів. 3) **Alt+1…Alt+5 у програмі** — миттєвий перехід між Головна / Пошук / Читалка / Оновлення / Обране (Читалка — лише з відкритим актом); рядок додано у «клавіші». 4) Тести: 265/265.
+- **ENG:** 1) **The web reader works offline now**: when the live body fetch fails the server serves the **cached** copy (desktop parity) and the reader shows a «кешовано» hint; successful reads refill the cache. 2) **CLI `dict`**: every offline mode now writes files honestly — `--json` built by one shared body with stdout (BOM table / BOM-less JSON), with «[dict] … записано» notes across all modes. 3) **Alt+1…Alt+5 in the app** jump straight between Головна / Пошук / Читалка / Оновлення / Обране (Читалка only with an act open); the sheet gained the row. 4) Tests: 265/265.
+
+---
+
+## 2026-10-29
+
 ### 0.10.36: «оновлено» на стрічці веб, перевірка бази `verify` та клавіші Ctrl+K/F5 / feed freshness, db verify & new shortcuts
 
 - **UKR:** 1) **«оновлено: щойно / N хв тому / N год тому / N дн тому» у вебі**: поряд із лічильниками Оновлень — час останнього успішного завантаження фіда (і вручну, і автооновленням); у фоновій вкладці не вантажиться. 2) **CLI `verify`**: офлайн перевірка здоров'я індекса — цілість SQLite, зовнішні ключі, кількість документів, узгодженість FTS, дублікати nreg, кеш текстів; вердикт «база здорова» / «є проблеми» з кодом виходу; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 3) **Нові клавіші у програмі**: Ctrl+K — одразу до Пошуку з фокусом на запиті; F5 — перезавантажити текст читалки. Обидві — у віконці «клавіші». 4) Тести: 258/258.

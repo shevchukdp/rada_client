@@ -222,6 +222,13 @@ fn route(
                     json_err(405, "method not allowed")
                 }
             }
+            "cached" => {
+                if method == &Method::Get {
+                    cached_handler(st, q)
+                } else {
+                    json_err(405, "method not allowed")
+                }
+            }
             _ => json_err(404, &format!("unknown api path /api/{rest}")),
         }
     };
@@ -426,6 +433,23 @@ fn cache_handler(method: &Method, rest: &str, q: &[(String, String)], st: &State
     }
 }
 
+/// `GET /api/cached?nreg=` — whether *any* edition of the document already
+/// has an offline body copy in `docs_text` (the web reader's «кешовано»
+/// hint asks this to confirm the source before lighting up). Read-only.
+fn cached_handler(st: &State, q: &[(String, String)]) -> Resp {
+    let Some(nreg) = qget(q, "nreg") else {
+        return json_err(400, "nreg required");
+    };
+    let conn = match open_db(st) {
+        Ok(c) => c,
+        Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
+    };
+    match rada_db::textcache::cached(&conn, nreg) {
+        Ok(hit) => json_ok(&json!({ "cached": hit })),
+        Err(e) => json_err(500, &e.to_string()),
+    }
+}
+
 /// `doc/{nreg}/card` and `doc/{nreg}/text` — live, pacing applies.
 fn doc_handler(method: &Method, rest: &str, q: &[(String, String)], st: &State) -> Resp {
     if method != &Method::Get {
@@ -449,16 +473,38 @@ fn doc_handler(method: &Method, rest: &str, q: &[(String, String)], st: &State) 
         },
         "text" => {
             let edition = qget(q, "edition").filter(|s| !s.is_empty());
-            let text = match edition {
+            let key = edition.as_deref().unwrap_or("");
+            let fetched = match &edition {
                 Some(ed) => st.client.show_edition_text(nreg, ed),
                 None => st.client.show_text(nreg),
             };
-            match text {
-                Ok(t) => json_ok(&json!({
-                    "text": t,
-                    "edition": edition,
-                })),
-                Err(e) => json_err(502, &format!("text error: {e}")),
+            match fetched {
+                // Live success refreshes the offline cache (GUI parity).
+                Ok(t) => {
+                    if let Ok(conn) = open_db(st) {
+                        let _ = rada_db::textcache::put(&conn, nreg, key, &t);
+                    }
+                    json_ok(&json!({
+                        "text": t,
+                        "edition": edition,
+                        "cached": false,
+                    }))
+                }
+                // Live failure falls back to the cached body; the reader then
+                // lights its «кешовано» hint off the returned flag.
+                Err(e) => {
+                    let hit = open_db(st)
+                        .ok()
+                        .and_then(|conn| rada_db::textcache::get(&conn, nreg, key).ok().flatten());
+                    match hit {
+                        Some(t) => json_ok(&json!({
+                            "text": t,
+                            "edition": edition,
+                            "cached": true,
+                        })),
+                        None => json_err(502, &format!("text error: {e}")),
+                    }
+                }
             }
         }
         _ => json_err(404, &format!("unknown doc endpoint {what}")),
@@ -3592,5 +3638,83 @@ mod tests {
             .find("window.scrollTo({ top: 0")
             .expect("smooth scroll to top");
         assert!(hide < scroll);
+    }
+
+    #[test]
+    fn ui_page_has_reader_cached_badge() {
+        // Muted «кешовано» hint beside the reader's stats label (the GUI
+        // reader's badge parity): plain text, hidden by default, and reset
+        // to hidden by openDoc (and by every fresh text load) so a stale
+        // hint never follows the user into the next document.
+        assert!(ui::INDEX_HTML
+            .contains("<span id=\"doc-cached\" class=\"hint\" hidden>кешовано</span>"));
+        assert!(ui::INDEX_HTML.contains("$(\"doc-cached\").hidden = true;"));
+        let open = ui::INDEX_HTML
+            .find("async function openDoc(nreg) {")
+            .expect("openDoc");
+        let end = ui::INDEX_HTML
+            .find("async function loadCard() {")
+            .expect("loadCard");
+        assert!(open < end);
+        assert!(
+            ui::INDEX_HTML[open..end].contains(r#"$("doc-cached").hidden = true;"#),
+            "openDoc must hide the cached hint"
+        );
+    }
+
+    #[test]
+    fn ui_page_has_reader_cached_source() {
+        // The hint un-hides ONLY in the from-cache branch of the text
+        // loader: the body counts as cache-served only when the text
+        // response itself reports `cached`, and the reader then asks
+        // /api/cached?nreg= to confirm before un-hiding — the mere
+        // existence of a copy never lights it up, and a failed probe stays
+        // silent (.catch swallows it, the reader never blocks).
+        assert!(ui::INDEX_HTML.contains("function showCachedHint(nreg, d)"));
+        assert!(ui::INDEX_HTML.contains("d.cached !== true"));
+        assert!(ui::INDEX_HTML.contains("/api/cached?nreg="));
+        assert!(ui::INDEX_HTML.contains("s.cached === true"));
+        assert!(ui::INDEX_HTML.contains(".catch(() => {})"));
+        let hint = ui::INDEX_HTML
+            .find("function showCachedHint(nreg, d)")
+            .expect("showCachedHint");
+        let body = &ui::INDEX_HTML[hint..];
+        let guard = body.find("d.cached !== true").expect("live guard");
+        let probe = body.find("/api/cached?nreg=").expect("source probe");
+        let show = body
+            .find(r#"$("doc-cached").hidden = false;"#)
+            .expect("unhide only in the from-cache branch");
+        assert!(guard < probe, "the probe fires only after the live guard");
+        assert!(probe < show, "the hint opens only inside the probe's from-cache reply");
+        // The route itself (read-only): 405 on POST, 400 without nreg, and
+        // {"cached":bool} mirroring docs_text (seeded directly, no network).
+        let st = favorites_state("cached");
+        let get = |path: &str, query: &str| -> (u16, Value) {
+            let mut req: Request = TestRequest::new()
+                .with_method(Method::Get)
+                .with_path(path)
+                .into();
+            let resp = route(&Method::Get, path, &parse_query(query), &mut req, &st).unwrap();
+            let code = resp.status_code().0;
+            let bytes = resp.into_reader().into_inner();
+            (code, serde_json::from_slice(&bytes).unwrap_or(Value::Null))
+        };
+        let (code, _) = call(&st, Method::Post, "/api/cached", "");
+        assert_eq!(code, 405);
+        let (code, v) = get("/api/cached", "");
+        assert_eq!(code, 400, "{v}");
+        let (code, v) = get("/api/cached", "nreg=2341-14");
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(v["cached"], false, "no rows yet: {v}");
+        {
+            let conn = db_open(&st.db_path).unwrap();
+            rada_db::textcache::put(&conn, "2341-14", "", "кешоване тіло").unwrap();
+        }
+        let (code, v) = get("/api/cached", "nreg=2341-14");
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(v["cached"], true, "cached copy: {v}");
+        let (code, v) = get("/api/cached", "nreg=9-9");
+        assert_eq!(code, 200, "{v}");
+        assert_eq!(v["cached"], false, "unknown nreg stays false: {v}");
     }
 }
