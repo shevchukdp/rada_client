@@ -382,6 +382,14 @@
     border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
   }
   #cache-mode .chip:hover { color: var(--text); border-color: var(--accent); }
+  /* Zero-results state on the search page (the GUI parity): the muted
+     «нічого не знайдено» line plus suggestion chips, same chip language as
+     the filter rows. */
+  .empty-results .chip {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  .empty-results .chip:hover { color: var(--text); border-color: var(--accent); }
   #doc-text {
     background: var(--code-bg); border: 1px solid var(--border); border-radius: 8px;
     padding: 14px; font-size: 15px; max-height: 60vh; overflow: auto;
@@ -1158,6 +1166,24 @@ function activeChips() {
   return chips;
 }
 
+/// The single per-filter clear path, shared by the «Активні фільтри» chips
+/// and the zero-results «empty-clear» chips: clear the chip's own control
+/// and re-run the search from the first page through the existing entry
+/// point (doSearch(0), which repaints the chips, facets and pager).
+function clearFilterAndSearch(c) {
+  $(c.id).value = ""; doSearch(0);
+}
+
+/// The single reset-all path, shared by the «скинути все» chip and the
+/// zero-results «скинути фільтри» action: zero every filter control
+/// (never #q) and re-run the search from the first page.
+function resetAllFilters() {
+  for (const id of ["f-status", "f-typ", "f-org", "f-number", "date-from", "date-to"]) {
+    $(id).value = "";
+  }
+  doSearch(0);
+}
+
 /// Repaint the «Активні фільтри» row: one chip per set filter plus
 /// «скинути все»; the whole row hides while nothing is set.
 function renderActiveFilters() {
@@ -1171,7 +1197,7 @@ function renderActiveFilters() {
     b.className = "chip";
     b.textContent = c.text;
     b.title = "прибрати цей фільтр";
-    b.onclick = () => { $(c.id).value = ""; doSearch(0); };
+    b.onclick = () => clearFilterAndSearch(c);
     row.appendChild(b);
   }
   if (!chips.length) return;
@@ -1180,12 +1206,7 @@ function renderActiveFilters() {
   all.className = "chip";
   all.textContent = "скинути все";
   all.title = "прибрати всі фільтри";
-  all.onclick = () => {
-    for (const id of ["f-status", "f-typ", "f-org", "f-number", "date-from", "date-to"]) {
-      $(id).value = "";
-    }
-    doSearch(0);
-  };
+  all.onclick = resetAllFilters;
   row.appendChild(all);
 }
 
@@ -1313,6 +1334,59 @@ function renderRecentQ() {
   row.appendChild(clr);
 }
 
+// ---- zero-results state on the search page (the GUI search page parity) ----
+// A hitless search used to leave only the muted «Знайдено: 0» meta line.
+// The GUI shows a rich empty state instead: the same zero-hits line plus
+// one-click ways out. The markup comes from ONE pure builder; its buttons
+// reuse the existing paths (resetAllFilters / clearFilterAndSearch /
+// doCacheSearch), so the block can never drift from the filter machinery.
+
+/// Markup for the zero-hits case. `hasActiveFilters` gates the
+/// «скинути фільтри» chip (a reset next to no filters is noise); the
+/// «шукати в кеші» chip appears only while the cache-search entry point
+/// exists and #q holds a term (doCacheSearch refuses an empty query); one
+/// «empty-clear» chip per filter actually set, mirroring the «Активні
+/// фільтри» row (labels are dict-derived, so they pass through escHtml).
+function emptyResultsHtml(hasActiveFilters) {
+  const chips = activeChips();
+  let html = '<div class="empty-results">';
+  html += '<div class="hint">нічого не знайдено</div>';
+  html += '<div class="row">';
+  if (hasActiveFilters) {
+    html += '<button id="empty-reset" class="chip" type="button"' +
+      ' title="прибрати всі фільтри та шукати знову">скинути фільтри</button>';
+  }
+  if (typeof doCacheSearch === "function" && $("q").value.trim()) {
+    html += '<button id="empty-cache" class="chip" type="button"' +
+      ' title="шукати цей запит у кешованому тексті">шукати в кеші</button>';
+  }
+  for (const c of chips) {
+    html += '<button class="chip empty-clear" type="button"' +
+      ' data-target="' + escHtml(c.id) + '" title="прибрати цей фільтр">' +
+      escHtml(c.text) + '</button>';
+  }
+  html += '</div></div>';
+  return html;
+}
+
+/// Render the zero-results block into the results container and bind its
+/// buttons to the existing entry points: «скинути фільтри» runs the same
+/// reset as the «скинути все» chip, «шукати в кеші» hands the current term
+/// to the cache search, and each .empty-clear chip clears just its own
+/// filter through the «Активні фільтри» per-chip clear path. All three
+/// re-search via doSearch(0)/doCacheSearch, never a bespoke fetch.
+function renderEmptyResults() {
+  const list = $("results");
+  list.innerHTML = emptyResultsHtml(activeChips().length > 0);
+  const rst = $("empty-reset");
+  if (rst) rst.onclick = resetAllFilters;
+  const cch = $("empty-cache");
+  if (cch) cch.onclick = () => doCacheSearch();
+  for (const b of list.querySelectorAll(".empty-clear")) {
+    b.onclick = () => clearFilterAndSearch({ id: b.dataset.target });
+  }
+}
+
 async function doSearch(offset) {
   state.offset = offset;
   $("cache-mode").hidden = true; // a regular search is never cache mode
@@ -1414,6 +1488,11 @@ async function doSearch(offset) {
       list.appendChild(div);
     }
     fillNavList(d.hits.map((h) => h.nreg)); // reader prev/next over this page
+    if (!d.hits.length) {
+      // Zero hits: the meta line alone is a dead end — render the GUI-style
+      // suggestions block (reset, cache search, per-filter clears).
+      renderEmptyResults();
+    }
     $("page-info").textContent = "сторінка " + (Math.floor(offset / state.limit) + 1);
   } catch (e) {
     meta.textContent = "Помилка: " + e.message;

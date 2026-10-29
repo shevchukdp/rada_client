@@ -118,6 +118,30 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Offline one-shot export of the search result LIST (the CLI mirror
+    /// of the GUI search «експорт списку»): the hits of the local FTS
+    /// title query rendered as a numbered document list in plain text or
+    /// markdown. Pure offline: the same `rada_db::search::search` path as
+    /// `search`, never builds a client and never touches the network.
+    /// No `--json`: the `--format txt|md` document axis is the point.
+    Hits {
+        /// Title term (multi-word → FTS5), same as `search`.
+        term: Vec<String>,
+        /// Max rows (default 50, clamped to 1..=500).
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Output format: txt (default) | md (aliases `text` /
+        /// `markdown`, case-insensitive).
+        #[arg(long = "format", alias = "fmt", default_value = "txt")]
+        fmt: String,
+        /// Write to this file instead of stdout (parent dirs created).
+        /// Human document: always written UTF-8 WITH a BOM; stdout output
+        /// is the same bytes without the BOM. Zero hits write the BOM
+        /// alone — the «нічого не знайдено» line stays on stdout (the
+        /// house `search --out` zero-hit rule); the note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Show the live card of a document (human-readable summary;
     /// `--json` prints the full JSON card).
     Card {
@@ -583,6 +607,9 @@ fn run() -> Result<()> {
             facets,
             out,
         } => cmd_search(&cli.db, term, org, typ, status, date_from, date_to, number, limit, offset, sort, json, facets, out.as_deref()),
+        Cmd::Hits { term, limit, fmt, out } => {
+            cmd_hits(&cli.db, &term, limit, &fmt, out.as_deref())
+        }
         Cmd::Card { nreg, json, out } => cmd_card(&nreg, json, out.as_deref(), cli.pace),
         Cmd::Text {
             nreg,
@@ -1249,6 +1276,168 @@ fn search_table(hits: &[rada_db::SearchHit]) -> String {
 /// table (`n` hits) to `file`.
 fn search_out_note(n: usize, file: &Path) -> String {
     format!("[search] записано {n} результатів → {}", file.display())
+}
+
+/// Output format behind `hits --format` (the txt|md document axis).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HitsFormat {
+    Txt,
+    Md,
+}
+
+/// Validate `hits --format` (the `normalize_fmt` house rule: trim, lower,
+/// a clear Ukrainian error listing the accepted values, exit 1 through
+/// `main`): `txt` (alias `text`) and `md` (alias `markdown`).
+fn normalize_hits_format(fmt: &str) -> Result<HitsFormat> {
+    match fmt.trim().to_ascii_lowercase().as_str() {
+        "txt" | "text" => Ok(HitsFormat::Txt),
+        "md" | "markdown" => Ok(HitsFormat::Md),
+        _ => Err(anyhow::anyhow!(
+            "формат {fmt}: використовуйте txt або md"
+        )),
+    }
+}
+
+/// The muted-style extras of one [`rada_db::SearchHit`] row, shared by
+/// both [`hits_lines`] and [`hits_md_lines`] so the two cannot drift:
+/// the status label (dictionary `stan`, skipped when the status is not
+/// set), the document number, the adoption date and the current-edition
+/// date — each rendered only when its own field is non-empty (the house
+/// include-only-non-empty-extras convention; the same fields `search_table`
+/// prints inline and the GUI `export_list` renders per row). Dates go
+/// through [`fmt_date`] like every other listing.
+fn hits_extras(h: &rada_db::SearchHit) -> Vec<String> {
+    let mut extras = Vec::new();
+    if h.status != 0 {
+        extras.push(format!(
+            "Стан: {}",
+            rada_core::models::StatusId(h.status).label()
+        ));
+    }
+    if !h.org_num.trim().is_empty() {
+        extras.push(format!("№{}", h.org_num.trim()));
+    }
+    if !h.org_date.trim().is_empty() {
+        extras.push(format!("від {}", fmt_date(h.org_date.trim())));
+    }
+    if !h.poddat.trim().is_empty() {
+        extras.push(format!("ред. {}", fmt_date(h.poddat.trim())));
+    }
+    extras
+}
+
+/// The plain-text body of `hits` (shared by stdout and `--out` so the two
+/// cannot drift): «Знайдено {n} документів:» header, then a numbered
+/// block per hit — `{i}. {nazva} [{nreg}]` plus an indented muted-style
+/// extras line (the [`hits_extras`] strings joined with « · », like the
+/// GUI txt export; a row without extras renders no second line).
+fn hits_lines(rows: &[rada_db::SearchHit]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(1 + 2 * rows.len());
+    lines.push(format!("Знайдено {} документів:", rows.len()));
+    for (i, h) in rows.iter().enumerate() {
+        lines.push(format!("{}. {} [{}]", i + 1, h.nazva, h.nreg));
+        let extras = hits_extras(h);
+        if !extras.is_empty() {
+            lines.push(format!("  {}", extras.join(" · ")));
+        }
+    }
+    lines
+}
+
+/// The markdown body of `hits` (shared by stdout and `--out`; loosely
+/// mirrors the GUI `export_list` md shape, implemented independently):
+/// `# Знайдено {n} документів` header, a blank line, then a numbered
+/// block per hit — `{i}. **{nazva}** — [`{nreg}`](portal link)` with the
+/// portal URL built from the nreg (the same
+/// `https://zakon.rada.gov.ua/laws/show/{nreg}` shape as everywhere),
+/// plus one nested bullet per non-empty [`hits_extras`] string.
+fn hits_md_lines(rows: &[rada_db::SearchHit]) -> Vec<String> {
+    let mut lines = Vec::with_capacity(2 + 2 * rows.len());
+    lines.push(format!("# Знайдено {} документів", rows.len()));
+    lines.push(String::new());
+    for (i, h) in rows.iter().enumerate() {
+        lines.push(format!(
+            "{}. **{}** — [`{}`](https://zakon.rada.gov.ua/laws/show/{})",
+            i + 1,
+            h.nazva,
+            h.nreg,
+            h.nreg
+        ));
+        for e in hits_extras(h) {
+            lines.push(format!("   - {e}"));
+        }
+    }
+    lines
+}
+
+/// The stderr note printed after `hits --out` has written the document
+/// list (`n` hits) to `file`.
+fn hits_out_note(n: usize, file: &Path) -> String {
+    format!("[hits] записано {n} документів → {}", file.display())
+}
+
+/// Offline «експорт списку» of the search results (the CLI counterpart of
+/// the GUI search list export): the hits come from the same local FTS
+/// query as `search` (`rada_db::search::search`, title term only, offset
+/// 0, `limit` clamped to 1..=500 like `recent`) — the command never
+/// builds a client and never touches the network, and there is no
+/// `--json`: the `--format txt|md` document axis is the point. With
+/// `--out` the exact stdout body goes to the file (parent dirs created)
+/// and nothing prints to stdout: the list is written UTF-8 WITH a BOM
+/// (human document, the same Excel-friendly convention as
+/// search/arrivals/stats). Zero hits write the BOM alone (n=0 note) while
+/// the «нічого не знайдено» line stays stdout-only (the house `search
+/// --out` zero-hit rule, the `backfill` wording).
+fn cmd_hits(
+    db: &PathBuf,
+    term: &[String],
+    limit: usize,
+    fmt: &str,
+    out: Option<&Path>,
+) -> Result<()> {
+    let fmt = normalize_hits_format(fmt)?;
+    let limit = limit.clamp(1, 500);
+    let conn = rada_db::open(db)?;
+    let q = rada_db::search::SearchQuery {
+        nazva: if term.is_empty() {
+            None
+        } else {
+            Some(term.join(" "))
+        },
+        limit,
+        offset: 0,
+        ..Default::default()
+    };
+    let (hits, _total) = rada_db::search::search(&conn, &q)?;
+    if hits.is_empty() {
+        // The stdout-only zero-hit report line (the house `search --out`
+        // rule, the `backfill` wording): with `--out` the file carries the
+        // BOM alone and the n=0 note goes to stderr.
+        println!("нічого не знайдено");
+        if let Some(p) = out {
+            write_out_file(p, "\u{FEFF}".as_bytes())?;
+            eprintln!("{}", hits_out_note(0, p));
+        }
+        return Ok(());
+    }
+    let lines = match fmt {
+        HitsFormat::Txt => hits_lines(&hits),
+        HitsFormat::Md => hits_md_lines(&hits),
+    };
+    match out {
+        Some(p) => {
+            // human document: UTF-8 BOM prefix, the exact stdout body plus
+            // the BOM and the trailing newline (the `export` convention).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", hits_out_note(hits.len(), p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Live card of one document: human-readable field table on stdout by
@@ -4021,12 +4210,14 @@ mod tests {
         grep_body, grep_render,
         export_markdown, export_out_note, export_plain, favorites_json_body,
         favorites_json_out_note, favorites_lines, favorites_out_note, facet_lines, filter_since,
-        new_nregs, normalize_fav_kind,
+        new_nregs, normalize_fav_kind, normalize_hits_format,
+        hits_lines, hits_md_lines, hits_out_note,
         normalize_fmt, out_note, recent_json_body, recent_json_out_note, recent_lines,
         recent_out_note, related_json_body, related_json_out_note, related_out_note,
         resolve_out_note, search_out_note, since_note,
         stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
-        toc_out_note, verify_lines, verify_out_note, DictStat, FavRow, FavSort, RecentRow,
+        toc_out_note, verify_lines, verify_out_note, DictStat, FavRow, FavSort, HitsFormat,
+        RecentRow,
         StatsInfo, TocEntry,
         VerifyCheck, VerifyStatus,
     };
@@ -5726,5 +5917,111 @@ mod tests {
         assert!(line.contains("JSON"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn hits_lines_numbers_rows_and_skips_empty_extras() {
+        // header + numbered «{i}. {nazva} [{nreg}]» rows with an indented
+        // muted extras line («Стан: … · №… · від … · ред. …», dates through
+        // fmt_date); a row whose fields are empty renders NO extras line
+        let rows = vec![
+            rada_db::SearchHit {
+                nreg: "2755-17".into(),
+                nazva: "Податковий кодекс".into(),
+                status: 5,
+                org_date: "20101202".into(),
+                org_num: "2755-VIII".into(),
+                poddat: "20231102".into(),
+            },
+            rada_db::SearchHit {
+                nreg: "1-1".into(),
+                nazva: "Порожня картка".into(),
+                status: 0,
+                org_date: String::new(),
+                org_num: "   ".into(),
+                poddat: String::new(),
+            },
+        ];
+        assert_eq!(
+            hits_lines(&rows),
+            vec![
+                "Знайдено 2 документів:".to_string(),
+                "1. Податковий кодекс [2755-17]".to_string(),
+                "  Стан: Чинний · №2755-VIII · від 02.12.2010 · ред. 02.11.2023".to_string(),
+                "2. Порожня картка [1-1]".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn hits_md_lines_numbers_bold_links_and_extras() {
+        // exact md shape: «# Знайдено {n} документів» header, blank line,
+        // then «{i}. **{nazva}** — [`{nreg}`](portal link)» with the URL
+        // built from the nreg, plus one nested bullet per non-empty extra
+        let rows = vec![
+            rada_db::SearchHit {
+                nreg: "16-17".into(),
+                nazva: "Про Конституцію".into(),
+                status: 5,
+                org_date: "19960628".into(),
+                org_num: "14/1996-ВР".into(),
+                poddat: String::new(),
+            },
+            rada_db::SearchHit {
+                nreg: "9-9".into(),
+                nazva: "Без extras".into(),
+                status: 0,
+                org_date: String::new(),
+                org_num: String::new(),
+                poddat: String::new(),
+            },
+        ];
+        assert_eq!(
+            hits_md_lines(&rows),
+            vec![
+                "# Знайдено 2 документів".to_string(),
+                "".to_string(),
+                "1. **Про Конституцію** — [`16-17`](https://zakon.rada.gov.ua/laws/show/16-17)"
+                    .to_string(),
+                "   - Стан: Чинний".to_string(),
+                "   - №14/1996-ВР".to_string(),
+                "   - від 28.06.1996".to_string(),
+                "2. **Без extras** — [`9-9`](https://zakon.rada.gov.ua/laws/show/9-9)".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn hits_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//h.txt");
+        let line = hits_out_note(3, file);
+        assert_eq!(
+            line,
+            format!("[hits] записано 3 документів → {}", file.display())
+        );
+        assert!(line.starts_with("[hits] записано "));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the house zero-result rule: the note still formats with n = 0
+        assert_eq!(
+            hits_out_note(0, file),
+            format!("[hits] записано 0 документів → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn normalize_hits_format_accepts_aliases_and_rejects() {
+        // txt|md with the text/markdown aliases, case- and whitespace-tolerant
+        assert_eq!(normalize_hits_format("txt").unwrap(), HitsFormat::Txt);
+        assert_eq!(normalize_hits_format("TEXT").unwrap(), HitsFormat::Txt);
+        assert_eq!(normalize_hits_format(" Text ").unwrap(), HitsFormat::Txt);
+        assert_eq!(normalize_hits_format("md").unwrap(), HitsFormat::Md);
+        assert_eq!(normalize_hits_format("Markdown").unwrap(), HitsFormat::Md);
+        // invalid: the clear Ukrainian error listing the accepted values
+        let err = normalize_hits_format("pdf").unwrap_err().to_string();
+        assert_eq!(err, "формат pdf: використовуйте txt або md");
+        assert!(normalize_hits_format("").is_err());
+        assert!(normalize_hits_format("html").is_err());
     }
 }

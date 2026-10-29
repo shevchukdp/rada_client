@@ -1883,6 +1883,7 @@ impl App {
                 }
             }
             Msg::SyncLine(line) => {
+                let line = sync_log_line(now_secs(), &line);
                 self.home.sync_log.push(line);
                 if self.home.sync_log.len() > 40 {
                     self.home.sync_log.remove(0);
@@ -1894,13 +1895,13 @@ impl App {
                     Ok((applied, failed)) => {
                         self.home
                             .sync_log
-                            .push(format!("застосовано {applied}, невдалих {failed}"));
+                            .push(sync_log_line(now_secs(), &format!("застосовано {applied}, невдалих {failed}")));
                         self.toast(format!("sync: +{applied} (невдалих {failed})"), ok());
                         self.refresh_index_state();
                         self.refresh_dicts();
                     }
                     Err(e) => {
-                        self.home.sync_log.push(format!("помилка: {e}"));
+                        self.home.sync_log.push(sync_log_line(now_secs(), &format!("помилка: {e}")));
                         self.toast(format!("sync: {e}"), err());
                     }
                 }
@@ -1951,13 +1952,13 @@ impl App {
                     Ok(n) => {
                         self.home
                             .sync_log
-                            .push(format!("init: імпортовано {n} документів"));
+                            .push(sync_log_line(now_secs(), &format!("init: імпортовано {n} документів")));
                         self.toast(format!("індекс побудовано: {n} док."), ok());
                         self.refresh_index_state();
                         self.refresh_dicts();
                     }
                     Err(e) => {
-                        self.home.sync_log.push(format!("init: помилка {e}"));
+                        self.home.sync_log.push(sync_log_line(now_secs(), &format!("init: помилка {e}")));
                         self.toast(format!("init: {e}"), err());
                     }
                 }
@@ -2232,13 +2233,28 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-/// «20261027-1530» stamp for backup file names (UTC, no external crates).
-fn backup_stamp() -> String {
-    let secs = std::time::SystemTime::now()
+/// Unix seconds since the epoch (UTC), 0 when the clock is broken.
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
-    stamp_from_secs(secs)
+        .unwrap_or(0)
+}
+
+/// «HH:MM» UTC clock for the action-journal line stamps.
+fn hhmm_from_secs(secs: u64) -> String {
+    let rem = secs % 86_400;
+    format!("{:02}:{:02}", rem / 3600, (rem % 3600) / 60)
+}
+
+/// One «Журнал дій» line: `[HH:MM] text` — the single timestamp shape.
+fn sync_log_line(now_secs: u64, text: &str) -> String {
+    format!("[{}] {text}", hhmm_from_secs(now_secs))
+}
+
+/// «20261027-1530» stamp for backup file names (UTC, no external crates).
+fn backup_stamp() -> String {
+    stamp_from_secs(now_secs())
 }
 
 /// Unix seconds -> «YYYYMMDD-HHMM» (UTC).
@@ -2261,7 +2277,21 @@ fn stamp_from_secs(secs: u64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{page_for_alt_digit, stamp_from_secs, Page};
+    use super::{
+        hhmm_from_secs, page_for_alt_digit, stamp_from_secs, sync_log_line, Page,
+    };
+
+    #[test]
+    fn sync_journal_lines_are_utc_stamped() {
+        // midnight, noon, and a partial minute — zero-padded HH:MM.
+        assert_eq!(hhmm_from_secs(0), "00:00");
+        assert_eq!(hhmm_from_secs(12 * 3600), "12:00");
+        assert_eq!(hhmm_from_secs(9 * 3600 + 5 * 60 + 59), "09:05");
+        // wraps within the day, ignores whole days
+        assert_eq!(hhmm_from_secs(86_400 + 3_661), "01:01");
+        // the shared line shape
+        assert_eq!(sync_log_line(9 * 3600 + 5 * 60, "фід оновлень ..."), "[09:05] фід оновлень ...");
+    }
 
     #[test]
     fn alt_digits_map_to_the_five_pages() {

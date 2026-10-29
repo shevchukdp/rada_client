@@ -4141,4 +4141,90 @@ mod tests {
         assert!(s.contains(r#"(b.dataset.value || "") === v"#), "«Усі» (empty value) matches the empty select");
         assert!(s.contains(r#"b.classList.toggle("active", on)"#), "selected chip styling class reuse");
     }
+
+    #[test]
+    fn ui_page_has_empty_results_suggestions() {
+        // A zero-hits search shows the GUI-style rich empty state instead of
+        // the bare meta line: ONE pure builder renders the block, its first
+        // line keeps the original muted «нічого не знайдено», and the
+        // «скинути фільтри» chip (a real <button id="empty-reset">) runs the
+        // SAME reset the «скинути все» active-filter chip uses, re-searching
+        // through the existing entry point (doSearch(0)).
+        assert!(ui::INDEX_HTML.contains("function emptyResultsHtml(hasActiveFilters)"));
+        assert!(ui::INDEX_HTML.contains("нічого не знайдено"), "the original zero-hits line is preserved");
+        let b = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function emptyResultsHtml(hasActiveFilters) {")
+            .expect("emptyResultsHtml")..];
+        let b = &b[..b.find("\n}").expect("emptyResultsHtml end")];
+        assert!(b.contains("<div class=\"hint\">нічого не знайдено</div>"), "the zero-hits line leads the block");
+        assert!(b.contains("id=\"empty-reset\""), "the reset action is a real button element");
+        assert!(b.contains("скинути фільтри"));
+        // The shared reset: «скинути все» and «скинути фільтри» both bind to
+        // resetAllFilters, which zeroes the six filter controls and
+        // re-searches from the first page.
+        let r = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function resetAllFilters() {")
+            .expect("resetAllFilters")..];
+        let r = &r[..r.find("\n}").expect("resetAllFilters end")];
+        assert!(r.contains(
+            "for (const id of [\"f-status\", \"f-typ\", \"f-org\", \"f-number\", \"date-from\", \"date-to\"])"
+        ), "the same six-control reset the «скинути все» chip performs");
+        assert!(r.contains("doSearch(0);"), "the reset re-searches from page 1");
+        assert!(ui::INDEX_HTML.contains("all.onclick = resetAllFilters;"),
+            "«скинути все» runs the shared reset");
+        let e = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function renderEmptyResults() {")
+            .expect("renderEmptyResults")..];
+        let e = &e[..e.find("\n}").expect("renderEmptyResults end")];
+        assert!(e.contains("rst.onclick = resetAllFilters;"),
+            "«скинути фільтри» reuses the existing reset + re-search call");
+        // Wired into the zero-hits branch only; hit rows stay untouched.
+        let d = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function doSearch(offset) {")
+            .expect("doSearch")..];
+        let d = &d[..d.find("\n}").expect("doSearch end")];
+        assert!(d.contains("if (!d.hits.length) {"), "the block renders only when nothing matched");
+        assert!(d.contains("renderEmptyResults();"));
+    }
+
+    #[test]
+    fn ui_page_has_empty_results_filter_clears() {
+        // The empty state mirrors the «Активні фільтри» per-chip clears: one
+        // .empty-clear <button> per SET filter with data-target naming its
+        // control, cleared through the SHARED per-chip path
+        // (clearFilterAndSearch zeroes just that control and re-searches via
+        // doSearch(0) — the same code path the active-filter chips run);
+        // the «шукати в кеші» chip is gated on the cache-search entry point
+        // and hands the current term to doCacheSearch.
+        let b = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function emptyResultsHtml(hasActiveFilters) {")
+            .expect("emptyResultsHtml")..];
+        let b = &b[..b.find("\n}").expect("emptyResultsHtml end")];
+        assert!(b.contains("if (hasActiveFilters)"), "the reset chip appears only while filters block results");
+        assert!(b.contains("activeChips()"), "one clear per filter actually set");
+        assert!(b.contains("class=\"chip empty-clear\""), "per-filter clear buttons carry the empty-clear class");
+        assert!(b.contains(r#"data-target="' + escHtml(c.id) + '"#),
+            "each clear names its filter control via data-target (escaped)");
+        assert!(b.contains(r#"typeof doCacheSearch === "function""#),
+            "the cache chip is gated on the cache-search entry point");
+        assert!(b.contains("id=\"empty-cache\""));
+        assert!(b.contains("шукати в кеші"));
+        let c = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function clearFilterAndSearch(c) {")
+            .expect("clearFilterAndSearch")..];
+        let c = &c[..c.find("\n}").expect("clearFilterAndSearch end")];
+        assert!(c.contains("$(c.id).value = \"\"; doSearch(0);"),
+            "the shared clear zeroes just its own control, then re-searches via doSearch(0)");
+        assert!(ui::INDEX_HTML.contains("b.onclick = () => clearFilterAndSearch(c);"),
+            "the «Активні фільтри» chips run the same shared clear path");
+        let e = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function renderEmptyResults() {")
+            .expect("renderEmptyResults")..];
+        let e = &e[..e.find("\n}").expect("renderEmptyResults end")];
+        assert!(e.contains("querySelectorAll(\".empty-clear\")"));
+        assert!(e.contains("clearFilterAndSearch({ id: b.dataset.target })"),
+            "an empty-clear chip clears just its filter and re-searches via the existing entry point");
+        assert!(e.contains("cch.onclick = () => doCacheSearch();"),
+            "the cache chip switches to cache-mode search with the current term");
+    }
 }

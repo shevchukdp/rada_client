@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.45: підказки при порожньому пошуку у веб, `hits` з CLI та часові мітки журналу / empty-state suggestions, hits export & journal stamps
+
+- **UKR:** 1) **Порожній результат пошуку у веб тепер не порожній**: «нічого не знайдено» плюс чипи «скинути фільтри», «шукати в кеші» та по чипу на кожен увімкнений фільтр, який блокує відповіді — кожен чистить саме свій фільтр і повторює пошук. 2) **CLI `hits TERM`**: список знайдених документів офлайн у txt або markdown (`--format md`) — номер, назва, посилання на сайт, статус і дати; `--limit` до 500; `--out FILE` (таблиця з BOM); мережі не чіпає. 3) **«Журнал дій» на Головні** тепер із часовими мітками `[HH:MM]` (UTC) на кожному рядку й кнопкою «очистити». 4) Тести: 310/310.
+- **ENG:** 1) **An empty web search result is no longer empty**: under «нічого не знайдено» it offers «скинути фільтри», «шукати в кеші» and one chip per blocking filter — each clears just its own filter and re-searches. 2) **CLI `hits TERM`**: the result list, fully offline, as txt or markdown (`--format md`) — numbering, title, site link, status and dates; `--limit` up to 500; `--out FILE` (BOM table); never touches the network. 3) **The home «Журнал дій» now stamps every line `[HH:MM]` (UTC)** and gained an «очистити» button. 4) Tests: 310/310.
+
+---
+
+## 2026-10-29
+
 ### 0.10.44: рядок прогресу jobs у «Даних», дії рядків Обраних та доведений `card` / job progress line, favorites row actions & tidy card
 
 - **UKR:** 1) **Живий рядок прогресу у веб-«Даних»**: поки завантаження індекса/знімка/резервної копії триває, рядок показує поточну фразу (`«картка 1234/56789: …»`), а по завершенню — лише результат; жодного зайвого таймера. 2) **Рядки Обраних у програмі** тепер такі самі, як у пошуку: «цилата», «копія» (номер) і «сайт» (акт на zakon.rada.gov.ua) — поряд з відкриттям і видаленням. 3) **CLI `card`** доведений до стандарту: тіла stdout і файлу будуються спільним кодом, `--json` отримав власну нотатку «[card] записано JSON», невдала картка не пише файлу. 4) Тести: 303/303.

@@ -162,7 +162,8 @@ official open-data API:
     one-click **live sync**, **snapshot download** with progress, **full
     index build** from the official `doc.txt` dump (or a local dump file),
     and local **backup / restore** of the index to a `.sqlite.gz` file
-    (annotations preserved both ways).
+    (annotations preserved both ways) — all traced in a timestamped
+    «Журнал дій» (UTC `[HH:MM]` per line) with an «очистити» button.
   - Dictionaries are **auto-loaded on startup** when empty (3 paced
     requests), so filters work out of the box.
 - **Full local index** of all 295 340 document cards (metadata + titles),
@@ -217,6 +218,8 @@ official open-data API:
   one source of truth; closes on Esc or an outside click),
   **active-filter chips** («Активні фільтри»: one chip per set filter with a ×
   that clears it and re-searches, plus «скинути все»),
+  **a helpful zero-results state** («нічого не знайдено» + «скинути фільтри» +
+  «шукати в кеші» + per-filter clear chips),
   **status quick chips** (up to three frequent statuses from the dictionary +
   «Усі», built from the status select itself; clicking re-searches, and the
   active chip stays in sync with deep links and the dropdown),
@@ -304,6 +307,7 @@ Launch arguments:
 .\rada-client.exe verify --json --out v.json  # checks + verdict, BOM-less
 
 # 3) Live lookups (respect the 5–7 s API pacing).
+.\rada-client.exe hits "податковий кодекс"      # offline result LIST (numbered, with dates/status); --format md for markdown links, --limit ≤500, --out FILE (BOM)
 .\rada-client.exe card 2755-17          # JSON card with all editions
 .\rada-client.exe card 2755-17 --out card.txt   # summary table to file (BOM); --json --out → BOM-less JSON; failed fetch writes no file
 .\rada-client.exe text 2755-17          # clean current text (offline cache fallback)

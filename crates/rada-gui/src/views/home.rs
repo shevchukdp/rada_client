@@ -559,7 +559,16 @@ fn sync_log(app: &mut App, ui: &mut egui::Ui) {
         return;
     }
     ui.add_space(10.0);
-    ui.strong("Журнал дій");
+    ui.horizontal(|ui| {
+        ui.strong("Журнал дій");
+        if ui
+            .button(egui::RichText::new("очистити").small())
+            .on_hover_text("сховати записи журналу")
+            .clicked()
+        {
+            app.home.sync_log.clear();
+        }
+    });
     for line in &app.home.sync_log {
         ui.label(egui::RichText::new(format!("· {line}")).small());
     }
