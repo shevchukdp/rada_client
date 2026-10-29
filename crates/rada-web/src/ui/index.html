@@ -782,6 +782,8 @@
     <div class="row">
       <span class="hint">Редакція:</span>
       <select id="editions" disabled></select>
+      <button id="ed-prev" type="button" hidden disabled title="попередня редакція">попередня</button>
+      <button id="ed-next" type="button" hidden disabled title="наступна редакція">наступна</button>
       <button id="load-text" type="button">Текст</button>
       <button id="btn-compare-editions" type="button" disabled>Порівняти редакції</button>
       <span id="live-note" class="hint"></span>
@@ -1670,6 +1672,10 @@ async function openDoc(nreg) {
   $("doc-nreg-val").textContent = nreg;
   $("editions").disabled = true;
   $("editions").innerHTML = "";
+  $("ed-prev").hidden = true; // quick-nav appears only once the card fills #editions
+  $("ed-next").hidden = true;
+  $("ed-prev").disabled = true;
+  $("ed-next").disabled = true;
   $("btn-cite").disabled = true; // needs the card title; enabled on card success
   $("btn-export-md").disabled = true; // needs the card title too; enabled on card success
   $("btn-export-txt").disabled = true; // ditto: no stale title may leak into a file
@@ -1720,6 +1726,11 @@ async function loadCard() {
     }
     sel.disabled = false;
     $("btn-compare-editions").disabled = sel.options.length < 2;
+    const noEds = sel.options.length < 2; // one option = nothing to cycle through
+    $("ed-prev").hidden = noEds;
+    $("ed-next").hidden = noEds;
+    $("ed-prev").disabled = false;
+    $("ed-next").disabled = false;
     $("btn-cite").disabled = false;
     $("btn-export-md").disabled = false;
     $("btn-export-txt").disabled = false;
@@ -1848,6 +1859,8 @@ async function loadText(edition) {
   resetToc(); // the body is about to be replaced — drop the old outline
   let url = "/api/doc/" + enc + "/text";
   if (edition) url += "?edition=" + encodeURIComponent(edition);
+  $("ed-prev").disabled = true; // paced fetch: no edition switch mid-flight
+  $("ed-next").disabled = true;
   try {
     const d = await api(url);
     if (state.curNreg !== nreg) return;
@@ -1860,6 +1873,9 @@ async function loadText(edition) {
     el.textContent = "Помилка: " + e.message;
     $("text-retry-row").hidden = false;
     setLive("");
+  } finally {
+    $("ed-prev").disabled = false;
+    $("ed-next").disabled = false;
   }
 }
 
@@ -1884,6 +1900,35 @@ function showCachedHint(nreg, d) {
 }
 
 // ---- edition comparison («Порівняти редакції», GUI reader parity) ----------
+
+/// Pure: the web mirror of the GUI reader's cycle_edition (its Alt+Up/Down
+/// combo stepping). `options` are the editions select's option values (the
+/// leading "" is «поточна редакція»), `curValue` is select.value and
+/// `delta` steps the list with wrap-around (+1 = «наступна», -1 = «попередня»).
+/// Returns null when there is nothing to do: a single-option list or a cur
+/// outside the list (the same unknown-cur guard as the GUI).
+function cycleEdition(options, curValue, delta) {
+  if (!options || options.length <= 1) return null;
+  const pos = options.indexOf(curValue);
+  if (pos < 0) return null;
+  const len = options.length;
+  const next = (((pos + delta) % len) + len) % len;
+  if (next === pos) return null;
+  return options[next];
+}
+
+/// The one shared step path for both quick-nav buttons: read the LIVE
+/// option values from the select, cycle them, and re-run the very load path
+/// the dropdown's own onchange fires (assigning select.value emits no
+/// change event, so the fetch has to be started here).
+function stepEdition(delta) {
+  const sel = $("editions");
+  const values = Array.from(sel.options).map((o) => o.value);
+  const next = cycleEdition(values, sel.value, delta);
+  if (next === null) return;
+  sel.value = next;
+  loadText(next || "");
+}
 
 /// Word count shared by the summary lines and the diff line (whitespace
 /// split, same counting as renderDocStats).
@@ -3296,6 +3341,8 @@ $("resolve-input").addEventListener("keydown", (ev) => {
 $("retry-card").onclick = () => loadCard();
 $("retry-text").onclick = () => loadText($("editions").value || "");
 $("editions").onchange = () => loadText($("editions").value || "");
+$("ed-prev").onclick = () => stepEdition(-1);
+$("ed-next").onclick = () => stepEdition(1);
 $("load-text").onclick = () => loadText($("editions").value || "");
 $("btn-compare-editions").onclick = () => openComparePanel();
 $("cmp-run").onclick = () => runEditionCompare();

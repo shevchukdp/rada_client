@@ -112,7 +112,8 @@ official open-data API:
   - **Keyboard shortcuts** — **Ctrl+F** focuses the find-in-text field (reader)
     or the query field (search); **Ctrl+K** jumps to Пошук with the query
     focused; **Ctrl+B** bookmarks the open act; **Ctrl+M** toggles the reader's
-    форматований/простий text mode; **F5** re-fetches the reader text; **Esc** clears the find query;
+    форматований/простий text mode; **Ctrl+Enter** opens the top search hit in
+    the reader; **F5** re-fetches the reader text; **Esc** clears the find query;
     **Alt+←/→**
     pages through the results list from inside the reader; **Alt+↑/↓** cycles
     the reader's edition combo (поточна ↔ dated, wrap-around); **Shift+Enter** steps
@@ -230,6 +231,8 @@ official open-data API:
   collapsible **date headers** («дд.мм.рррр», dateless docs last under «без дати»),
   **edition comparison** («Порівняти редакції» — word/char/time stats per
   edition plus «різниця: ±N слів»),
+  **edition quick-nav** («попередня»/«наступна» buttons cycle the editions
+  list with wrap-around, hidden for a single edition and gated while fetching),
   **per-hit «копія»/«сайт» buttons** (nreg to clipboard with a «скопійовано»
   flash; the act opens on zakon.rada.gov.ua in a new tab) with **query-word
   highlighting** in titles (whole-word, Unicode-aware, find-in-text colors),
@@ -336,6 +339,7 @@ Launch arguments:
 .\rada-client.exe dict --kind stan --out stan.txt  # dictionary table to file (BOM); --json → BOM-less JSON
 .\rada-client.exe dict --from-file stan.txt --kind stan   # seed a dictionary from a local dump (id\tlabel, cp1251)
 .\rada-client.exe dict-stats             # offline population report: стани / типи / органи + total; --json / --out too
+.\rada-client.exe dates                  # offline year histogram of adoption dates («без дати» + «найновіший рік»); --json / --out too
 
 # 4) Keep the index current.
 .\rada-client.exe sync                   # dictionaries + updated-documents feed

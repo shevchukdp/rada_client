@@ -2015,6 +2015,19 @@ impl eframe::App for App {
         {
             self.reload_reader();
         }
+        // Ctrl+Enter on the search page: open the top hit in the reader.
+        if ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::COMMAND, egui::Key::Enter)
+                || i.consume_key(egui::Modifiers::ALT, egui::Key::Enter)
+        }) && self.page == Page::Search
+        {
+            if let Some(idx) =
+                crate::views::search::top_hit_index(&self.search.hits, self.search.searched)
+            {
+                let hits = self.search.hits.clone();
+                self.open_reader_from(hits, idx);
+            }
+        }
         // Ctrl+M on the reader page: toggle форматований/простий text mode.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::M))
             && self.page == Page::Reader

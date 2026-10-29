@@ -3534,6 +3534,93 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_reader_edition_quicknav() {
+        // Quick edition buttons beside #editions (the GUI reader's Alt+Up/Down
+        // parity): plain Ukrainian labels without any glyphs, hidden AND
+        // disabled in the markup, reset to hidden+disabled by openDoc, and
+        // un-hidden by the card loader only when the select really has dated
+        // editions (the same < 2 options guard as «Порівняти редакції»).
+        assert!(ui::INDEX_HTML.contains("id=\"ed-prev\""));
+        assert!(ui::INDEX_HTML.contains("id=\"ed-next\""));
+        assert!(ui::INDEX_HTML.contains(
+            "<button id=\"ed-prev\" type=\"button\" hidden disabled title=\"попередня редакція\">попередня</button>"
+        ));
+        assert!(ui::INDEX_HTML.contains(
+            "<button id=\"ed-next\" type=\"button\" hidden disabled title=\"наступна редакція\">наступна</button>"
+        ));
+        // Beside the select: #editions → #ed-prev → #ed-next → «Текст».
+        let sel = ui::INDEX_HTML.find("id=\"editions\"").expect("editions select");
+        let prev = ui::INDEX_HTML.find("id=\"ed-prev\"").expect("ed-prev");
+        let next = ui::INDEX_HTML.find("id=\"ed-next\"").expect("ed-next");
+        let load = ui::INDEX_HTML.find("id=\"load-text\"").expect("load-text");
+        assert!(sel < prev && prev < next && next < load,
+            "both buttons sit between the select and «Текст»");
+        // openDoc resets them to hidden+disabled beside the emptied select,
+        // so a stale pair never lingers on the next document.
+        let open = ui::INDEX_HTML
+            .find("async function openDoc(nreg) {")
+            .expect("openDoc");
+        let end = ui::INDEX_HTML
+            .find("async function loadCard() {")
+            .expect("loadCard");
+        let body = &ui::INDEX_HTML[open..end];
+        assert!(body.contains(r#"$("ed-prev").hidden = true;"#), "openDoc hides the quick-nav");
+        assert!(body.contains(r#"$("ed-next").hidden = true;"#));
+        assert!(body.contains(r#"$("ed-prev").disabled = true;"#), "openDoc disables the quick-nav");
+        assert!(body.contains(r#"$("ed-next").disabled = true;"#));
+        // The card loader hides them for a single-option select (nothing to
+        // cycle) and otherwise enables them.
+        assert!(ui::INDEX_HTML.contains("const noEds = sel.options.length < 2;"));
+        assert!(ui::INDEX_HTML.contains(r#"$("ed-prev").hidden = noEds;"#));
+        assert!(ui::INDEX_HTML.contains(r#"$("ed-next").hidden = noEds;"#));
+        assert!(ui::INDEX_HTML.contains(r#"$("ed-prev").disabled = false;"#));
+        assert!(ui::INDEX_HTML.contains(r#"$("ed-next").disabled = false;"#));
+        // While a paced text fetch runs the pair is disabled (the exportDoc
+        // btn-disable idiom) and re-enabled in a finally so an error path
+        // can never leave them dead.
+        let lt = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function loadText(edition) {")
+            .expect("loadText")..];
+        let lt = &lt[..lt.find("\n}").expect("loadText end")];
+        assert!(lt.contains(r#"$("ed-prev").disabled = true;"#), "fetch gates ed-prev");
+        assert!(lt.contains(r#"$("ed-next").disabled = true;"#), "fetch gates ed-next");
+        assert!(lt.contains("finally {"), "the gate always lifts");
+    }
+
+    #[test]
+    fn ui_page_has_reader_edition_cycle_pure() {
+        // Pure cycleEdition mirrors the GUI's cycle_edition: the combo list
+        // ["" поточна, eds0, eds1, …] stepped with wrap-around, null when
+        // there is nothing to do (single option or a cur outside the list).
+        let f = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function cycleEdition(options, curValue, delta) {")
+            .expect("cycleEdition")..];
+        let f = &f[..f.find("\n}").expect("cycleEdition end")];
+        assert!(f.contains("options.length <= 1"), "single option: nothing to do");
+        assert!(f.contains("return null;"), "the null verdict");
+        assert!(f.contains("options.indexOf(curValue)"), "cur lookup");
+        assert!(f.contains("if (pos < 0) return null;"), "unknown cur: nothing to do");
+        assert!(f.contains("(((pos + delta) % len) + len) % len"),
+            "wrap-around both directions");
+        assert!(f.contains("return options[next];"), "the next value string");
+        // One shared step path for both buttons: it reads the LIVE select
+        // values, and — because assigning select.value emits no change
+        // event — re-runs the dropdown's own loadText change path directly.
+        let s = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function stepEdition(delta) {")
+            .expect("stepEdition")..];
+        let s = &s[..s.find("\n}").expect("stepEdition end")];
+        assert!(s.contains("Array.from(sel.options).map((o) => o.value)"), "live values");
+        assert!(s.contains("cycleEdition(values, sel.value, delta)"), "single source");
+        assert!(s.contains("if (next === null) return;"), "null stays a no-op");
+        assert!(s.contains("sel.value = next;"), "the select follows the cycle");
+        assert!(s.contains("loadText(next || \"\");"), "same change path as the dropdown");
+        // Both buttons feed the same helper with ±1, like the nav steps.
+        assert!(ui::INDEX_HTML.contains(r#"$("ed-prev").onclick = () => stepEdition(-1);"#));
+        assert!(ui::INDEX_HTML.contains(r#"$("ed-next").onclick = () => stepEdition(1);"#));
+    }
+
+    #[test]
     fn ui_page_has_query_highlight_helper() {
         // Pure markTerms builder (browser-find style painting of query words in
         // ALREADY-ESCAPED title html): terms capped at 8 with a 3-char minimum,

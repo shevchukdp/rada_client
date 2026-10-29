@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.46: швидкі редакції у веб-читалці, `dates` з CLI та Ctrl+Enter у пошуку / edition quick-nav, dates histogram & Ctrl+Enter
+
+- **UKR:** 1) **Кнопки «попередня»/«наступна» біля списку редакцій у веб-читалці**: переходять редакціями по колу — поточна ↔ dated, тим самим кроком, що й випадаючий список; ховаються, коли редакція одна, і блокуються на час завантаження тексту. 2) **CLI `dates`**: офлайн розподіл документів за роками прийняття (та сама колонка, що фільтри `search --date-from/--date-to`) — «без дати» окремим рядком і вердикт «найновіший рік»; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 3) **Ctrl+Enter на сторінці пошуку** відкриває перший результат у читалці; рядок додано у «клавіші». 4) Тести: 316/316.
+- **ENG:** 1) **«попередня»/«наступна» buttons beside the web reader's editions list**: they cycle editions with wrap-around — поточна ↔ dated — through the same path as the dropdown; hidden when a doc has a single edition and disabled while the text is fetching. 2) **CLI `dates`**: an offline adoption-year histogram (the very column `search --date-from/--date-to` filters) — an «без дати» line plus a «найновіший рік» verdict; `--json` and `--out FILE` (BOM table / BOM-less JSON). 3) **Ctrl+Enter on the search page** opens the top hit in the reader; the «клавіші» sheet gained the row. 4) Tests: 316/316.
+
+---
+
+## 2026-10-29
+
 ### 0.10.45: підказки при порожньому пошуку у веб, `hits` з CLI та часові мітки журналу / empty-state suggestions, hits export & journal stamps
 
 - **UKR:** 1) **Порожній результат пошуку у веб тепер не порожній**: «нічого не знайдено» плюс чипи «скинути фільтри», «шукати в кеші» та по чипу на кожен увімкнений фільтр, який блокує відповіді — кожен чистить саме свій фільтр і повторює пошук. 2) **CLI `hits TERM`**: список знайдених документів офлайн у txt або markdown (`--format md`) — номер, назва, посилання на сайт, статус і дати; `--limit` до 500; `--out FILE` (таблиця з BOM); мережі не чіпає. 3) **«Журнал дій» на Головні** тепер із часовими мітками `[HH:MM]` (UTC) на кожному рядку й кнопкою «очистити». 4) Тести: 310/310.

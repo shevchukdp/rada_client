@@ -935,6 +935,16 @@ enum ClearWhat {
 
 /// Generic dictionary label for the active-filter chips: dict hit → label,
 /// id 0 → «немає», unknown id → «id N».
+/// Ctrl+Enter on the search page: index of the hit to open (the top hit),
+/// or `None` when there is nothing to open (no results yet / failed search).
+pub fn top_hit_index(hits: &[rada_db::SearchHit], searched: bool) -> Option<usize> {
+    if searched && !hits.is_empty() {
+        Some(0)
+    } else {
+        None
+    }
+}
+
 pub fn filter_label(dict: &[(i64, String)], id: i64) -> String {
     dict.iter()
         .find(|(did, _)| *did == id)
@@ -1551,6 +1561,21 @@ mod tests {
         assert_eq!(chips[5], ("б".to_string(), 4));
         // Empty input → no chips.
         assert!(facet_chips(&[], &dict).is_empty());
+    }
+
+    #[test]
+    fn top_hit_index_only_when_results_present() {
+        let hit = rada_db::SearchHit {
+            nreg: "1-23".into(),
+            nazva: "Про тест".into(),
+            status: 1,
+            org_date: "20200101".into(),
+            org_num: "1".into(),
+            poddat: String::new(),
+        };
+        assert_eq!(top_hit_index(&[], true), None, "no results");
+        assert_eq!(top_hit_index(&[hit.clone()], false), None, "search not run/failed");
+        assert_eq!(top_hit_index(&[hit], true), Some(0), "top hit is index 0");
     }
 
     #[test]

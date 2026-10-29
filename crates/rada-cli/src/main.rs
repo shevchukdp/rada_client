@@ -30,6 +30,11 @@
 //!               nregs, text cache; `--json` for machine-readable
 //!               output, `--out` to write the report, exit 1 on
 //!               any failed check);
+//! - `dates`    offline document-date histogram by year of `org_date` —
+//!               the same adoption-date column the
+//!               `search --date-from/--date-to` filters use
+//!               (`--json` for machine-readable output, `--out` to write
+//!               the report; informational — never exits nonzero);
 //! - `export`    offline export of a cached document body as md / txt / html
 //!               (text cache only — never touches the network);
 //! - `toc`       offline outline (зміст) of a cached document: «Розділ/Глава»
@@ -448,6 +453,25 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Offline «how fresh is my index»: document-date distribution by
+    /// year of the primary date column `org_date` — the SAME adoption-date
+    /// column the `search --date-from/--date-to` filters use, so the
+    /// histogram and the search filters always agree. Rows whose `org_date`
+    /// is missing or malformed count as «без дати». Pure offline: the
+    /// command never touches the network; informational — always exits 0.
+    Dates {
+        /// Emit the JSON body
+        /// (`{"years":[{year,count},…],"undated":N,"total":N,"newest":"YYYY"|null}`)
+        /// instead of the report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less; the `[dates] записано …` note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Offline export of a CACHED document body as md / txt / html: the
     /// text comes from the local text cache only — the command never
     /// touches the network. Export the current edition; read the document
@@ -672,6 +696,7 @@ fn run() -> Result<()> {
         Cmd::Favorites { kind, sort, json, out } => {
             cmd_favorites(&cli.db, kind.as_deref(), &sort, json, out.as_deref())
         }
+        Cmd::Dates { json, out } => cmd_dates(&cli.db, json, out.as_deref()),
         Cmd::Export { nreg, fmt, out } => {
             cmd_export(&cli.db, &nreg, &fmt, out.as_deref())
         }
@@ -4124,6 +4149,149 @@ fn cmd_favorites(
     Ok(())
 }
 
+/// One `dates` histogram row: the four-digit year prefix of the primary
+/// date column (`org_date` — the same column the
+/// `search --date-from/--date-to` filters compare against) and the number
+/// of documents carrying it.
+struct YearRow {
+    year: String,
+    count: i64,
+}
+
+/// The report body of `dates` (shared by stdout and `--out` so the two
+/// cannot drift): «Розподіл за роками (дата прийняття):» header, then one
+/// `{year}: {count}` line per year ascending (counts render plain, like
+/// the `stats`/`verify` numbers — the CLI has no digit-grouping helper to
+/// copy), then the «без дати: {undated}» line only when `undated > 0`,
+/// then the verdict: «найновіший рік: {max_year}», or «індекс порожній»
+/// when the histogram has no rows at all. Informational: an empty
+/// histogram never fails the run.
+fn dates_lines(rows: &[YearRow], total: i64, undated: i64) -> Vec<String> {
+    // `total` joins the signature as the shared report contract with
+    // [`dates_json`]; the plain body renders only the per-year counts.
+    let _ = total;
+    let mut lines = vec!["Розподіл за роками (дата прийняття):".to_string()];
+    for r in rows {
+        lines.push(format!("{}: {}", r.year, r.count));
+    }
+    if undated > 0 {
+        lines.push(format!("без дати: {undated}"));
+    }
+    match rows.iter().map(|r| r.year.as_str()).max() {
+        Some(max) => lines.push(format!("найновіший рік: {max}")),
+        None => lines.push("індекс порожній".to_string()),
+    }
+    lines
+}
+
+/// The `--json` body of `dates` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty
+/// `{"years":[{year,count},…],"undated":N,"total":N,"newest":"YYYY"|null}`
+/// object built as hand-rolled `serde_json::Value`s like the other
+/// commands' JSON bodies (map keys sort, so `newest`/`total`/`undated`/
+/// `years` keep their alphabetical order; `newest` is `null` for an empty
+/// histogram). stdout prints exactly this string plus a trailing newline;
+/// the `--out` file receives the same bytes BOM-less (machine data, the
+/// house JSON rule).
+fn dates_json(rows: &[YearRow], total: i64, undated: i64) -> String {
+    let years: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| serde_json::json!({ "year": r.year, "count": r.count }))
+        .collect();
+    let value = serde_json::json!({
+        "years": years,
+        "undated": undated,
+        "total": total,
+        "newest": rows.iter().map(|r| r.year.as_str()).max(),
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `dates --out` has written `file`
+/// (`years` year rows, the same wording in both modes):
+/// `[dates] записано {years} років → {file}`.
+fn dates_out_note(years: usize, file: &Path) -> String {
+    format!("[dates] записано {years} років → {}", file.display())
+}
+
+/// Offline «how fresh is my index» (`dates`): the document-date
+/// distribution by year of `org_date` — the SAME adoption-date column the
+/// `search --date-from/--date-to` filters compare against (see
+/// `rada_db::search`), so the histogram and the filters always agree.
+/// Never builds a client, never touches the network. A missing index file
+/// is a hard error («індекс не знайдено: …», the `stats`/`verify` rule).
+/// The histogram comes straight from `docs` through the connection
+/// `rada_db::open` returns (the `verify` / `dict-stats` direct-SQL idiom):
+/// `substr(org_date,1,4)` grouped over the rows passing the
+/// `GLOB '[0-9][0-9][0-9][0-9]*'` year-prefix guard, ordered ascending.
+/// Documents with a missing or malformed date (the empty-string default)
+/// are the `total` minus the histogram sum and render as «без дати».
+/// Informational: the run always exits 0. With `--out` the exact stdout
+/// body goes to the file (parent dirs created) and nothing prints to
+/// stdout: the plain report is written UTF-8 with a BOM (Excel-friendly,
+/// like search/arrivals/stats/verify), the `--json` body BOM-less; one
+/// `[dates] записано {years} років → {file}` note goes to stderr. The
+/// header always renders, so the file is never BOM-alone.
+fn cmd_dates(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    let total: i64 = conn
+        .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
+        .unwrap_or(0);
+    let mut rows: Vec<YearRow> = Vec::new();
+    let mut stmt = conn
+        .prepare(
+            "SELECT substr(org_date,1,4) AS y, COUNT(*) FROM docs
+             WHERE org_date GLOB '[0-9][0-9][0-9][0-9]*'
+             GROUP BY y ORDER BY y",
+        )
+        .context("prepare dates histogram")?;
+    let mut mapped = stmt
+        .query_map([], |r| {
+            Ok(YearRow {
+                year: r.get(0)?,
+                count: r.get(1)?,
+            })
+        })
+        .context("run dates histogram")?;
+    while let Some(row) = mapped.next().transpose()? {
+        rows.push(row);
+    }
+    let dated: i64 = rows.iter().map(|r| r.count).sum();
+    let undated = total - dated;
+    if json {
+        let body = dates_json(&rows, total, undated);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", dates_out_note(rows.len(), p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = dates_lines(&rows, total, undated);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout report (the header always renders, so never
+            // BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", dates_out_note(rows.len(), p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_status(db: &PathBuf) -> Result<()> {
     if !db.exists() {
         eprintln!("no index at {} (run `rada-client init` first)", db.display());
@@ -4206,7 +4374,8 @@ mod tests {
         cache_search_out_note, card_json_body, card_json_out_note, card_lines, card_out_note,
         dict_fresh_json, dict_fresh_lines, dict_json_body,
         dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, dict_stats_json,
-        dict_stats_lines, dict_stats_out_note, export_html,
+        dict_stats_lines, dict_stats_out_note, dates_json, dates_lines, dates_out_note,
+        export_html,
         grep_body, grep_render,
         export_markdown, export_out_note, export_plain, favorites_json_body,
         favorites_json_out_note, favorites_lines, favorites_out_note, facet_lines, filter_since,
@@ -4217,8 +4386,7 @@ mod tests {
         resolve_out_note, search_out_note, since_note,
         stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
         toc_out_note, verify_lines, verify_out_note, DictStat, FavRow, FavSort, HitsFormat,
-        RecentRow,
-        StatsInfo, TocEntry,
+        RecentRow, StatsInfo, TocEntry, YearRow,
         VerifyCheck, VerifyStatus,
     };
 
@@ -6023,5 +6191,87 @@ mod tests {
         assert_eq!(err, "формат pdf: використовуйте txt або md");
         assert!(normalize_hits_format("").is_err());
         assert!(normalize_hits_format("html").is_err());
+    }
+
+    #[test]
+    fn dates_lines_renders_years_undated_and_verdict() {
+        // header + one «{year}: {count}» line per year in input order
+        // (the SQL sorts ascending), counts render plain like the
+        // `stats`/`verify` numbers, the «без дати» line appears only when
+        // undated > 0, and the verdict names the newest year (the
+        // informational rule: the command still exits 0)
+        let rows = vec![
+            YearRow { year: "2024".into(), count: 120000 },
+            YearRow { year: "2025".into(), count: 500 },
+            YearRow { year: "2026".into(), count: 7 },
+        ];
+        assert_eq!(
+            dates_lines(&rows, 120607, 3),
+            vec![
+                "Розподіл за роками (дата прийняття):".to_string(),
+                "2024: 120000".to_string(),
+                "2025: 500".to_string(),
+                "2026: 7".to_string(),
+                "без дати: 3".to_string(),
+                "найновіший рік: 2026".to_string(),
+            ]
+        );
+        // undated = 0: the «без дати» line is skipped entirely
+        let lines = dates_lines(&rows, 120607, 0);
+        assert!(!lines.iter().any(|l| l.starts_with("без дати")));
+        assert_eq!(lines.last().unwrap(), "найновіший рік: 2026");
+        // empty index: the header still renders (the `--out` file is never
+        // BOM-alone) and the verdict flips to «індекс порожній»
+        assert_eq!(
+            dates_lines(&[], 0, 0),
+            vec![
+                "Розподіл за роками (дата прийняття):".to_string(),
+                "індекс порожній".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn dates_json_renders_years_total_and_null() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «newest»/«total»/«undated»/«years» keep their
+        // alphabetical order, as do «count»/«year» inside every entry.
+        let rows = vec![
+            YearRow { year: "2025".into(), count: 2 },
+            YearRow { year: "2026".into(), count: 3 },
+        ];
+        let body = dates_json(&rows, 6, 1);
+        assert_eq!(
+            body,
+            "{\n  \"newest\": \"2026\",\n  \"total\": 6,\n  \"undated\": 1,\n  \"years\": [\n    {\n      \"count\": 2,\n      \"year\": \"2025\"\n    },\n    {\n      \"count\": 3,\n      \"year\": \"2026\"\n    }\n  ]\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // empty histogram: a well-formed empty report, newest is null
+        assert_eq!(
+            dates_json(&[], 0, 0),
+            "{\n  \"newest\": null,\n  \"total\": 0,\n  \"undated\": 0,\n  \"years\": []\n}"
+        );
+    }
+
+    #[test]
+    fn dates_out_note_formats_years_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//d.txt");
+        let line = dates_out_note(37, file);
+        assert_eq!(
+            line,
+            format!("[dates] записано 37 років → {}", file.display())
+        );
+        assert!(line.starts_with("[dates] "));
+        assert!(line.contains("37"));
+        assert!(line.contains("років"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the informational zero rule: the note still formats with 0 years
+        assert_eq!(
+            dates_out_note(0, file),
+            format!("[dates] записано 0 років → {}", file.display())
+        );
     }
 }
