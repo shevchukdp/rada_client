@@ -114,7 +114,8 @@ official open-data API:
     focused; **Ctrl+B** bookmarks the open act; **Ctrl+M** toggles the reader's
     форматований/простий text mode; **F5** re-fetches the reader text; **Esc** clears the find query;
     **Alt+←/→**
-    pages through the results list from inside the reader; **Shift+Enter** steps
+    pages through the results list from inside the reader; **Alt+↑/↓** cycles
+    the reader's edition combo (поточна ↔ dated, wrap-around); **Shift+Enter** steps
     to the previous find match; **Ctrl+Plus / Ctrl+Minus / Ctrl+0** zoom the
     reader text (±10%, persisted); **Alt+1…Alt+5** switch pages
     (Головна / Пошук / Читалка / Оновлення / Обране); a topbar **«клавіші»
@@ -172,7 +173,8 @@ official open-data API:
   snapshot straight from the GitHub release — no rebuild).
 - **Local web UI** (`web`) — one embedded HTML page (vanilla JS, zero
   external assets): search (with publisher filter + live name resolver),
-  reader, find-in-text, annotations with **inline editing**
+  reader, find-in-text **with an «N з M» match counter** («нічого не знайдено»
+  on zero hits), annotations with **inline editing**
   (`PUT /api/annotations`), export (txt/md/html), keyboard shortcuts,
   recent documents, auto-loaded «Нові документи» (offline-capable), **number
   search** (an nreg in the query opens the document), a **Favorites (Обране) tab**
@@ -319,6 +321,7 @@ Launch arguments:
 .\rada-client.exe dict --fresh           # quick freshness report («N записів» / «порожньо», no refetch)
 .\rada-client.exe dict --kind stan --out stan.txt  # dictionary table to file (BOM); --json → BOM-less JSON
 .\rada-client.exe dict --from-file stan.txt --kind stan   # seed a dictionary from a local dump (id\tlabel, cp1251)
+.\rada-client.exe dict-stats             # offline population report: стани / типи / органи + total; --json / --out too
 
 # 4) Keep the index current.
 .\rada-client.exe sync                   # dictionaries + updated-documents feed

@@ -3847,4 +3847,77 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("a.click();"));
         assert!(ui::INDEX_HTML.contains("URL.revokeObjectURL(url);"));
     }
+
+    #[test]
+    fn ui_page_has_find_match_counter() {
+        // The web find bar mirrors the GUI reader's «{cur} з {total}» counter
+        // (the muted span right after #find-input, beside the prev/next
+        // buttons): hidden by default in the markup, «нічого не знайдено»
+        // for a query without hits, the pure countMatches(haystack, needle)
+        // non-overlapping case-insensitive scan as the total's source, and
+        // openDoc resetting both text and hidden so no stale «5 з 9» from a
+        // previous act follows the user into the next document.
+        assert!(ui::INDEX_HTML.contains(
+            "<span id=\"find-count\" class=\"hint\" hidden></span>"
+        ));
+        assert!(ui::INDEX_HTML.contains("нічого не знайдено"));
+        assert!(ui::INDEX_HTML.contains("function countMatches(haystack, needle)"));
+        assert!(ui::INDEX_HTML.contains("function setFindCount()"));
+        let cm = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function countMatches(haystack, needle) {")
+            .expect("countMatches")..];
+        let cm = &cm[..cm.find("\n}").expect("countMatches end")];
+        assert!(cm.contains("toLowerCase()"), "case-insensitive scan");
+        assert!(cm.contains("indexOf(lowQ, i + needle.length)"), "non-overlapping");
+        let open = ui::INDEX_HTML
+            .find("async function openDoc(nreg) {")
+            .expect("openDoc");
+        let end = ui::INDEX_HTML
+            .find("async function loadCard() {")
+            .expect("loadCard");
+        let body = &ui::INDEX_HTML[open..end];
+        assert!(
+            body.contains(r#"$("find-count").textContent = "";"#),
+            "openDoc must clear the counter text"
+        );
+        assert!(
+            body.contains(r#"$("find-count").hidden = true;"#),
+            "openDoc must hide the counter"
+        );
+    }
+
+    #[test]
+    fn ui_page_has_find_counter_updates() {
+        // The counter refreshes in the one shared place: setFindCount paints
+        // «{cur} з {total}» from the existing findIdx state and the total
+        // from countMatches over the loaded text (the rendered match list
+        // only as fallback), runFind calls it on every query execution
+        // after the hits are rebuilt, and showFind calls it after next/prev
+        // move findIdx — so the number can never drift from the highlight.
+        let f = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function setFindCount() {")
+            .expect("setFindCount")..];
+        let f = &f[..f.find("\n}").expect("setFindCount end")];
+        assert!(f.contains("\" з \""), "the «N з M» separator");
+        assert!(f.contains("findIdx + 1"), "current from the index state");
+        assert!(f.contains("countMatches(state.curText, q)"), "total from countMatches");
+        assert!(f.contains("findHits.length"), "match list length as fallback");
+        assert!(f.contains("el.hidden = true;"), "empty query hides it");
+        let r = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function runFind() {")
+            .expect("runFind")..];
+        let r = &r[..r.find("\n}").expect("runFind end")];
+        let build = r.find("findHits.push(m);").expect("hit collection");
+        let paint = r.rfind("setFindCount();").expect("counter refresh on query");
+        assert!(build < paint, "the counter repaints after the hits are rebuilt");
+        let s = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function showFind(delta, scroll) {")
+            .expect("showFind")..];
+        let s = &s[..s.find("\n}").expect("showFind end")];
+        let step = s
+            .find("findIdx = (findIdx + delta + findHits.length) % findHits.length;")
+            .expect("index step");
+        let repaint = s.find("setFindCount();").expect("counter refresh on next/prev");
+        assert!(step < repaint, "the counter follows the moved index");
+    }
 }

@@ -781,7 +781,7 @@
       <input id="find-input" placeholder="Знайти в тексті…" autocomplete="off">
       <button id="find-prev" type="button" title="Попередній збіг">↑</button>
       <button id="find-next" type="button" title="Наступний збіг">↓</button>
-      <span id="find-count" class="hint"></span>
+      <span id="find-count" class="hint" hidden></span>
     </div>
     <div class="row">
       <button id="btn-toc" class="ghost" type="button" hidden>Зміст</button>
@@ -1509,6 +1509,7 @@ async function openDoc(nreg) {
   findHits = []; findIdx = -1;
   $("find-input").value = "";
   $("find-count").textContent = "";
+  $("find-count").hidden = true; // no stale «5 з 9» may follow into a new act
   resetToc(); // stale outline entries must never survive into a new document
   $("btn-top").hidden = true; // a fresh document starts at the top anyway
   resetCompare(); // a stale edition comparison must never linger either
@@ -2017,8 +2018,40 @@ function plural(n, one, few, many) {
   return many;
 }
 
-function pluralFind(n) {
-  return plural(n, "збіг", "збіги", "збігів");
+/// Count of case-insensitive, non-overlapping occurrences of `needle` in
+/// `haystack` (plain indexOf scan, no regexes — Cyrillic safe). Single
+/// source for the find counter's total: the GUI reader counts occurrences
+/// in the plain text, so the web counter must not depend on how the marks
+/// happened to land across block boundaries.
+function countMatches(haystack, needle) {
+  if (!needle) return 0;
+  const low = haystack.toLowerCase();
+  const lowQ = needle.toLowerCase();
+  let n = 0;
+  let i = low.indexOf(lowQ);
+  while (i >= 0) {
+    n++;
+    i = low.indexOf(lowQ, i + needle.length);
+  }
+  return n;
+}
+
+/// The ONE place the find counter is painted (the GUI reader's «{cur} з
+/// {total}» beside its find field): hidden while the query is empty or no
+/// text is open, «нічого не знайдено» while the query matched nothing, and
+/// otherwise the 1-based current hit over the total from countMatches.
+/// runFind calls it after rebuilding the match list, showFind after every
+/// next/prev move of findIdx — so the counter can never drift from the
+/// highlight state.
+function setFindCount() {
+  const el = $("find-count");
+  const q = $("find-input").value;
+  if (!q || !state.curText) { el.textContent = ""; el.hidden = true; return; }
+  const total = countMatches(state.curText, q) || findHits.length;
+  if (!total) { el.textContent = "нічого не знайдено"; el.hidden = false; return; }
+  const cur = Math.min(Math.max(findIdx + 1, 1), total);
+  el.textContent = cur + " з " + total;
+  el.hidden = false;
 }
 
 /// Group thousands in `n` with plain spaces (the GUI reader's stats format).
@@ -2051,7 +2084,7 @@ function runFind() {
   buildToc(); // headings were just re-rendered — rebuild the outline from them
   renderDocStats(); // the body was just painted — refresh the stats line
   if (!q || !state.curText) {
-    $("find-count").textContent = "";
+    setFindCount(); // empty query (or no text): the counter hides itself
     return;
   }
   const lowQ = q.toLowerCase();
@@ -2076,9 +2109,7 @@ function runFind() {
     if (last < data.length) frag.appendChild(document.createTextNode(data.slice(last)));
     node.parentNode.replaceChild(frag, node);
   }
-  $("find-count").textContent = findHits.length
-    ? findHits.length + " " + pluralFind(findHits.length)
-    : "не знайдено";
+  setFindCount(); // zero hits → «нічого не знайдено» (kept muted, visible)
   if (findHits.length) showFind(1, true);
 }
 
@@ -2089,8 +2120,7 @@ function showFind(delta, scroll) {
   const cur = findHits[findIdx];
   cur.classList.add("cur");
   if (scroll) cur.scrollIntoView({ block: "center" });
-  $("find-count").textContent =
-    (findIdx + 1) + " / " + findHits.length + " " + pluralFind(findHits.length);
+  setFindCount(); // «{cur} з {total}» follows the highlight on every step
 }
 
 /// Inline-edit controls for one annotation: «змінити» → textarea +
@@ -3098,7 +3128,7 @@ $("find-input").addEventListener("keydown", (ev) => {
     ev.preventDefault();
     $("find-input").value = "";
     if (state.curText) renderDocText();
-    else { findHits = []; findIdx = -1; $("find-count").textContent = ""; }
+    else { findHits = []; findIdx = -1; $("find-count").textContent = ""; $("find-count").hidden = true; }
     $("find-input").blur();
   }
 });

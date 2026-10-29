@@ -13,6 +13,10 @@
 //! - `dict`      load reference dictionaries (stan/typs/organs) from the live API,
 //!               seed one offline from a file (`--from-file`) or report
 //!               local freshness (`--fresh`);
+//! - `dict-stats` offline dictionary coverage report: how populated each
+//!               reference dictionary is, one line per kind
+//!               (`--json` for machine-readable output, `--out` to write
+//!               the report; informational — never exits nonzero);
 //! - `arrivals`  live updated-documents feed with a diff against the saved snapshot;
 //! - `snapshot`  create / restore gzip snapshots;
 //! - `status`    index statistics;
@@ -290,6 +294,23 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Offline dictionary coverage report: how populated each reference
+    /// dictionary is (stan / typs / organs), one line per kind with its
+    /// row count — complements `verify` / `stats`. Pure offline: the
+    /// command never touches the network and never exits nonzero on empty
+    /// dictionaries (it is informational).
+    DictStats {
+        /// Emit JSON (`{"dicts":[{kind,label,rows},…],"total":N}`) instead
+        /// of the aligned report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Resolve a human name to an nreg: offline-first via the local index
     /// (exact nreg / title search), then the live `find/a` endpoint only when
     /// the index is silent. Prints the nreg when the query is unambiguous,
@@ -545,6 +566,7 @@ fn run() -> Result<()> {
             fresh,
             out.as_deref(),
         ),
+        Cmd::DictStats { json, out } => cmd_dict_stats(&cli.db, json, out.as_deref()),
         Cmd::Resolve { text, limit, json, out } => {
             cmd_resolve(&cli.db, &text.join(" "), limit, json, out.as_deref(), cli.pace)
         }
@@ -892,6 +914,122 @@ fn dict_fresh_json(counts: &[(&str, i64)]) -> Result<String> {
             .collect(),
     );
     serde_json::to_string_pretty(&report).map_err(anyhow::Error::from)
+}
+
+/// One dictionary coverage row behind `dict-stats`: the portal kind name,
+/// its Ukrainian caption and the number of rows that kind carries in the
+/// shared `dict(kind, id, label)` table.
+struct DictStat {
+    kind: &'static str,
+    label: &'static str,
+    rows: i64,
+}
+
+/// The report body of `dict-stats` (shared by stdout and `--out` so the
+/// two cannot drift): «словники довідників:» header, then one
+/// `{label}: {rows} значень` line per kind in input order (the caller
+/// passes stan, typs, organs). A zero-row kind renders the warn flavor
+/// `{label}: 0 значень — словник порожній`; the report is informational,
+/// so empty dictionaries never fail the run.
+fn dict_stats_lines(stats: &[DictStat]) -> Vec<String> {
+    let mut lines = vec!["словники довідників:".to_string()];
+    for s in stats {
+        if s.rows == 0 {
+            lines.push(format!("{}: 0 значень — словник порожній", s.label));
+        } else {
+            lines.push(format!("{}: {} значень", s.label, s.rows));
+        }
+    }
+    lines
+}
+
+/// The `--json` body of `dict-stats` (shared by stdout and `--out` so the
+/// two cannot drift): the pretty `{"dicts":[{kind,label,rows},…],"total":N}`
+/// object over the stats, built as a hand-rolled `serde_json::Value` like
+/// the other commands' JSON bodies (`total` is the sum of all kinds).
+/// stdout prints exactly this string plus a trailing newline; the `--out`
+/// file receives the same bytes BOM-less (machine data, the house JSON
+/// rule).
+fn dict_stats_json(stats: &[DictStat]) -> String {
+    let dicts: Vec<serde_json::Value> = stats
+        .iter()
+        .map(|s| {
+            serde_json::json!({
+                "kind": s.kind,
+                "label": s.label,
+                "rows": s.rows,
+            })
+        })
+        .collect();
+    let total: i64 = stats.iter().map(|s| s.rows).sum();
+    let value = serde_json::json!({ "dicts": dicts, "total": total });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `dict-stats --out` has written `file`
+/// (`total` values across all kinds): `[dict-stats] записано {total}
+/// значень → {file}`.
+fn dict_stats_out_note(total: i64, file: &Path) -> String {
+    format!("[dict-stats] записано {total} значень → {}", file.display())
+}
+
+/// Offline dictionary coverage report (`dict-stats`): never builds a
+/// client, never touches the network. A missing index file is a hard error
+/// («індекс не знайдено: …», the `stats`/`verify` rule). The counts come
+/// from `COUNT(*)` per kind over the shared `dict(kind, id, label)` table,
+/// read through the same connection directly (the `verify` / `cache` dump
+/// style). Informational: empty dictionaries render the «словник порожній»
+/// flavor and the run still exits 0. With `--out` the exact stdout body
+/// goes to the file (parent dirs created) and nothing prints to stdout:
+/// the plain report is written UTF-8 with a BOM (Excel-friendly, like
+/// search/arrivals/stats/verify), the `--json` body BOM-less; one
+/// `[dict-stats] записано {total} значень → {file}` note goes to stderr.
+fn cmd_dict_stats(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    let mut stats: Vec<DictStat> = Vec::with_capacity(3);
+    for (kind, label) in [("stan", "стани"), ("typs", "типи"), ("organs", "органи")] {
+        let rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM dict WHERE kind = ?1",
+                [kind],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        stats.push(DictStat { kind, label, rows });
+    }
+    let total: i64 = stats.iter().map(|s| s.rows).sum();
+    if json {
+        let body = dict_stats_json(&stats);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", dict_stats_out_note(total, p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = dict_stats_lines(&stats);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout report (the header always renders, so never
+            // BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", dict_stats_out_note(total, p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Offline FTS5 title search with filters. Default output is the hit table
@@ -3208,13 +3346,14 @@ mod tests {
         annot_text_file_note, arrivals_date_key,
         arrivals_out_note, backfill_summary, cache_dump_filename, cache_dump_lines,
         cache_search_out_note, card_out_note, dict_fresh_json, dict_fresh_lines, dict_json_body,
-        dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, export_html,
+        dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, dict_stats_json,
+        dict_stats_lines, dict_stats_out_note, export_html,
         grep_body, grep_render,
         export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
         normalize_fmt, out_note, related_json_body, related_json_out_note, related_out_note,
         resolve_out_note, search_out_note, since_note,
         stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
-        toc_out_note, verify_lines, verify_out_note, StatsInfo, TocEntry, VerifyCheck,
+        toc_out_note, verify_lines, verify_out_note, DictStat, StatsInfo, TocEntry, VerifyCheck,
         VerifyStatus,
     };
 
@@ -4300,5 +4439,84 @@ mod tests {
         assert!(line.starts_with("[verify] "));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn dict_stats_lines_renders_header_kinds_and_empty_flavor() {
+        // three kinds in the stan/typs/organs order: header, one line per
+        // kind, and the zero-row kind renders the «словник порожній» warn
+        // flavor (informational — the command still exits 0)
+        let stats = [
+            DictStat { kind: "stan", label: "стани", rows: 10 },
+            DictStat { kind: "typs", label: "типи", rows: 0 },
+            DictStat { kind: "organs", label: "органи", rows: 799 },
+        ];
+        assert_eq!(
+            dict_stats_lines(&stats),
+            vec![
+                "словники довідників:".to_string(),
+                "стани: 10 значень".to_string(),
+                "типи: 0 значень — словник порожній".to_string(),
+                "органи: 799 значень".to_string(),
+            ]
+        );
+        // input order is preserved even when it is not the default one
+        let flipped = [
+            DictStat { kind: "organs", label: "органи", rows: 1 },
+            DictStat { kind: "stan", label: "стани", rows: 2 },
+        ];
+        assert_eq!(
+            dict_stats_lines(&flipped),
+            vec![
+                "словники довідників:".to_string(),
+                "органи: 1 значень".to_string(),
+                "стани: 2 значень".to_string(),
+            ]
+        );
+        // no kinds at all: the header still renders (the report always has
+        // at least one line, so the `--out` file is never BOM-alone)
+        assert_eq!(dict_stats_lines(&[]), vec!["словники довідників:".to_string()]);
+    }
+
+    #[test]
+    fn dict_stats_json_renders_dicts_and_total() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «dicts» precedes «total» and «kind»/«label»/«rows» keep
+        // their alphabetical order inside every entry.
+        let stats = [
+            DictStat { kind: "stan", label: "стани", rows: 10 },
+            DictStat { kind: "typs", label: "типи", rows: 138 },
+            DictStat { kind: "organs", label: "органи", rows: 0 },
+        ];
+        let body = dict_stats_json(&stats);
+        assert_eq!(
+            body,
+            "{\n  \"dicts\": [\n    {\n      \"kind\": \"stan\",\n      \"label\": \"стани\",\n      \"rows\": 10\n    },\n    {\n      \"kind\": \"typs\",\n      \"label\": \"типи\",\n      \"rows\": 138\n    },\n    {\n      \"kind\": \"organs\",\n      \"label\": \"органи\",\n      \"rows\": 0\n    }\n  ],\n  \"total\": 148\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // no kinds at all: a well-formed empty report with total 0
+        assert_eq!(dict_stats_json(&[]), "{\n  \"dicts\": [],\n  \"total\": 0\n}");
+    }
+
+    #[test]
+    fn dict_stats_out_note_formats_total_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//ds.txt");
+        let line = dict_stats_out_note(947, file);
+        assert_eq!(
+            line,
+            format!("[dict-stats] записано 947 значень → {}", file.display())
+        );
+        assert!(line.starts_with("[dict-stats] "));
+        assert!(line.contains("947"));
+        assert!(line.contains("значень"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the informational zero rule: the note still formats with total = 0
+        assert_eq!(
+            dict_stats_out_note(0, file),
+            format!("[dict-stats] записано 0 значень → {}", file.display())
+        );
     }
 }

@@ -1983,6 +1983,29 @@ impl eframe::App for App {
         {
             self.save_annotation("bookmark", "");
         }
+        // Alt+Up / Alt+Down on the reader page: cycle the edition combo
+        // (поточна ↔ dated editions, wrap-around; one paced text request).
+        let ed_step = ctx.input_mut(|i| {
+            if i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowDown) {
+                Some(1i32)
+            } else if i.consume_key(egui::Modifiers::ALT, egui::Key::ArrowUp) {
+                Some(-1i32)
+            } else {
+                None
+            }
+        });
+        if let Some(step) = ed_step {
+            if self.page == Page::Reader {
+                let next = self.reader.as_ref().and_then(|r| {
+                    let eds: Vec<String> =
+                        r.editions.iter().map(|e| e.datred.to_string()).collect();
+                    crate::views::reader::cycle_edition(&eds, r.cur_edition.as_deref(), step)
+                });
+                if let Some(ed) = next {
+                    self.switch_edition(ed);
+                }
+            }
+        }
         // Alt+1..5: quick page switching (Читалка only with an open document).
         let alt_page = ctx.input_mut(|i| {
             for (k, d) in [

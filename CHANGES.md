@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.40: лічильник збігів у веб-пошуку, `dict-stats` та Alt+↑/↓ для редакцій / find match counter, dict-stats & edition hotkeys
+
+- **UKR:** 1) **«N з M» у пошуку по тексту веб-читалки**: лічильник показує, який збіг зараз і скільки їх усього; «нічого не знайдено» замість тиші, ховається при порожньому запиті й переході на інший акт. 2) **CLI `dict-stats`**: офлайн звіт заповненості словників довідників — «стани: 10 / типи: 138 / органи: 799» + загальна кількість; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). 3) **Alt+↑/↓ у читалці програми** гортають редакції: поточна ↔ dated по колу, один вивірений запит. 4) Тести: 280/280.
+- **ENG:** 1) **An «N з M» counter in the web reader's find bar**: which match is current and how many there are; «нічого не знайдено» instead of silence, hidden on an empty query or a new act. 2) **CLI `dict-stats`**: an offline report of reference-dictionary population — «стани: 10 / типи: 138 / органи: 799» plus a total; `--json` and `--out FILE` (BOM table / BOM-less JSON). 3) **Alt+↑/↓ in the desktop reader** cycle editions: поточна ↔ dated with wrap-around, one paced request. 4) Tests: 280/280.
+
+---
+
+## 2026-10-29
+
 ### 0.10.39: текстовий експорт обраних у веб, спільний JSON анотацій та Ctrl+M / favorites .txt export, shared annotation JSON & Ctrl+M
 
 - **UKR:** 1) **«експорт .txt» на Обраних у веб**: завантажує саме те, що бачиш — поточний фільтр, чип виду і сортування враховуються; перший рядок «Обрані анотації — X з Y», далі кожна анотація у форматі «[вид] назва (номер)» і текст. 2) **CLI `annot`**: `list --json` і `search --json` тепер будуються одним спільним кодом (ті самі сім полів, той самий вигляд байт у байт) із спільною нотаткою «[annot] записано JSON»; нульова таблиця `--out` перевірена — лише BOM. 3) **Ctrl+M у читалці програми** перемкнути форматований/простий текст одним клажем; рядок додано у «клавіші». 4) Тести: 274/274.

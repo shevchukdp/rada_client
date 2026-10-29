@@ -1568,6 +1568,30 @@ pub fn citation_line(title: &str, nreg: &str, edition: Option<&str>) -> String {
     s
 }
 
+/// Cycle the reader edition with Alt+Up/Down: the combo list is
+/// [поточна (`None`), eds[0], eds[1], …] and `delta` steps through it with
+/// wrap-around (`+1` = down, `-1` = up). `None` means nothing to do
+/// (single-entry list, or an edition unknown to the list).
+pub fn cycle_edition(eds: &[String], cur: Option<&str>, delta: i32) -> Option<Option<String>> {
+    let len = eds.len() + 1; // +1 for «поточна ред.»
+    if len <= 1 {
+        return None;
+    }
+    let pos: usize = match cur {
+        None => 0,
+        Some(c) => eds.iter().position(|d| d == c).map(|i| i + 1)?,
+    };
+    let next = (pos as i64 + delta as i64).rem_euclid(len as i64) as usize;
+    if next == pos {
+        return None;
+    }
+    Some(if next == 0 {
+        None
+    } else {
+        Some(eds[next - 1].clone())
+    })
+}
+
 /// Toggle the reader text mode (Ctrl+M / the Форматований-Простий buttons):
 /// returns `(new_raw, toast_label)` — `true` = plain single-style text.
 pub fn toggle_raw_mode(current_raw: bool) -> (bool, &'static str) {
@@ -1901,6 +1925,24 @@ mod tests {
         // A zero delta normalises the unset value to 100.
         assert_eq!(zoom_step(0, 0), 100);
         assert_eq!(zoom_step(180, 0), 180);
+    }
+
+    #[test]
+    fn cycle_edition_walks_combo_with_wrap() {
+        let eds = || vec!["20200101".to_string(), "20220505".to_string()];
+        // down from поточна → newest listed, → older, → wrap to поточна
+        assert_eq!(cycle_edition(&eds(), None, 1), Some(Some("20200101".into())));
+        assert_eq!(cycle_edition(&eds(), Some("20200101"), 1), Some(Some("20220505".into())));
+        assert_eq!(cycle_edition(&eds(), Some("20220505"), 1), Some(None));
+        // up mirrors down
+        assert_eq!(cycle_edition(&eds(), None, -1), Some(Some("20220505".into())));
+        assert_eq!(cycle_edition(&eds(), Some("20220505"), -1), Some(Some("20200101".into())));
+        assert_eq!(cycle_edition(&eds(), Some("20200101"), -1), Some(None));
+        // single-entry list (only поточна): nothing to do
+        assert_eq!(cycle_edition(&[], None, 1), None);
+        assert_eq!(cycle_edition(&[], None, -1), None);
+        // edition not in the list (stale selection): no crash, no move
+        assert_eq!(cycle_edition(&eds(), Some("19990101"), 1), None);
     }
 
     #[test]
