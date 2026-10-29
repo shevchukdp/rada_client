@@ -558,6 +558,22 @@ fn annotation_row(app: &mut App, ui: &mut egui::Ui, a: &rada_db::Annotation, tit
                     app.toast("цилату скопійовано", crate::app::ok());
                 }
                 if ui
+                    .button(egui::RichText::new("копія").small())
+                    .on_hover_text("скопіювати номер документа")
+                    .clicked()
+                {
+                    ui.ctx().copy_text(a.nreg.clone());
+                }
+                if ui
+                    .button(egui::RichText::new("сайт").small())
+                    .on_hover_text("відкрити акт на zakon.rada.gov.ua")
+                    .clicked()
+                {
+                    ui.ctx().open_url(egui::OpenUrl::new_tab(
+                        rada_core::RadaClient::site_url(&a.nreg),
+                    ));
+                }
+                if ui
                     .button(egui::RichText::new("видалити").small())
                     .clicked()
                 {

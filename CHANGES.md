@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.44: рядок прогресу jobs у «Даних», дії рядків Обраних та доведений `card` / job progress line, favorites row actions & tidy card
+
+- **UKR:** 1) **Живий рядок прогресу у веб-«Даних»**: поки завантаження індекса/знімка/резервної копії триває, рядок показує поточну фразу (`«картка 1234/56789: …»`), а по завершенню — лише результат; жодного зайвого таймера. 2) **Рядки Обраних у програмі** тепер такі самі, як у пошуку: «цилата», «копія» (номер) і «сайт» (акт на zakon.rada.gov.ua) — поряд з відкриттям і видаленням. 3) **CLI `card`** доведений до стандарту: тіла stdout і файлу будуються спільним кодом, `--json` отримав власну нотатку «[card] записано JSON», невдала картка не пише файлу. 4) Тести: 303/303.
+- **ENG:** 1) **A live progress line in the web «Дані» panel**: while a sync/snapshot/backup job runs, its row shows the current progress phrase (`«картка 1234/56789: …»`); finished rows show just the result — no extra timers. 2) **Desktop Favorites rows** now match the search rows: «цилата», «копія» (copy nreg) and «сайт» (open the act on zakon.rada.gov.ua) beside open and delete. 3) **CLI `card`** brought to the shared standard: stdout and file bodies built by one code path, `--json` gained its own «[card] записано JSON» note, and a failed card fetch writes no file. 4) Tests: 303/303.
+
+---
+
+## 2026-10-29
+
 ### 0.10.43: «Зміст» складається у веб, `favorites` з CLI та .txt-експорт Обраних у програмі / collapsible outline, CLI favorites & favorites .txt export
 
 - **UKR:** 1) **«Зміст» у веб-читалці тепер складається**: клік по заголовку ховає список і дописує «— згорнуто»; вибір запам'ятається (навіть після перезавантаження сторінки), а стрибки по заголовках лишились ті самі. 2) **CLI `favorites [--kind] [--sort]`**: весь список анотацій офлайн — груповання за номером (типово), або «за назвою», або найновіші; `--kind` приймає і українські мітки (коментарі/виділення/закладки); `--json` (групований або плаский) і `--out FILE` (таблиця з BOM / JSON без BOM). 3) **«експорт .txt» на Обраних у програмі** — саме те, що бачиш: фільтр, чип виду й сортування враховуються, як у вебі. 4) Тести: 298/298.

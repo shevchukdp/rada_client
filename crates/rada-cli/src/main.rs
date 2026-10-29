@@ -127,7 +127,8 @@ enum Cmd {
         json: bool,
         /// Write to this file instead of stdout (parent dirs created).
         /// Plain summary table gets a UTF-8 BOM (Excel-friendly); with
-        /// `--json` the file is written BOM-less.
+        /// `--json` the file is written BOM-less. The live request runs
+        /// first: a failed card fetch is a hard error and writes no file.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -1255,8 +1256,9 @@ fn search_out_note(n: usize, file: &Path) -> String {
 /// stdout body goes to the file (parent dirs created) and nothing prints to
 /// stdout: the human table is written UTF-8 with a BOM (Excel-friendly, like
 /// search/arrivals/resolve/related), the `--json` body BOM-less. The fetch
-/// stays live (one paced request): a fetch failure is a hard error (the
-/// card has no offline cache) and so is a write failure («запис {file}»).
+/// stays live (one paced request) and runs BEFORE any write: a fetch failure
+/// is a hard error that writes no file (the card has no offline cache), as is
+/// a write failure («запис {file}»).
 fn cmd_card(nreg: &str, json: bool, out: Option<&Path>, pace: u64) -> Result<()> {
     let c = client(pace);
     let j = c.card(nreg)?;
@@ -1266,12 +1268,13 @@ fn cmd_card(nreg: &str, json: bool, out: Option<&Path>, pace: u64) -> Result<()>
             if json {
                 // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
                 write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", card_json_out_note(p));
             } else {
                 // human table: UTF-8 BOM prefix, the same Excel-friendly
                 // convention as search/arrivals/resolve/related
                 write_out_file(p, format!("\u{FEFF}{body}\n").as_bytes())?;
+                eprintln!("{}", card_out_note(nreg, p));
             }
-            eprintln!("{}", card_out_note(nreg, p));
             Ok(())
         }
         None => {
@@ -1288,16 +1291,28 @@ fn cmd_card(nreg: &str, json: bool, out: Option<&Path>, pace: u64) -> Result<()>
 /// (plus the BOM in summary mode).
 fn card_body(j: &rada_core::models::LawCardJson, json: bool) -> Result<String> {
     if json {
-        serde_json::to_string_pretty(j).map_err(anyhow::Error::from)
+        card_json_body(j)
     } else {
         Ok(card_summary(j))
     }
 }
 
+/// The `--json` body of `card` (the pure half of [`card_body`], shared by
+/// stdout and `--out` so the two cannot drift): the pretty serialization of
+/// the raw [`rada_core::models::LawCardJson`] exactly as the portal sent it
+/// (optional fields render as `null`; the `dict` / `related` JSON-body
+/// style). stdout prints this string plus a trailing newline; the `--out`
+/// file receives the same bytes BOM-less (machine data, the house JSON rule).
+fn card_json_body(j: &rada_core::models::LawCardJson) -> Result<String> {
+    serde_json::to_string_pretty(j).map_err(anyhow::Error::from)
+}
+
 /// Human-readable summary lines of a live JSON card (the default `card`
-/// stdout). Optional fields print only when present; dates go through
-/// [`fmt_date`].
-fn card_summary(j: &rada_core::models::LawCardJson) -> String {
+/// stdout). Optional fields print only when present — an absent optional
+/// renders NO row at all (no dash placeholder): `None`, blank/whitespace-only
+/// strings, `org == 0` and `is_archive != Some(true)` are all skipped.
+/// Dates go through [`fmt_date`].
+fn card_lines(j: &rada_core::models::LawCardJson) -> Vec<String> {
     let mut lines = vec![
         j.nazva.trim().to_string(),
         format!("nreg    : {}", j.nreg),
@@ -1338,13 +1353,29 @@ fn card_summary(j: &rada_core::models::LawCardJson) -> String {
         lines.push("archive : так".to_string());
     }
     lines.push(format!("editions: {}", j.eds.len()));
-    lines.join("\n")
+    lines
 }
 
-/// The stderr note printed after `card --out` has written `file`, shared by
-/// both the `--json` and the human-table mode (`[card] {nreg} → {file}`).
+/// [`card_lines`] joined with `\n`: the human table printed by `card` on
+/// stdout (and mirrored BOM-prefixed into the `--out` file).
+fn card_summary(j: &rada_core::models::LawCardJson) -> String {
+    card_lines(j).join("\n")
+}
+
+/// The stderr note printed after `card --out` has written the human summary
+/// table to `file` (`[card] {nreg} → {file}` — the single-object label that
+/// mirrors `[export] {nreg} ({fmt}) → {file}`: unlike the count-driven list
+/// notes, the card note names the document instead of a row count).
 fn card_out_note(nreg: &str, file: &Path) -> String {
     format!("[card] {nreg} → {}", file.display())
+}
+
+/// The stderr note printed after `card --json --out` has written the JSON
+/// body to `file` (`[card] записано JSON → {file}` — the same wording as
+/// the `search` / `cache` / `annot list` / `resolve` / `dict` / `related`
+/// JSON notes).
+fn card_json_out_note(file: &Path) -> String {
+    format!("[card] записано JSON → {}", file.display())
 }
 
 fn cmd_text(
@@ -3983,7 +4014,8 @@ mod tests {
         annot_text_file_note, arrivals_date_key,
         arrivals_out_note, backfill_out_note, backfill_summary, backfill_summary_lines,
         cache_dump_filename, cache_dump_lines,
-        cache_search_out_note, card_out_note, dict_fresh_json, dict_fresh_lines, dict_json_body,
+        cache_search_out_note, card_json_body, card_json_out_note, card_lines, card_out_note,
+        dict_fresh_json, dict_fresh_lines, dict_json_body,
         dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, dict_stats_json,
         dict_stats_lines, dict_stats_out_note, export_html,
         grep_body, grep_render,
@@ -4155,6 +4187,154 @@ mod tests {
         assert!(line.contains("2755-17"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn card_lines_renders_present_and_missing_fields() {
+        // Full card: every optional surface present earns its own row,
+        // in the fixed label order (dates via fmt_date, size in bytes).
+        let full = rada_core::models::LawCardJson {
+            nreg: "2755-17".into(),
+            nazva: "  Про Закон  ".into(),
+            status: 5,
+            orgdat: Some(20241115),
+            orgnum: Some(" 2755-IX ".into()),
+            poddat: Some(20241201),
+            pridat: Some(20250101),
+            pidstava: Some("1234-IX".into()),
+            eds: vec![
+                rada_core::models::Edition {
+                    datred: 20241115,
+                    format: Some(1),
+                    pages: None,
+                    size: Some(9),
+                    pidstava: None,
+                },
+                rada_core::models::Edition {
+                    datred: 20241201,
+                    format: None,
+                    pages: None,
+                    size: None,
+                    pidstava: None,
+                },
+            ],
+            minjust: Some("8765".into()),
+            types: "1|2".into(),
+            org: 42,
+            size: Some(1234),
+            is_archive: Some(true),
+        };
+        assert_eq!(
+            card_lines(&full),
+            vec![
+                "Про Закон",
+                "nreg    : 2755-17",
+                "status  : Чинний (5)",
+                "number  : 2755-IX",
+                "adopted : 15.11.2024",
+                "edition : 01.12.2024",
+                "inforce : 01.01.2025",
+                "basis   : 1234-IX",
+                "types   : 1|2",
+                "org     : 42",
+                "minjust : 8765",
+                "size    : 1234 bytes",
+                "archive : так",
+                "editions: 2",
+            ]
+        );
+        // The current plain-printer convention for absent fields: NO row at
+        // all (no dash placeholder). None, whitespace-only strings, org == 0,
+        // is_archive != Some(true) and an empty eds list are all skipped;
+        // nazva is trimmed, and the title + nreg/status/editions rows always
+        // print.
+        let bare = rada_core::models::LawCardJson {
+            nreg: "1-1".into(),
+            nazva: "Про Акт".into(),
+            status: 1,
+            orgnum: Some("   ".into()),
+            pidstava: Some("".into()),
+            minjust: Some(" ".into()),
+            types: "  ".into(),
+            is_archive: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(
+            card_lines(&bare),
+            vec![
+                "Про Акт",
+                "nreg    : 1-1",
+                "status  : Втратив чинність (1)",
+                "editions: 0",
+            ]
+        );
+    }
+
+    #[test]
+    fn card_json_body_renders_fields_and_nulls() {
+        // Exact pretty shape of the raw card Value: struct field order,
+        // 2-space indent, absent optionals as explicit nulls (NOT omitted,
+        // unlike the plain table), nested Edition camelCase fields too;
+        // BOM-less machine data (the house JSON rule).
+        let card = rada_core::models::LawCardJson {
+            nreg: "2755-17".into(),
+            nazva: "Про Закон".into(),
+            status: 5,
+            orgdat: Some(20241115),
+            eds: vec![rada_core::models::Edition {
+                datred: 20241115,
+                format: Some(1),
+                pages: None,
+                size: None,
+                pidstava: None,
+            }],
+            ..Default::default()
+        };
+        let body = card_json_body(&card).unwrap();
+        let expected = r#"{
+  "nreg": "2755-17",
+  "nazva": "Про Закон",
+  "status": 5,
+  "orgdat": 20241115,
+  "orgnum": null,
+  "poddat": null,
+  "pridat": null,
+  "pidstava": null,
+  "eds": [
+    {
+      "datred": 20241115,
+      "format": 1,
+      "pages": null,
+      "size": null,
+      "pidstava": null
+    }
+  ],
+  "minjust": null,
+  "types": "",
+  "org": 0,
+  "size": null,
+  "isArchive": null
+}"#;
+        assert_eq!(body, expected);
+        assert!(!body.starts_with('\u{FEFF}'));
+        // the shared dispatcher renders the very same bytes for both modes
+        assert_eq!(super::card_body(&card, true).unwrap(), body);
+    }
+
+    #[test]
+    fn card_out_note_and_json_note_format() {
+        // plain note keeps the single-object label (mirrors [export]),
+        // the JSON note uses the house «записано JSON» wording
+        let file = std::path::Path::new("out//card.txt");
+        assert_eq!(
+            card_out_note("2755-17", file),
+            format!("[card] 2755-17 → {}", file.display())
+        );
+        let jfile = std::path::Path::new("out//card.json");
+        assert_eq!(
+            card_json_out_note(jfile),
+            format!("[card] записано JSON → {}", jfile.display())
+        );
     }
 
     #[test]

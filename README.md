@@ -123,9 +123,9 @@ official open-data API:
     list (same source as the About dialog's shortcut table).
   - **Favorites (Обране)** — every saved annotation across all documents on one
     page: kind filters, one-click open, «цилата» (copy the full act reference),
-    «експорт .txt» (exactly the filtered/sorted view, web parity), delete;
-    bare bookmarks show an italic context snippet from the offline text
-    cache (GUI and web).
+    «копія» (copy nreg), «сайт» (open on zakon.rada.gov.ua), «експорт .txt»
+    (exactly the filtered/sorted view, web parity), delete; bare bookmarks show
+    an italic context snippet from the offline text cache (GUI and web).
   - **Bandwidth-friendly** — repeated dictionary / arrivals-feed fetches use
     conditional HTTP (`ETag`/`If-None-Match`, `Last-Modified`/`If-Modified-Since`);
     the server's 304 means the body is never re-downloaded (≈200 MB/day limit).
@@ -185,6 +185,7 @@ official open-data API:
   JSON export/import as .json + filtered .txt export), a **«Дані» panel**
   to run live sync, snapshot fetch and **index backup/restore as background jobs**
   (`POST /api/jobs/sync|snapshot|backup|restore|init`, `GET /api/jobs`, `GET /api/backups`),
+  each running job showing its **live progress line** on the 2 s poll,
   including a **full index rebuild from the official dump** as a background job,
   **offline full-text search over cached bodies** («Пошук у тексті»,
   `GET /api/cache/search?q=`, with a «× звичайний пошук» cache-mode banner and
@@ -304,7 +305,7 @@ Launch arguments:
 
 # 3) Live lookups (respect the 5–7 s API pacing).
 .\rada-client.exe card 2755-17          # JSON card with all editions
-.\rada-client.exe card 2755-17 --out card.txt   # summary table to file (BOM); --json --out → BOM-less JSON
+.\rada-client.exe card 2755-17 --out card.txt   # summary table to file (BOM); --json --out → BOM-less JSON; failed fetch writes no file
 .\rada-client.exe text 2755-17          # clean current text (offline cache fallback)
 .\rada-client.exe text 2755-17 --out zakon.txt   # write the text to a file (UTF-8)
 .\rada-client.exe text 2755-17 --edition 20101202

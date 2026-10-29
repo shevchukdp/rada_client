@@ -2700,6 +2700,22 @@ async function startDataJob(kind, body) {
   if (jobsAnyRunning) pollJobs();
 }
 
+/// One row of `#jobs-list`: `[kind] state` plus the outcome `result` once the
+/// job finished; a `running` job instead surfaces its live progress `line`
+/// (muted, small, like the GUI status lines). An empty line renders nothing.
+/// Every server-provided value goes through escHtml.
+function renderJobRow(j) {
+  const row = document.createElement("div");
+  let html = "[" + escHtml(j.kind) + "] " + escHtml(j.state);
+  if (j.state === "running") {
+    if (j.line) html += ' <span class="hint job-line">' + escHtml(j.line) + "</span>";
+  } else if (j.result) {
+    html += " — " + escHtml(j.result);
+  }
+  row.innerHTML = html;
+  return row;
+}
+
 /// Pull /api/jobs: disable buttons while the kind runs, mirror the latest
 /// `line`, and report the transition running → done/error once (status line
 /// + refreshed counters).
@@ -2727,11 +2743,7 @@ async function refreshJobs() {
   if (lines.length) setJobsStatus(lines.join(" · "), "");
   $("jobs-list").textContent = "";
   for (const j of jobs.slice().sort((a, b) => (a.updated || 0) - (b.updated || 0))) {
-    const row = document.createElement("div");
-    row.textContent =
-      "[" + j.kind + "] " + j.state + " — " + (j.line || "") +
-      (j.result ? " · " + j.result : "");
-    $("jobs-list").appendChild(row);
+    $("jobs-list").appendChild(renderJobRow(j));
   }
 }
 

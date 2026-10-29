@@ -1959,6 +1959,77 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("/api/jobs/init"));
     }
 
+    /// The «Дані» job row surfaces the record's live progress `line` while
+    /// the job runs (muted `hint` span, escHtml-escaped), finished jobs keep
+    /// showing `result`, and an empty line renders nothing at all.
+    #[test]
+    fn ui_page_has_job_progress_line() {
+        let start = ui::INDEX_HTML
+            .find("function renderJobRow(j) {")
+            .expect("job row renderer present");
+        let end = start
+            + ui::INDEX_HTML[start..]
+                .find("async function refreshJobs")
+                .expect("renderer defined before refreshJobs");
+        let body = &ui::INDEX_HTML[start..end];
+        assert!(
+            body.contains("j.state === \"running\""),
+            "live line is shown only while the job runs"
+        );
+        assert!(body.contains("escHtml(j.line)"), "server line is escHtml-escaped");
+        assert!(
+            body.contains("class=\"hint job-line\""),
+            "line reuses the muted hint styling"
+        );
+        assert!(body.contains("if (j.line)"), "empty line renders nothing");
+        assert!(body.contains("escHtml(j.kind)"), "kind is escaped");
+        assert!(body.contains("escHtml(j.state)"), "state is escaped");
+        assert!(body.contains("escHtml(j.result)"), "result is escaped");
+        // Finished jobs still show the outcome message (existing behavior).
+        assert!(body.contains("else if (j.result)"), "done/error rows show result");
+    }
+
+    /// The existing jobs poll feeds the line repaint: `pollJobs` keeps its
+    /// single 2 s timer, each tick runs `refreshJobs`, which pulls the
+    /// `/api/jobs` payload and hands every record (with its `.line`) to
+    /// `renderJobRow`. No new interval is introduced anywhere in the area.
+    #[test]
+    fn ui_page_has_job_progress_polled() {
+        let poll_at = ui::INDEX_HTML
+            .find("function pollJobs() {")
+            .expect("poll loop present");
+        let poll_body = &ui::INDEX_HTML[poll_at..poll_at + 400];
+        assert!(poll_body.contains("setInterval("), "poll keeps its timer");
+        assert!(poll_body.contains("refreshJobs()"), "each tick refreshes jobs");
+        assert!(poll_body.contains("2000"), "cadence unchanged (2 s)");
+
+        let start = ui::INDEX_HTML
+            .find("async function refreshJobs() {")
+            .expect("refresh present");
+        let end = start
+            + ui::INDEX_HTML[start..]
+                .find("function onJobFinished")
+                .expect("refresh ends at onJobFinished");
+        let body = &ui::INDEX_HTML[start..end];
+        assert!(body.contains("\"/api/jobs\""), "poll reads the job registry");
+        assert!(body.contains("renderJobRow(j)"), "payload records reach the renderer");
+        assert!(!body.contains("setInterval("), "refresh itself schedules nothing");
+
+        // The whole jobs area owns exactly one timer (the pre-existing poll).
+        let area_at = ui::INDEX_HTML
+            .find("// ---- background data jobs")
+            .expect("jobs area marker");
+        let area_end = ui::INDEX_HTML[area_at..]
+            .find("// ---- backup / restore")
+            .expect("backup area marker")
+            + area_at;
+        assert_eq!(
+            ui::INDEX_HTML[area_at..area_end].matches("setInterval(").count(),
+            1,
+            "no new intervals: the line repaint reuses the existing jobs poll"
+        );
+    }
+
     // ---- full-dump index build («Повна побудова індексу») --------------------
 
     /// `POST /api/jobs/init` shape through the shared start path. The real
