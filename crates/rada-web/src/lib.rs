@@ -4556,4 +4556,65 @@ mod tests {
         let stats = f.find("renderDocStats();").expect("stats paint with the body");
         assert!(paint < stats, "the stats line repaints on every body render");
     }
+
+    #[test]
+    fn ui_page_has_article_copy_button() {
+        // Per-heading «копія» chip (the GUI's «копія» quick-action wording,
+        // favorites.rs/search.rs): appended by buildToc INSIDE each heading
+        // block, from the very loop over the toc's own ".p-section,
+        // .p-article" selector — so a chip exists exactly where a «Зміст»
+        // entry does, and the two can never diverge. It reuses the shared
+        // chip class, carries the plain (emoji-free, arrow-free) «копія»
+        // label and the lowercase «скопіювати текст статті» hover hint, and
+        // a named perf cap skips the buttons on enormous documents.
+        assert!(ui::INDEX_HTML.contains("const ARTICLE_COPY_MAX = 400;"),
+            "the perf cap is a named const");
+        let b = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function buildToc() {")
+            .expect("buildToc")..];
+        let b = &b[..b.find("\n}").expect("buildToc end")];
+        // the SAME selector «Зміст» lists from — chips mirror the outline.
+        assert!(b.contains("querySelectorAll(\".p-section, .p-article\")"),
+            "chips follow the toc's own article selector");
+        assert!(b.contains("heads.length <= ARTICLE_COPY_MAX"),
+            "the cap guards the button pass, not the outline");
+        assert!(b.contains("cp.className = \"chip p-copy\""),
+            "reuses the existing chip styling");
+        assert!(b.contains("cp.textContent = \"копія\""));
+        assert!(b.contains("cp.title = \"скопіювати текст статті\""));
+        assert!(b.contains("h.appendChild(cp);"),
+            "the chip lives inside the heading block itself");
+    }
+
+    #[test]
+    fn ui_page_has_article_copy_excludes_label() {
+        // The clipboard payload is captured at BUILD time: the heading text
+        // is read into `title`/`artText` before h.appendChild(cp), so the
+        // chip's own «копія» label is structurally absent from the copied
+        // string; the click reuses the shared copyText with the
+        // «скопійовано» flash (stopPropagation first). Find-highlight safety
+        // is structural too: runFind's TreeWalker skips every text node
+        // whose ancestor is a .p-copy chip, so the label never becomes a
+        // find hit, and the counter's total reads the raw state.curText,
+        // never the marked-up DOM.
+        let b = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function buildToc() {")
+            .expect("buildToc")..];
+        let b = &b[..b.find("\n}").expect("buildToc end")];
+        let read = b.find("const title = h.textContent").expect("heading text read");
+        let cap = b.find("const artText = title.trim()").expect("build-time capture");
+        let append = b.find("h.appendChild(cp);").expect("chip appended");
+        assert!(read < cap, "the capture reads the text already held in title");
+        assert!(cap < append,
+            "the copied text is captured BEFORE the chip enters the DOM — the label can never reach the clipboard");
+        assert!(b.contains("ev.stopPropagation(); copyText(artText, cp, \"скопійовано\")"),
+            "shared copyText with the «скопійовано» flash, no row click");
+        let r = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function runFind() {")
+            .expect("runFind")..];
+        let r = &r[..r.find("\n}").expect("runFind end")];
+        assert!(r.contains("closest(\".p-copy\")"),
+            "the find walker structurally skips the chip labels");
+        assert!(r.contains("NodeFilter.SHOW_TEXT"), "the walker is still the find pipeline");
+    }
 }

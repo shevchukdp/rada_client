@@ -333,11 +333,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
 
         // ---- toolbar: text filter + kind chips + grouping toggle -----
         ui.horizontal_wrapped(|ui| {
+            let want_f = app.take_focus(crate::app::FocusReq::FavoritesFilter);
             let fr = ui.add_sized(
                 [300.0, 24.0],
                 egui::TextEdit::singleline(&mut app.fav.filter)
                     .hint_text("фільтр тексту чи назви…"),
             );
+            if want_f {
+                fr.request_focus();
+            }
             // Persist when the edit commits (focus lost) — not per keystroke.
             if fr.lost_focus() && app.settings.fav_filter != app.fav.filter {
                 app.settings.fav_filter = app.fav.filter.clone();

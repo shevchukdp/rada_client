@@ -418,6 +418,16 @@
   #doc-text .p-article {
     font-weight: 700; font-size: 1.08em; margin: 14px 0 4px;
   }
+  /* Per-heading «копія» chip (the GUI's «копія» quick-action wording) added
+     by buildToc INSIDE each «Зміст» heading block: same chip language as the
+     per-hit quick actions, floated to the line's right end. */
+  #doc-text .p-copy {
+    float: right; margin-left: 8px;
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 1px 10px; font-size: 12px; cursor: pointer;
+  }
+  #doc-text .p-copy:hover { color: var(--text); border-color: var(--accent); }
+  #doc-text .p-copy.ok { color: var(--ok); border-color: var(--ok); }
   #doc-text .p-num {
     padding-left: 18px; text-indent: 0; margin: 3px 0;
   }
@@ -2179,8 +2189,19 @@ function tocIsSection(t) {
   return l.startsWith("РОЗДІЛ") || l.startsWith("ГЛАВА");
 }
 
+/// Perf cap for the per-heading «копія» chips: acts with more headings than
+/// this skip the buttons entirely (thousands of extra nodes and listeners
+/// buy nothing, while the outline itself stays complete).
+const ARTICLE_COPY_MAX = 400;
+
 /// Rebuild #toc-list from the current heading blocks; the toggle is hidden
-/// when the document has fewer than 2 headings.
+/// when the document has fewer than 2 headings. Every listed heading also
+/// gets a «копія» chip appended INSIDE the block (the GUI's «копія»
+/// quick-action wording, one chip per «Зміст» entry, same selector): the
+/// copied text is captured here at build time — `title` is read BEFORE the
+/// chip is appended — so the button's own label can never leak into the
+/// clipboard, and runFind skips the chip subtree so its label never becomes
+/// a find hit either.
 function buildToc() {
   const list = $("toc-list");
   list.innerHTML = "";
@@ -2193,6 +2214,7 @@ function buildToc() {
   }
   btn.hidden = false;
   paintTocHeader(heads.length);
+  const withCopy = heads.length <= ARTICLE_COPY_MAX;
   for (const h of heads) {
     const title = h.textContent || "";
     const row = document.createElement("div");
@@ -2202,6 +2224,16 @@ function buildToc() {
     row.style.paddingLeft = tocIsSection(title) ? "0px" : "14px";
     row.onclick = () => h.scrollIntoView({ behavior: "smooth", block: "start" });
     list.appendChild(row);
+    if (withCopy) {
+      const artText = title.trim(); // captured before the chip enters the DOM
+      const cp = document.createElement("button");
+      cp.type = "button";
+      cp.className = "chip p-copy";
+      cp.title = "скопіювати текст статті";
+      cp.textContent = "копія";
+      cp.onclick = (ev) => { ev.stopPropagation(); copyText(artText, cp, "скопійовано"); };
+      h.appendChild(cp);
+    }
   }
 }
 
@@ -2343,7 +2375,14 @@ function runFind() {
   const lowQ = q.toLowerCase();
   const walker = document.createTreeWalker(pre, NodeFilter.SHOW_TEXT);
   const nodes = [];
-  while (walker.nextNode()) nodes.push(walker.currentNode);
+  while (walker.nextNode()) {
+    const n = walker.currentNode;
+    // The «копія» chips are UI chrome, not act text: skipping their subtree
+    // keeps the labels out of the hits (the counter's total already comes
+    // from the raw state.curText in countMatches, never from the DOM).
+    if (n.parentElement && n.parentElement.closest(".p-copy")) continue;
+    nodes.push(n);
+  }
   for (const node of nodes) {
     const data = node.data, low = data.toLowerCase();
     let last = 0;

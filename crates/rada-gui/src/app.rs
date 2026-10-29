@@ -207,6 +207,8 @@ pub struct App {
 pub enum FocusReq {
     ReaderFind,
     SearchQuery,
+    ArrivalsFilter,
+    FavoritesFilter,
 }
 
 pub struct Toast {
@@ -2024,11 +2026,14 @@ impl eframe::App for App {
         self.refresh_theme(ctx);
 
         // ---- global keyboard shortcuts ---------------------------------
-        // Ctrl+F: focus the find field (reader) or the query field (search).
+        // Ctrl+F: focus the find field (reader), the query field (search),
+        // the arrivals filter or the favorites filter.
         if ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::F)) {
             self.focus_req = match self.page {
                 Page::Reader => Some(FocusReq::ReaderFind),
                 Page::Search => Some(FocusReq::SearchQuery),
+                Page::Arrivals => Some(FocusReq::ArrivalsFilter),
+                Page::Favorites => Some(FocusReq::FavoritesFilter),
                 _ => None,
             };
         }

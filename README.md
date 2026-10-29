@@ -112,8 +112,9 @@ official open-data API:
   - **About dialog («Про програму»)** — version, index path/size/docs, freshest
     fetched data, dictionaries, live-request counter, API limits and links;
     the web footer shows the same version (`version` in `/api/status`).
-  - **Keyboard shortcuts** — **Ctrl+F** focuses the find-in-text field (reader)
-    or the query field (search); **Ctrl+K** jumps to Пошук with the query
+  - **Keyboard shortcuts** — **Ctrl+F** focuses the find-in-text field (reader),
+    the query field (search) or the text filter (arrivals/favorites);
+    **Ctrl+K** jumps to Пошук with the query
     focused; **Ctrl+B** bookmarks the open act; **Ctrl+M** toggles the reader's
     форматований/простий text mode; **Ctrl+Enter** opens the top search hit (or
     the top visible arrival) in the reader; **F5** re-fetches the reader text; **Esc** clears the find query;
@@ -213,7 +214,11 @@ official open-data API:
   title, the desktop app's own counting rules, hidden until the text loads),
   **web reader outline («Зміст»** —
   smooth-scroll jump list of «Розділ/Глава/Стаття» headings, collapsible with a
-  persisted «— згорнуто» choice),
+  persisted «— згорнуто» choice), each outline heading carrying its own
+  **«копія» chip** (copies that «Стаття/Розділ/Глава» heading to the clipboard
+  with the shared «скопійовано» flash; the chip label never enters the
+  clipboard or the find highlights, and it's skipped in docs with over 400
+  headings),
   **reader copy-text + reading-time stats** (clipboard button and a muted
   «N слів · M симв. · ~K хв» label),
   **reader export buttons** (`.md` / `.txt` / `.html` download the open act
@@ -350,6 +355,7 @@ Launch arguments:
 .\rada-client.exe dates                  # offline year histogram of adoption dates («без дати» + «найновіший рік»); --json / --out too
 .\rada-client.exe orgs                   # offline top publishers by document count + «всього документів»; --limit ≤200, --json / --out too
 .\rada-client.exe statuses               # offline status distribution (dict labels) + «всього документів»; --json / --out too
+.\rada-client.exe months                 # offline month histogram of one year (--year РРРР, always 12 rows + «разом»); --json / --out too
 
 # 4) Keep the index current.
 .\rada-client.exe sync                   # dictionaries + updated-documents feed

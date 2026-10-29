@@ -207,11 +207,15 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
         });
         ui.horizontal(|ui| {
             ui.label(egui::RichText::new("Фільтр:").small());
+            let want_f = app.take_focus(crate::app::FocusReq::ArrivalsFilter);
             let fr = ui.add_sized(
                 [280.0, 24.0],
                 egui::TextEdit::singleline(&mut app.arrivals.filter)
                     .hint_text("назва, номер чи публікація"),
             );
+            if want_f {
+                fr.request_focus();
+            }
             // Persist when the edit commits (focus lost) — not per keystroke.
             if fr.lost_focus() && app.settings.arr_filter != app.arrivals.filter {
                 app.settings.arr_filter = app.arrivals.filter.clone();

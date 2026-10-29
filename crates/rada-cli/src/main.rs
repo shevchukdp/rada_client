@@ -35,6 +35,13 @@
 //!               `search --date-from/--date-to` filters use
 //!               (`--json` for machine-readable output, `--out` to write
 //!               the report; informational — never exits nonzero);
+//! - `months`   offline month-by-month document-date histogram of
+//!               `org_date` for one year (default: the newest one in the
+//!               index) — the month-level companion of `dates`, which
+//!               stops at year granularity
+//!               (`--year YYYY`, `--json` for machine-readable output,
+//!               `--out` to write the report; informational — never
+//!               exits nonzero);
 //! - `orgs`      offline top-publishers histogram on `org_num` — which
 //!               «органи» issued the most documents, labels from the
 //!               offline `organs` dictionary
@@ -495,6 +502,35 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Offline «how is one year distributed»: month-by-month
+    /// document-date histogram of `org_date` within a single year — the
+    /// month-level companion of `dates` (which stops at year
+    /// granularity). The year defaults to the newest one present in the
+    /// index (the `dates` verdict rule); `--year YYYY` picks any. All
+    /// twelve months ALWAYS render — a month without a single document
+    /// shows `0` — so the report is a stable 12-line grid; only full
+    /// 8-digit `org_date` values count (a row whose month or day part is
+    /// malformed passes `dates`' year histogram but matches no month).
+    /// Pure offline: the command never touches the network;
+    /// informational — always exits 0, even when every month is empty
+    /// (header + 12 zero rows + «разом: 0»).
+    Months {
+        /// Year to histogram: exactly 4 digits (e.g. 2026).
+        /// Default: the newest year present in the index.
+        #[arg(long)]
+        year: Option<String>,
+        /// Emit the JSON body
+        /// (`{"months":[{count,month},…],"total":N,"year":"YYYY"}`)
+        /// instead of the report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less; the `[months] записано …` note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Offline «who publishes the most»: top publishers histogram on the
     /// `org_num` column of `docs` — which «органи» issued the most
     /// documents, with labels resolved from the offline `organs`
@@ -765,6 +801,9 @@ fn run() -> Result<()> {
             cmd_favorites(&cli.db, kind.as_deref(), &sort, json, out.as_deref())
         }
         Cmd::Dates { json, out } => cmd_dates(&cli.db, json, out.as_deref()),
+        Cmd::Months { year, json, out } => {
+            cmd_months(&cli.db, year.as_deref(), json, out.as_deref())
+        }
         Cmd::Orgs { limit, json, out } => {
             cmd_orgs(&cli.db, limit, json, out.as_deref())
         }
@@ -4465,6 +4504,196 @@ fn cmd_dates(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
     Ok(())
 }
 
+/// One `months` histogram row: the two-digit month substring
+/// (`substr(org_date,5,2)`, `'01'..='12'`) within the selected year of
+/// the primary date column (`org_date` — the same column the
+/// `search --date-from/--date-to` filters compare against) and the
+/// number of documents carrying it.
+struct MonthRow {
+    month: String,
+    count: i64,
+}
+
+/// Validate the `months --year` option (the `normalize_hits_format`
+/// house rule: a clear Ukrainian error, exit 1 through `main`): absent
+/// means "the newest year present in the index" (`Ok(None)` — the
+/// `dates` verdict rule the caller resolves via SQL); present must be
+/// exactly four ASCII digits (`"2026"`, surrounding whitespace
+/// trimmed), anything else — `"26"`, `"abcd"`, the empty string — fails
+/// with «рік має бути РРРР (наприклад 2026)».
+fn normalize_month_year(year: Option<&str>) -> Result<Option<String>> {
+    match year {
+        None => Ok(None),
+        Some(y) => {
+            let y = y.trim();
+            if y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()) {
+                Ok(Some(y.to_string()))
+            } else {
+                Err(anyhow::anyhow!("рік має бути РРРР (наприклад 2026)"))
+            }
+        }
+    }
+}
+
+/// The report body of `months` (shared by stdout and `--out` so the two
+/// cannot drift): «Документи {year} за місяцями:» header, then one
+/// `{year}-{month}: {count}` line for EVERY month `'01'..='12'` — a
+/// month the histogram has no row for is zero-filled by the renderer
+/// (the stable 12-line grid decision documented in the `--help`) —
+/// counts render plain like the `dates`/`stats` numbers; then the
+/// verdict «разом: {sum}» over the twelve rendered counts (the
+/// documents of the year with a full 8-digit date, NOT the whole
+/// index). Informational: an all-zero year still renders the header,
+/// the 12 zero rows and «разом: 0», and the run exits 0.
+fn months_lines(year: &str, rows: &[MonthRow]) -> Vec<String> {
+    let mut lines = vec![format!("Документи {year} за місяцями:")];
+    let mut total: i64 = 0;
+    for m in 1..=12 {
+        let month = format!("{m:02}");
+        let count = rows
+            .iter()
+            .find(|r| r.month == month)
+            .map(|r| r.count)
+            .unwrap_or(0);
+        total += count;
+        lines.push(format!("{year}-{month}: {count}"));
+    }
+    lines.push(format!("разом: {total}"));
+    lines
+}
+
+/// The `--json` body of `months` (shared by stdout and `--out` so the
+/// two cannot drift): the pretty
+/// `{"months":[{count,month},…],"total":N,"year":"YYYY"}` object built
+/// as hand-rolled `serde_json::Value`s like the other commands' JSON
+/// bodies (map keys sort, so `months`/`total`/`year` and the
+/// `count`/`month` inside every entry keep their alphabetical order).
+/// The twelve entries are the zero-filled `'01'..='12'` grid (the same
+/// stable-grid decision as [`months_lines`]); `total` is the sum of the
+/// twelve counts. stdout prints exactly this string plus a trailing
+/// newline; the `--out` file receives the same bytes BOM-less (machine
+/// data, the house JSON rule).
+fn months_json(year: &str, rows: &[MonthRow]) -> String {
+    let mut total: i64 = 0;
+    let months: Vec<serde_json::Value> = (1..=12)
+        .map(|m| {
+            let month = format!("{m:02}");
+            let count = rows
+                .iter()
+                .find(|r| r.month == month)
+                .map(|r| r.count)
+                .unwrap_or(0);
+            total += count;
+            serde_json::json!({ "month": month, "count": count })
+        })
+        .collect();
+    let value = serde_json::json!({ "months": months, "total": total, "year": year });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `months --out` has written `file`
+/// (the histogrammed `year`, the same wording in both modes):
+/// `[months] записано {year} рік → {file}`.
+fn months_out_note(year: &str, file: &Path) -> String {
+    format!("[months] записано {year} рік → {}", file.display())
+}
+
+/// Offline «how is one year distributed» (`months`): the month-by-month
+/// document-date distribution of `org_date` within ONE year — the
+/// month-level companion of `dates` (which stops at year granularity),
+/// so `dates`' year count and this grid's «разом» agree whenever the
+/// dates are well-formed 8-digit values. Never builds a client, never
+/// touches the network. A missing index file is a hard error
+/// («індекс не знайдено: …», the `stats`/`verify` rule). The year comes
+/// from `--year` after [`normalize_month_year`] (a malformed value is a
+/// hard error, exit 1); absent, it defaults to the newest year of the
+/// index — `MAX(substr(org_date,1,4))` over the same
+/// `GLOB '[0-9][0-9][0-9][0-9]*'` year-prefix guard as `dates` (an
+/// index without a single dated row falls back to `0000`, which renders
+/// the all-zero grid). The histogram comes straight from `docs` through
+/// the connection `rada_db::open` returns (the `verify` / `dict-stats`
+/// direct-SQL idiom): `substr(org_date,5,2)` grouped over the rows
+/// passing `GLOB '{year}[0-9][0-9][0-9][0-9]'` — the four-digit year
+/// plus the four `MMDD` digits of the 8-digit `YYYYMMDD` contract (the
+/// year is validated four-digit, so the interpolation is safe), ordered
+/// ascending; the renderer zero-fills the missing months. Informational:
+/// the run always exits 0. With `--out` the exact stdout body goes to
+/// the file (parent dirs created) and nothing prints to stdout: the
+/// plain report is written UTF-8 with a BOM (Excel-friendly, like
+/// search/arrivals/stats/verify), the `--json` body BOM-less; one
+/// `[months] записано {year} рік → {file}` note goes to stderr. The
+/// header always renders, so the file is never BOM-alone.
+fn cmd_months(db: &PathBuf, year: Option<&str>, json: bool, out: Option<&Path>) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    let year = normalize_month_year(year)?;
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    // Default year: the newest one present in the index (the `dates`
+    // verdict rule — same GLOB guard, MAX over the four-digit prefix);
+    // an index with no dated row at all reports the all-zero `0000`.
+    let year: String = match year {
+        Some(y) => y,
+        None => conn
+            .query_row(
+                "SELECT MAX(substr(org_date,1,4)) FROM docs
+                 WHERE org_date GLOB '[0-9][0-9][0-9][0-9]*'",
+                [],
+                |r| r.get::<_, Option<String>>(0),
+            )
+            .unwrap_or(None)
+            .unwrap_or_else(|| "0000".to_string()),
+    };
+    let mut rows: Vec<MonthRow> = Vec::new();
+    let mut stmt = conn
+        .prepare(&format!(
+            "SELECT substr(org_date,5,2) AS m, COUNT(*) FROM docs
+             WHERE org_date GLOB '{year}[0-9][0-9][0-9][0-9]'
+             GROUP BY m ORDER BY m",
+        ))
+        .context("prepare months histogram")?;
+    let mut mapped = stmt
+        .query_map([], |r| {
+            Ok(MonthRow {
+                month: r.get(0)?,
+                count: r.get(1)?,
+            })
+        })
+        .context("run months histogram")?;
+    while let Some(row) = mapped.next().transpose()? {
+        rows.push(row);
+    }
+    if json {
+        let body = months_json(&year, &rows);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", months_out_note(&year, p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = months_lines(&year, &rows);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout report (the header always renders, so never
+            // BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", months_out_note(&year, p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One `orgs` histogram row: the publisher id as stored in the TEXT
 /// `org_num` column (the empty string is the «publisher unknown»
 /// convention), its label resolved from the offline `organs` dictionary
@@ -4927,8 +5156,9 @@ mod tests {
         grep_body, grep_render,
         export_markdown, export_out_note, export_plain, favorites_json_body,
         favorites_json_out_note, favorites_lines, favorites_out_note, facet_lines, filter_since,
-        new_nregs, normalize_fav_kind, normalize_hits_format,
+        new_nregs, normalize_fav_kind, normalize_hits_format, normalize_month_year,
         hits_lines, hits_md_lines, hits_out_note,
+        months_json, months_lines, months_out_note,
         normalize_fmt, out_note, orgs_json, orgs_lines, orgs_out_note,
         recent_json_body, recent_json_out_note, recent_lines,
         recent_out_note, related_json_body, related_json_out_note, related_out_note,
@@ -4939,6 +5169,7 @@ mod tests {
         toc_out_note, verify_lines, verify_out_note, DictStat, FavRow, FavSort, HitsFormat,
         OrgRow,
         RecentRow, StatsInfo, StatusRow, TocEntry, YearRow,
+        MonthRow,
         VerifyCheck, VerifyStatus,
     };
 
@@ -6824,6 +7055,107 @@ mod tests {
         assert_eq!(
             dates_out_note(0, file),
             format!("[dates] записано 0 років → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn normalize_month_year_rejects_garbage() {
+        // accepted: the absent option (None → the caller resolves the
+        // newest index year, the `dates` verdict rule) and exactly four
+        // ASCII digits
+        assert_eq!(normalize_month_year(None).unwrap(), None);
+        assert_eq!(
+            normalize_month_year(Some("2026")).unwrap(),
+            Some("2026".to_string())
+        );
+        // rejected: anything that is not РРРР — the exact house error
+        // text (exit 1 through `main`)
+        for bad in ["26", "abcd", ""] {
+            let err = normalize_month_year(Some(bad)).unwrap_err().to_string();
+            assert_eq!(err, "рік має бути РРРР (наприклад 2026)");
+        }
+    }
+
+    #[test]
+    fn months_lines_renders_all_twelve_months_and_total() {
+        // header + a STABLE 12-line grid: every month '01'..='12' gets
+        // its «{year}-{month}: {count}» line even when the histogram has
+        // no row for it (the renderer zero-fills the absent months),
+        // then the «разом» verdict over the twelve rendered counts
+        // (informational — the command still exits 0)
+        let rows = vec![
+            MonthRow { month: "03".into(), count: 4 },
+            MonthRow { month: "11".into(), count: 2 },
+        ];
+        let mut expected = vec!["Документи 2026 за місяцями:".to_string()];
+        for m in 1..=12 {
+            let count = match m {
+                3 => 4,
+                11 => 2,
+                _ => 0,
+            };
+            expected.push(format!("2026-{m:02}: {count}"));
+        }
+        expected.push("разом: 6".to_string());
+        assert_eq!(months_lines("2026", &rows), expected);
+        // all-zero year: the header + 12 zero rows + «разом: 0» still
+        // render (the informational rule, the `dates` empty idiom)
+        let lines = months_lines("1701", &[]);
+        assert_eq!(lines.len(), 14);
+        assert_eq!(lines[0], "Документи 1701 за місяцями:");
+        assert_eq!(lines[1], "1701-01: 0");
+        assert_eq!(lines[12], "1701-12: 0");
+        assert_eq!(lines[13], "разом: 0");
+    }
+
+    #[test]
+    fn months_json_renders_months_and_total() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «months»/«total»/«year» keep their alphabetical order,
+        // as do «count»/«month» inside every entry; the twelve entries
+        // are the zero-filled '01'..='12' grid (the `months_lines`
+        // stable-grid decision) and «total» sums the twelve counts
+        let rows = vec![MonthRow { month: "07".into(), count: 7 }];
+        let body = months_json("2026", &rows);
+        let entries: Vec<String> = (1..=12)
+            .map(|m| {
+                let count = if m == 7 { 7 } else { 0 };
+                format!("    {{\n      \"count\": {count},\n      \"month\": \"{m:02}\"\n    }}")
+            })
+            .collect();
+        let expected = format!(
+            "{{\n  \"months\": [\n{}\n  ],\n  \"total\": 7,\n  \"year\": \"2026\"\n}}",
+            entries.join(",\n")
+        );
+        assert_eq!(body, expected);
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // all-zero year: a well-formed 12-entry zero report
+        let body = months_json("1701", &[]);
+        assert!(body.contains("\"total\": 0"));
+        assert!(body.contains("\"year\": \"1701\""));
+        assert_eq!(body.matches("\"month\"").count(), 12);
+    }
+
+    #[test]
+    fn months_out_note_formats_year_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//m.txt");
+        let line = months_out_note("2026", file);
+        assert_eq!(
+            line,
+            format!("[months] записано 2026 рік → {}", file.display())
+        );
+        assert!(line.starts_with("[months] "));
+        assert!(line.contains("2026"));
+        assert!(line.contains("рік"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the informational zero rule: the note still formats for an
+        // all-zero year
+        assert_eq!(
+            months_out_note("1701", file),
+            format!("[months] записано 1701 рік → {}", file.display())
         );
     }
 
