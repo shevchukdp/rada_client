@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.42: «цилата» в Обраних (програма і веб) та `recent` з CLI / favorites citation & recent annotations
+
+- **UKR:** 1) **«цилата» на кожному рядку Обраних** — і в програмі, і у веб: копіює повне посилання на акт (««Назва» // Офіційний вебпортал парламенту України. URL: …») у той самий формат, що й читалка; у веб ще й блимає «скопійовано» на кнопці. 2) **CLI `recent [--limit N]`**: найсвіжіші анотації з усіх документів одним списком (як «новіші» в Обраних програми) — назва або номер, вид, час і текст; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). Офлайн. 3) Тести: 291/291.
+- **ENG:** 1) **A «цилата» button on every Favorites row — in the app and the web**: copies the full reference (««Title» // Офіційний вебпортал парламенту України. URL: …») in exactly the reader's format; the web button also flashes «скопійовано». 2) **CLI `recent [--limit N]`**: the freshest annotations across all documents in one list (the app Favorites' «новіші» view) — title or number, kind, time and text; `--json` and `--out FILE` (BOM table / BOM-less JSON). Fully offline. 3) Tests: 291/291.
+
+---
+
+## 2026-10-29
+
 ### 0.10.41: швидкі чипи статусу у веб, `backfill --out` та експорт порівняння редакцій / status quick chips, backfill --out & compare export
 
 - **UKR:** 1) **Чипи статусу під фільтрами веб-пошуку**: до трьох частих статусів зі словника одним кліком (без розгорнутого списку) плюс «Усі»; чипи беруться з самого списку статусів, підсвічують обраний і повторюють пошук; працюють і для посилань `?status=`. 2) **CLI `backfill --out FILE`**: підсумковий звіт доповнення кеша тепер їде у файл (таблиця з BOM / `--json` без BOM), рядки прогресу лишаються у stdout; порожній пошук — лише BOM. 3) **«експорт звіту» у панелі «Порівняти редакції»** програми: зберігає порівняння двох редакцій у .txt — з назвою акта, номером, обома редакціями й усіма рядками звіту. 4) Тести: 285/285.

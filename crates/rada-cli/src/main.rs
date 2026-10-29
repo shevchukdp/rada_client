@@ -371,6 +371,27 @@ enum Cmd {
         #[command(subcommand)]
         what: AnnCmd,
     },
+    /// Offline «what did I highlight lately»: the most recently saved
+    /// annotations across all documents (`created_at` descending — the GUI
+    /// favorites «новіші» sort). Pure offline: the command never touches
+    /// the network.
+    Recent {
+        /// Max annotations to print (default 20, clamped to 1..=500).
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+        /// Emit the JSON array (`[{nreg,kind,created_at,text,title},…]`)
+        /// instead of the table.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout table (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain table gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less. Zero annotations write the BOM alone; the «Останніх
+        /// анотацій немає» line stays on stdout (the house `search --out`
+        /// zero-hit rule); the note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Offline export of a CACHED document body as md / txt / html: the
     /// text comes from the local text cache only — the command never
     /// touches the network. Export the current edition; read the document
@@ -588,6 +609,7 @@ fn run() -> Result<()> {
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
         Cmd::Status => cmd_status(&cli.db),
         Cmd::Annot { what } => cmd_annot(&cli.db, what),
+        Cmd::Recent { limit, json, out } => cmd_recent(&cli.db, limit, json, out.as_deref()),
         Cmd::Export { nreg, fmt, out } => {
             cmd_export(&cli.db, &nreg, &fmt, out.as_deref())
         }
@@ -3363,6 +3385,180 @@ fn annot_text_file_note(chars: usize, file: &Path) -> String {
     format!("[annot] текст {chars} симв. з {}", file.display())
 }
 
+/// One `recent` row: the annotation surfaces the view renders, with the
+/// title resolved from the offline index (`title_by_nreg`; empty when the
+/// nreg is not indexed, then the row renders its own nreg). `created_at` is
+/// the stored UTC `YYYY-MM-DD HH:MM:SS` stamp, printed verbatim like
+/// `annot list` does.
+struct RecentRow {
+    nreg: String,
+    kind: String,
+    created_at: String,
+    text: String,
+    title: String,
+}
+
+/// The plain-table body of `recent` (shared by stdout and `--out` so the
+/// two cannot drift): «Останні анотації ({n}):» header, then a compact
+/// two-line block per row — `[{kind}] {title||nreg} · {created_at}` and
+/// the indented text (trimmed, newlines folded to spaces, truncated to 60
+/// chars like [`annot_table_lines`]; an empty text — bookmarks — renders no
+/// text line). Zero rows render the single stdout-only «Останніх анотацій
+/// немає» line (the house `search --out` rule): the `--out` file carries
+/// the BOM alone, the message never enters it.
+fn recent_lines(rows: &[RecentRow]) -> Vec<String> {
+    if rows.is_empty() {
+        return vec!["Останніх анотацій немає".to_string()];
+    }
+    let mut lines = Vec::with_capacity(1 + 2 * rows.len());
+    lines.push(format!("Останні анотації ({}):", rows.len()));
+    for r in rows {
+        let label = if r.title.trim().is_empty() {
+            r.nreg.as_str()
+        } else {
+            r.title.trim()
+        };
+        lines.push(format!("[{}] {label} · {}", r.kind, r.created_at));
+        let t: String = r
+            .text
+            .trim()
+            .chars()
+            .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+            .take(60)
+            .collect();
+        if !t.is_empty() {
+            lines.push(format!("  {t}"));
+        }
+    }
+    lines
+}
+
+/// The `--json` body of `recent` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty `[{nreg,kind,created_at,text,title},…]` array
+/// built as hand-rolled `serde_json::Value`s like the other commands' JSON
+/// bodies (map keys sort). stdout prints exactly this string plus a
+/// trailing newline; the `--out` file receives the same bytes BOM-less
+/// (machine data, the house JSON rule). Empty: a plain `[]`.
+fn recent_json_body(rows: &[RecentRow]) -> String {
+    let items: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "nreg": r.nreg,
+                "kind": r.kind,
+                "created_at": r.created_at,
+                "text": r.text,
+                "title": r.title,
+            })
+        })
+        .collect();
+    serde_json::to_string_pretty(&serde_json::Value::Array(items))
+        .unwrap_or_else(|_| "[]".to_string())
+}
+
+/// The stderr note printed after `recent --out` has written the plain
+/// table (`n` annotations) to `file`.
+fn recent_out_note(n: usize, file: &Path) -> String {
+    format!("[recent] записано {n} анотацій → {}", file.display())
+}
+
+/// The stderr note printed after `recent --json --out` has written the JSON
+/// body to `file` (`[recent] записано JSON → {file}` — the same wording as
+/// the `search` / `cache` / `annot list` / `resolve` / `dict` / `related`
+/// JSON notes).
+fn recent_json_out_note(file: &Path) -> String {
+    format!("[recent] записано JSON → {}", file.display())
+}
+
+/// Offline «what did I highlight lately» (`recent`): the newest annotations
+/// across all documents, never building a client and never touching the
+/// network (annotations live in the local index). A missing index file is a
+/// hard error («індекс не знайдено: …», the `stats`/`verify` rule). The
+/// rows come straight from the `annotations` table through the connection
+/// `rada_db::open` returns (the `verify` / `dict-stats` direct-SQL idiom:
+/// `prepare` + `query_map`, the CLI crate has no rusqlite dep of its own),
+/// ordered `created_at DESC` with an `id DESC` tie-break, `LIMIT` clamped
+/// to 1..=500; titles come from the offline index per row (the
+/// `cache --search` style). With `--out` the exact stdout body goes to the
+/// file (parent dirs created) and nothing prints to stdout: the plain
+/// table is written UTF-8 with a BOM (Excel-friendly, like
+/// search/arrivals/stats/verify), the `--json` body BOM-less; one
+/// `[recent] записано …` note goes to stderr. Zero annotations write the
+/// BOM alone (n=0 note) while the «Останніх анотацій немає» line stays
+/// stdout-only (the house `search --out` zero-hit rule).
+fn cmd_recent(db: &PathBuf, limit: usize, json: bool, out: Option<&Path>) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    let limit = limit.clamp(1, 500);
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT nreg, kind, text, created_at FROM annotations
+             ORDER BY created_at DESC, id DESC LIMIT ?1",
+        )
+        .context("prepare recent annotations")?;
+    let mut rows = stmt
+        .query_map([limit as i64], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .context("run recent annotations")?;
+    let mut items: Vec<RecentRow> = Vec::new();
+    while let Some((nreg, kind, text, created_at)) = rows.next().transpose()? {
+        // Offline title lookup (the `export` / `cache --search` style): an
+        // nreg missing from `docs` keeps the empty title, and the row then
+        // renders its own nreg (the `title||nreg` rule).
+        let title = rada_db::title_by_nreg(&conn, &nreg).unwrap_or_default();
+        items.push(RecentRow {
+            nreg,
+            kind,
+            created_at,
+            text,
+            title,
+        });
+    }
+    if json {
+        let body = recent_json_body(&items);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", recent_json_out_note(p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = recent_lines(&items);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout table, so a zero-annotation result carries the BOM
+            // alone (the «немає» line is the stdout-only zero message,
+            // the house rule).
+            let text = if items.is_empty() {
+                "\u{FEFF}".to_string()
+            } else {
+                format!("\u{FEFF}{}\n", lines.join("\n"))
+            };
+            write_out_file(p, text.as_bytes())?;
+            eprintln!("{}", recent_out_note(items.len(), p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_status(db: &PathBuf) -> Result<()> {
     if !db.exists() {
         eprintln!("no index at {} (run `rada-client init` first)", db.display());
@@ -3447,11 +3643,12 @@ mod tests {
         dict_stats_lines, dict_stats_out_note, export_html,
         grep_body, grep_render,
         export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
-        normalize_fmt, out_note, related_json_body, related_json_out_note, related_out_note,
+        normalize_fmt, out_note, recent_json_body, recent_json_out_note, recent_lines,
+        recent_out_note, related_json_body, related_json_out_note, related_out_note,
         resolve_out_note, search_out_note, since_note,
         stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
-        toc_out_note, verify_lines, verify_out_note, DictStat, StatsInfo, TocEntry, VerifyCheck,
-        VerifyStatus,
+        toc_out_note, verify_lines, verify_out_note, DictStat, RecentRow, StatsInfo, TocEntry,
+        VerifyCheck, VerifyStatus,
     };
 
     #[test]
@@ -4647,5 +4844,125 @@ mod tests {
             dict_stats_out_note(0, file),
             format!("[dict-stats] записано 0 значень → {}", file.display())
         );
+    }
+
+    #[test]
+    fn recent_lines_renders_header_rows_and_empty() {
+        // header + one compact block per row: «[{kind}] {title||nreg} ·
+        // {created_at}» (stored UTC stamp verbatim) + the indented text
+        // (trimmed, newlines folded, 60-char cap like `annot list`); an
+        // unindexed nreg (empty title) renders its own nreg
+        let rows = vec![
+            RecentRow {
+                nreg: "1556-18".into(),
+                kind: "highlight".into(),
+                created_at: "2026-10-29 09:00:00".into(),
+                text: "Стаття 3 — Вища освіта".into(),
+                title: "Про вищу освіту".into(),
+            },
+            RecentRow {
+                nreg: "2341-14".into(),
+                kind: "comment".into(),
+                created_at: "2026-10-28 07:30:00".into(),
+                text: "  корисний\nзакон  ".into(),
+                title: String::new(),
+            },
+        ];
+        let lines = recent_lines(&rows);
+        assert_eq!(
+            lines,
+            vec![
+                "Останні анотації (2):".to_string(),
+                "[highlight] Про вищу освіту · 2026-10-29 09:00:00".to_string(),
+                "  Стаття 3 — Вища освіта".to_string(),
+                "[comment] 2341-14 · 2026-10-28 07:30:00".to_string(),
+                "  корисний закон".to_string(),
+            ]
+        );
+        // a 200-char text is capped at 60 chars (the `annot list` style)
+        let long = RecentRow {
+            nreg: "1-1".into(),
+            kind: "comment".into(),
+            created_at: "2026-10-30 00:00:00".into(),
+            text: "д".repeat(200),
+            title: String::new(),
+        };
+        let lines = recent_lines(&[long]);
+        assert_eq!(lines.len(), 3, "header + row line + one text line");
+        assert_eq!(lines[1], "[comment] 1-1 · 2026-10-30 00:00:00");
+        assert_eq!(lines[2].chars().count(), 2 + 60, "indented 60-char text");
+        // an empty text (bookmark) renders no text line: header + row line
+        let bm = RecentRow {
+            nreg: "9-9".into(),
+            kind: "bookmark".into(),
+            created_at: "2026-10-30 10:00:00".into(),
+            text: "   ".into(),
+            title: "Титул".into(),
+        };
+        assert_eq!(
+            recent_lines(&[bm]),
+            vec![
+                "Останні анотації (1):".to_string(),
+                "[bookmark] Титул · 2026-10-30 10:00:00".to_string(),
+            ]
+        );
+        // zero rows: the stdout-only «немає» line (the `--out` file then
+        // carries the BOM alone, the house `search --out` rule)
+        assert_eq!(
+            recent_lines(&[]),
+            vec!["Останніх анотацій немає".to_string()]
+        );
+    }
+
+    #[test]
+    fn recent_json_body_renders_rows_and_empty() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort (the house JSON style).
+        let rows = vec![RecentRow {
+            nreg: "1556-18".into(),
+            kind: "highlight".into(),
+            created_at: "2026-10-29 09:00:00".into(),
+            text: "Стаття 3 — Вища освіта".into(),
+            title: "Про вищу освіту".into(),
+        }];
+        let body = recent_json_body(&rows);
+        assert_eq!(
+            body,
+            "[\n  {\n    \"created_at\": \"2026-10-29 09:00:00\",\n    \"kind\": \"highlight\",\n    \"nreg\": \"1556-18\",\n    \"text\": \"Стаття 3 — Вища освіта\",\n    \"title\": \"Про вищу освіту\"\n  }\n]"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // zero annotations: a plain empty array
+        assert_eq!(recent_json_body(&[]), "[]");
+    }
+
+    #[test]
+    fn recent_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//r.txt");
+        let line = recent_out_note(5, file);
+        assert_eq!(line, format!("[recent] записано 5 анотацій → {}", file.display()));
+        assert!(line.starts_with("[recent] записано "));
+        assert!(line.contains("5"));
+        assert!(line.contains("анотацій"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the house zero-result rule: the note still formats with n = 0
+        assert_eq!(
+            recent_out_note(0, file),
+            format!("[recent] записано 0 анотацій → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn recent_json_out_note_formats_json_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//r.json");
+        let line = recent_json_out_note(file);
+        assert_eq!(line, format!("[recent] записано JSON → {}", file.display()));
+        assert!(line.starts_with("[recent] записано "));
+        assert!(line.contains("JSON"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
     }
 }

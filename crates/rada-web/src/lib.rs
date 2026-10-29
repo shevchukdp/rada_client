@@ -2695,6 +2695,55 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_favorites_citation_button() {
+        // Per-row «цилата» button on the favorites rows (the reader btn-cite
+        // parity): a plain-text label with the Ukrainian copy-hint, the same
+        // chip-styled small-button class group as jump/edit/del, and placed
+        // inside the row's action group right after the «→ текст» jump
+        // button (away from the delete control).
+        assert!(ui::INDEX_HTML.contains("cite.className = \"cite\";"));
+        assert!(ui::INDEX_HTML.contains("cite.textContent = \"цилата\";"));
+        assert!(ui::INDEX_HTML.contains(
+            "cite.title = \"скопіювати повне посилання на акт\";"
+        ));
+        // Shares the row's small-button CSS (the .jump/.edit/.del chip group).
+        assert!(ui::INDEX_HTML.contains("#fav-list .fav-item .cite"));
+        let jump = ui::INDEX_HTML
+            .find("row.appendChild(jump);")
+            .expect("jump button appended to the row");
+        let cite = ui::INDEX_HTML
+            .find("row.appendChild(cite);")
+            .expect("cite button appended to the row");
+        let del = ui::INDEX_HTML
+            .find("row.appendChild(del);")
+            .expect("delete button appended to the row");
+        assert!(cite > jump && cite < del, "cite sits beside jump in the action group");
+    }
+
+    #[test]
+    fn ui_page_has_favorites_citation_uses_shared_builder() {
+        // The row click copies through the reader's shared citation builder
+        // (no re-inlined «Офіційний вебпортал» format string in the favorites
+        // code): title falls back to nreg, the edition argument is the empty
+        // string matching btn-cite's default «поточна редакція» option (which
+        // omits the «Редакція від» segment), and the existing copyText helper
+        // flashes «скопійовано» on the button.
+        let start = ui::INDEX_HTML
+            .find("function favRow(a)")
+            .expect("favRow defined");
+        let end = start + ui::INDEX_HTML[start..]
+            .find("function renderFavorites")
+            .expect("renderFavorites follows favRow");
+        let body = &ui::INDEX_HTML[start..end];
+        assert!(body.contains("cite.onclick = () => copyText("));
+        assert!(body.contains("citationText(a.title || a.nreg, a.nreg, \"\")"));
+        assert!(body.contains("cite, \"скопійовано\");"));
+        // the citation format itself stays only in citationText
+        assert!(!body.contains("Офіційний вебпортал"));
+        assert!(!body.contains("Редакція від"));
+    }
+
+    #[test]
     fn fmt_yyyymmdd_passthrough() {
         assert_eq!(fmt_yyyymmdd(20261015), "15.10.2026");
         assert_eq!(fmt_yyyymmdd(42), "42");

@@ -122,8 +122,9 @@ official open-data API:
     button** opens the whole
     list (same source as the About dialog's shortcut table).
   - **Favorites (Обране)** — every saved annotation across all documents on one
-    page: kind filters, one-click open, delete; bare bookmarks show an italic
-    context snippet from the offline text cache (GUI and web).
+    page: kind filters, one-click open, «цилата» (copy the full act reference),
+    delete; bare bookmarks show an italic context snippet from the offline text
+    cache (GUI and web).
   - **Bandwidth-friendly** — repeated dictionary / arrivals-feed fetches use
     conditional HTTP (`ETag`/`If-None-Match`, `Last-Modified`/`If-Modified-Since`);
     the server's 304 means the body is never re-downloaded (≈200 MB/day limit).
@@ -179,7 +180,8 @@ official open-data API:
   (`PUT /api/annotations`), export (txt/md/html), keyboard shortcuts,
   recent documents, auto-loaded «Нові документи» (offline-capable), **number
   search** (an nreg in the query opens the document), a **Favorites (Обране) tab**
-  (all annotations, filters, delete/edit, JSON export/import), a **«Дані» panel**
+  (all annotations, filters, delete/edit, per-row «цилата» copy-reference,
+  JSON export/import as .json + filtered .txt export), a **«Дані» panel**
   to run live sync, snapshot fetch and **index backup/restore as background jobs**
   (`POST /api/jobs/sync|snapshot|backup|restore|init`, `GET /api/jobs`, `GET /api/backups`),
   including a **full index rebuild from the official dump** as a background job,
@@ -337,6 +339,7 @@ Launch arguments:
 .\rada-client.exe annot list 2041-15 --json
 .\rada-client.exe annot list --out annots.txt    # table to file (BOM); --json → BOM-less JSON array
 .\rada-client.exe annot search "податок"      # grep ALL annotations: text, kind and nreg; --json / --out too
+.\rada-client.exe recent                     # newest annotations across all docs (title/kind/time/text); --limit N, --json / --out too
 .\rada-client.exe annot add 2041-15 highlight "текст виділення"
 .\rada-client.exe annot add 2341-14 comment "увага на розділ 3"
 .\rada-client.exe annot add 2341-14 comment --text-file note.txt   # long UTF-8 comment from a file

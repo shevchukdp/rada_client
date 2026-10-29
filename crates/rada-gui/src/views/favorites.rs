@@ -506,6 +506,23 @@ fn annotation_row(app: &mut App, ui: &mut egui::Ui, a: &rada_db::Annotation, tit
                     app.open_reader_by_nreg(&n, &t, 0, "", "", "");
                 }
                 if ui
+                    .button(egui::RichText::new("цилата").small())
+                    .on_hover_text("скопіювати повне посилання на акт")
+                    .clicked()
+                {
+                    let t = crate::views::reader::citation_line(
+                        if title.trim().is_empty() {
+                            a.nreg.as_str()
+                        } else {
+                            title
+                        },
+                        &a.nreg,
+                        None,
+                    );
+                    ui.ctx().copy_text(t);
+                    app.toast("цилату скопійовано", crate::app::ok());
+                }
+                if ui
                     .button(egui::RichText::new("видалити").small())
                     .clicked()
                 {
