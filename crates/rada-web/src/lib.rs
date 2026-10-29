@@ -215,6 +215,13 @@ fn route(
                     json_err(405, "method not allowed")
                 }
             }
+            "fresh" => {
+                if method == &Method::Get {
+                    fresh_handler(st, q)
+                } else {
+                    json_err(405, "method not allowed")
+                }
+            }
             "resolve" => {
                 if method == &Method::Get {
                     resolve_handler(st, q)
@@ -346,6 +353,43 @@ fn arrivals_handler(st: &State, q: &[(String, String)]) -> Resp {
             json_ok(&json!({ "items": items }))
         }
         Err(e) => json_err(502, &format!("live feed error: {e}")),
+    }
+}
+
+/// `GET /api/fresh?limit=N` — the freshest cards by adoption date, the web
+/// twin of the desktop home card (`read_index_status` in the GUI): only
+/// full 8-digit `org_date` rows (the CLI `recent` anchor rules), newest
+/// first, same-day rows tie on the nreg. Answers up to min(N, 30) rows
+/// (default 14), fully offline through the index.
+fn fresh_handler(st: &State, q: &[(String, String)]) -> Resp {
+    let limit = qget(q, "limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(14)
+        .max(1)
+        .min(30);
+    let conn = match open_db(st) {
+        Ok(c) => c,
+        Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
+    };
+    let rows = conn
+        .prepare(
+            "SELECT org_date, nreg, nazva FROM docs \
+             WHERE org_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' \
+             ORDER BY org_date DESC, nreg ASC LIMIT ?1",
+        )
+        .and_then(|mut ps| {
+            let rows = ps.query_map([limit as i64], |r| {
+                Ok(json!({
+                    "date": r.get::<_, String>(0)?,
+                    "nreg": r.get::<_, String>(1)?,
+                    "title": r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                }))
+            })?;
+            rows.collect::<Result<Vec<Value>, _>>()
+        });
+    match rows {
+        Ok(docs) => json_ok(&json!({ "docs": docs })),
+        Err(e) => json_err(500, &format!("fresh error: {e:#}")),
     }
 }
 
@@ -4923,5 +4967,125 @@ mod tests {
             .find("paintCacheBadges(d.hits.map((h) => h.nreg));")
             .expect("renderer calls the painter");
         assert!(nav < paint, "badges paint after the rows rendered");
+    }
+
+    // ---- «Свіжі документи (за датою)» home card (`/api/fresh`) ---------------
+
+    /// Fresh indexed db for the `/api/fresh` tests: three cards with full
+    /// 8-digit adoption dates (two sharing the newest one, so the nreg tie
+    /// rule shows) plus three mis-dated rows (short, empty, dashed) that
+    /// must stay out. Unique dir per tag keeps parallel tests from colliding.
+    fn fresh_state(tag: &str) -> Arc<State> {
+        let dir = std::env::temp_dir().join(format!("rada-web-fresh-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let st = Arc::new(State {
+            db_path: dir.join("test.sqlite"),
+            client: RadaClient::with_pacing(Duration::from_secs(3600)),
+            pace_secs: 3600,
+            jobs: Mutex::new(HashMap::new()),
+            job_seq: AtomicU64::new(0),
+        });
+        let conn = db_open(&st.db_path).expect("open test index");
+        conn.execute_batch(
+            "INSERT INTO docs(nreg, nazva, org_date) VALUES
+             ('2000-02', 'Буквар',  '20251231'),
+             ('3000-03', 'Вісти',   '20251231'),
+             ('1000-01', 'Абетка',  '20010101'),
+             ('4000-04', 'Гасло',   '2025'),
+             ('5000-05', 'Депеша',  ''),
+             ('6000-06', 'Ескіз',   '2026-01-02');",
+        )
+        .expect("seed docs");
+        drop(conn);
+        st
+    }
+
+    /// `GET /api/fresh?{query}` through `route` (query parsed exactly as
+    /// `handle_request` does), returning the JSON body.
+    fn fresh_get(st: &Arc<State>, query: &str) -> Value {
+        let mut req: Request = TestRequest::new()
+            .with_method(Method::Get)
+            .with_path("/api/fresh")
+            .into();
+        let resp = route(&Method::Get, "/api/fresh", &parse_query(query), &mut req, st)
+            .expect("route");
+        assert_eq!(resp.status_code().0, 200);
+        serde_json::from_slice(&resp.into_reader().into_inner()).unwrap()
+    }
+
+    #[test]
+    fn fresh_endpoint_orders_limits_and_filters() {
+        let st = fresh_state("main");
+        // Newest adoption date first, same-day rows tie on the nreg (the
+        // desktop home card's exact ordering), titles ride along.
+        let v = fresh_get(&st, "");
+        let docs = v["docs"].as_array().unwrap();
+        let nregs: Vec<&str> = docs.iter().map(|d| d["nreg"].as_str().unwrap()).collect();
+        assert_eq!(nregs, ["2000-02", "3000-03", "1000-01"], "{v}");
+        let dates: Vec<&str> = docs.iter().map(|d| d["date"].as_str().unwrap()).collect();
+        assert_eq!(dates, ["20251231", "20251231", "20010101"]);
+        let titles: Vec<&str> = docs.iter().map(|d| d["title"].as_str().unwrap()).collect();
+        assert_eq!(titles, ["Буквар", "Вісти", "Абетка"]);
+        // Mis-dated rows never surface: short, empty and dashed org_date
+        // values all sit outside the 8-digit GLOB anchor.
+        let raw = v.to_string();
+        assert!(!raw.contains("4000-04"), "short date excluded: {raw}");
+        assert!(!raw.contains("5000-05"), "empty date excluded: {raw}");
+        assert!(!raw.contains("6000-06"), "dashed date excluded: {raw}");
+        // The limit is respected (and the order kept on the truncated page).
+        let v2 = fresh_get(&st, "limit=2");
+        let docs2 = v2["docs"].as_array().unwrap();
+        assert_eq!(docs2.len(), 2);
+        assert_eq!(docs2[0]["nreg"], "2000-02");
+        assert_eq!(docs2[1]["nreg"], "3000-03");
+        // Only GET is routed.
+        assert_eq!(call(&st, Method::Post, "/api/fresh", "").0, 405);
+    }
+
+    #[test]
+    fn fresh_home_card_page_integration() {
+        // The landing view paints the desktop home card's web twin.
+        assert!(
+            ui::INDEX_HTML.contains("Свіжі документи (за датою):"),
+            "heading mirrors the desktop home card"
+        );
+        assert!(
+            ui::INDEX_HTML.contains("id=\"fresh-home\""),
+            "the landing block exists in the search tab"
+        );
+        // Pure 8-digit date helper, same guard style as fmtImportDate:
+        // exactly 8 ASCII digits reorder, everything else stays the raw
+        // string.
+        let start = ui::INDEX_HTML
+            .find("function fmtYmd8(d) {")
+            .expect("pure fmt helper present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("fmtYmd8 end")];
+        assert!(body.contains("/^[0-9]{8}$/"), "8 ASCII digit guard");
+        assert!(body.contains("slice(6, 8)"), "dd.mm.yyyy reordering");
+        assert!(body.contains("return s;"), "garbage passes through raw");
+        // The painter: asks the endpoint, renders through the pure builder,
+        // binds every row to the reader-open idiom, skips failures silently.
+        let start = ui::INDEX_HTML
+            .find("async function renderFreshHome() {")
+            .expect("home painter present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("renderFreshHome end")];
+        assert!(body.contains("/api/fresh?limit=14"), "fetches the fresh endpoint");
+        assert!(body.contains("freshHomeHtml(docs)"), "rows built by the pure builder");
+        assert!(
+            body.contains("row.onclick = () => openDoc(doc.nreg);"),
+            "rows open through the reader-open idiom"
+        );
+        assert!(body.contains("li[data-i]"), "rows matched by index, not raw nregs");
+        assert!(body.contains("catch"), "a failed fetch skips silently");
+        // The startup wiring: init paints the landing block.
+        let start = ui::INDEX_HTML
+            .find("async function init() {")
+            .expect("init present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("init end")];
+        assert!(body.contains("renderFreshHome();"), "init paints the card");
     }
 }

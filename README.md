@@ -104,7 +104,8 @@ official open-data API:
     CLI `recent` command), each row opening the reader with one click.
   - **Reader tabs** — every document you open becomes a tab («Вкладки:» above
     the title): tabs keep their text, find query and edition when you switch
-    between them; **Ctrl+Tab / Ctrl+Shift+Tab** cycle them, **×** closes one,
+    between them; **Ctrl+Tab / Ctrl+Shift+Tab** cycle them, **Ctrl+W** (or **×**)
+    closes one,
     opening an already-open act just activates its tab; the open set (up to 12)
     is saved and comes back as instant shells on the next launch.
   - **Reader outline («Зміст»)** — a collapsible panel listing every
@@ -130,7 +131,8 @@ official open-data API:
     focused; **Ctrl+B** bookmarks the open act; **Ctrl+M** toggles the reader's
     форматований/простий text mode; **Ctrl+Enter** opens the top search hit (or
     the top visible arrival) in the reader; **F5** re-fetches the reader text; **Esc** clears the find query;
-    **Ctrl+Tab / Ctrl+Shift+Tab** cycle the reader's document tabs;
+    **Ctrl+Tab / Ctrl+Shift+Tab** cycle the reader's document tabs, **Ctrl+W**
+    closes the active one;
     **Alt+←/→**
     pages through the results list from inside the reader; **Alt+↑/↓** cycles
     the reader's edition combo (поточна ↔ dated, wrap-around); **Shift+Enter** steps
@@ -268,6 +270,10 @@ official open-data API:
   вебпортал парламенту України. Редакція від дд.мм.рррр, URL: …»),
   **recent query chips** («недавні запити:» from browser storage, click to
   re-run, «очистити»),
+  **a «Свіжі документи (за датою)» landing card** (the freshest acts from the
+  offline index via `GET /api/fresh?limit=N`, «дд.мм.рррр  nreg  title» rows
+  that open the reader — the desktop home card's twin; hidden after the first
+  search, silent on failure),
   and a **Favorites page with desktop parity** (sort chips «новіші / старіші /
   за назвою», a text/title/nreg filter with «показано X з Y», and collapsible
   per-document groups, choices in localStorage),
@@ -366,7 +372,7 @@ Launch arguments:
 .\rada-client.exe dict --from-file stan.txt --kind stan   # seed a dictionary from a local dump (id\tlabel, cp1251)
 .\rada-client.exe dict-stats             # offline population report: стани / типи / органи + total; --json / --out too
 .\rada-client.exe dates                  # offline year histogram of adoption dates («без дати» + «найновіший рік»); --json / --out too
-.\rada-client.exe orgs                   # offline top publishers by document count + «всього документів»; --limit ≤200, --json / --out too
+.\rada-client.exe orgs                   # offline top publishers by document count + «всього документів»; --year РРРР filters to one adoption year, --limit ≤200, --json / --out too
 .\rada-client.exe statuses               # offline status distribution (dict labels) + «всього документів»; --json / --out too
 .\rada-client.exe months                 # offline month histogram of one year (--year РРРР, always 12 rows + «разом»); --json / --out too
 

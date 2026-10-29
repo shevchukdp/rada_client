@@ -492,6 +492,16 @@
   #related-list li .nreg { color: var(--muted); font-size: 12px; margin-left: 6px; }
   #related-list li.hint { cursor: default; }
   #related-list li button { margin-left: 8px; }
+  #fresh-home { margin: 6px 0; }
+  #fresh-list { list-style: none; padding: 0; margin: 6px 0 10px; }
+  #fresh-list li {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  #fresh-list li:hover { background: rgba(128, 128, 128, 0.12); }
+  #fresh-list li .date { color: var(--muted); font-size: 12px; margin-right: 8px; }
+  #fresh-list li .nreg { color: var(--muted); font-size: 12px; margin-right: 8px; }
   #annotations li {
     display: flex; gap: 8px; align-items: center; padding: 6px 10px;
     border: 1px solid var(--border); border-radius: 7px; margin: 5px 0;
@@ -667,6 +677,7 @@
       <span id="recent-chips"></span>
       <button id="recent-clear" class="clear" type="button" title="Очистити історію">✕</button>
     </div>
+    <div id="fresh-home" hidden></div>
     <div id="results-meta"></div>
     <div class="row" id="sort-bar" hidden>
       <button class="chip" type="button" id="sort-nazva" data-col="nazva" title="Сортувати за назвою">Назва</button>
@@ -906,6 +917,10 @@ let arrFetchedAt = 0;       // unix ms of the last successful loadArrivals (fres
 // of the opened document inside it (-1 when opened from elsewhere).
 let navList = [];
 let navPos = -1;
+// Landing home card («Свіжі документи (за датою)»): the startup search must
+// not dismiss it, any later search retires it for good.
+let freshHomeStarted = false;
+let freshHomeDismissed = false;
 
 function api(path, opts) {
   return fetch(path, opts).then(async (r) => {
@@ -1046,6 +1061,7 @@ async function init() {
   fillDict("f-org", "organs");
   renderRecent();
   renderRecentQ();
+  renderFreshHome();
   const dl = readDeepLink();
   if (dl.doc) { openDoc(dl.doc); } else { doSearch(0); }
   // Re-attach to jobs that are still running after a page reload.
@@ -1128,6 +1144,55 @@ function parseHash(h) {
     if (val) out[key] = val;
   }
   return out;
+}
+
+// ---- «Свіжі документи (за датою)» home card (the desktop home twin) --------
+// The landing block mirrors the desktop home page: the freshest indexed cards
+// by adoption date, one clickable row per card. Pure helpers build the
+// markup; the fetch runs once on startup and skips silently when the index
+// cannot answer (the landing simply stays the plain search page).
+
+/// 8-digit adoption date → «dd.mm.yyyy» (pure, same guard style as
+/// fmtImportDate): exactly 8 ASCII digits reorder, anything else (empty,
+/// malformed, missing) passes through as the raw string.
+function fmtYmd8(d) {
+  const s = String(d || "");
+  if (!/^[0-9]{8}$/.test(s)) return s;
+  return s.slice(6, 8) + "." + s.slice(4, 6) + "." + s.slice(0, 4);
+}
+
+/// Pure: the home block's markup — the heading plus one row per doc
+/// (date · nreg · title, the GUI row's shape). Rows carry data-i so the
+/// caller can re-bind openDoc without putting raw nregs into HTML attributes.
+function freshHomeHtml(docs) {
+  let html = '<div class="hint"><strong>Свіжі документи (за датою):</strong></div>';
+  html += '<ul id="fresh-list">';
+  for (let i = 0; i < docs.length; i++) {
+    const d = docs[i];
+    html += '<li data-i="' + i + '"><span class="date">' + escHtml(fmtYmd8(d.date)) +
+      '</span><span class="nreg">' + escHtml(d.nreg) + "</span><span>" +
+      escHtml(d.title || d.nreg) + "</span></li>";
+  }
+  return html + "</ul>";
+}
+
+/// Paint the landing card once: ask the offline endpoint, render through the
+/// pure builder and bind every row to the reader-open flow. A failed fetch
+/// (or an index without dated cards) skips silently; a search the user has
+/// already run keeps the block retired (freshHomeDismissed).
+async function renderFreshHome() {
+  try {
+    const d = await api("/api/fresh?limit=14");
+    const docs = (d && d.docs) || [];
+    if (!docs.length || freshHomeDismissed) return;
+    const box = $("fresh-home");
+    box.innerHTML = freshHomeHtml(docs);
+    box.hidden = false;
+    for (const row of box.querySelectorAll("li[data-i]")) {
+      const doc = docs[Number(row.dataset.i)];
+      row.onclick = () => openDoc(doc.nreg);
+    }
+  } catch (_) { /* no index, no card: the landing simply skips it */ }
 }
 
 // Original option labels per select + option value, captured once when the
@@ -1489,6 +1554,13 @@ async function doSearch(offset) {
   $("results").innerHTML = "";
   fillNavList([]); // stale hits must not keep navigating while the fetch runs
   $("sort-bar").hidden = true;
+  // The landing home card answers to the initial view only: the startup
+  // search leaves it alone, every later search retires it (renderFreshHome).
+  if (freshHomeStarted) {
+    freshHomeDismissed = true;
+    $("fresh-home").hidden = true;
+  }
+  freshHomeStarted = true;
   resetFacetLabels(); // never show counts from the previous result set
   renderActiveFilters(); // the chips mirror exactly the filters this query goes out with
   syncStatusChips(); // the quick status chips mirror the select the query goes out with

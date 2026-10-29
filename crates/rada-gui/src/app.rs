@@ -2376,6 +2376,13 @@ impl eframe::App for App {
         } else if tab_plain {
             self.tab_cycle(1);
         }
+        // Ctrl+W: close the active reader tab (reader page only).
+        let ctrl_w = ctx.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, egui::Key::W));
+        if ctrl_w && self.page == Page::Reader {
+            if let Some(a) = self.active_tab {
+                self.tab_close(a);
+            }
+        }
 
         // toast lifetime
         self.toasts

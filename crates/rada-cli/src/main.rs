@@ -45,8 +45,10 @@
 //! - `orgs`      offline top-publishers histogram on `org_num` — which
 //!               «органи» issued the most documents, labels from the
 //!               offline `organs` dictionary
-//!               (`--json` for machine-readable output, `--out` to write
-//!               the report; informational — never exits nonzero);
+//!               (`--year РРРР` restricts the count to documents whose
+//!               `org_date` carries that year, `--json` for
+//!               machine-readable output, `--out` to write the report;
+//!               informational — exits 1 only on a malformed `--year`);
 //! - `statuses`  offline document-status histogram on `status` — how many
 //!               documents are чинний / не чинний / …, labels from the
 //!               offline `stan` dictionary
@@ -610,12 +612,20 @@ enum Cmd {
     /// `search --org` filters. Pure offline: the command never touches the
     /// network; informational — always exits 0.
     Orgs {
+        /// Restrict the histogram to documents whose `org_date` starts
+        /// with these four digits and is a full 8-digit date (e.g.
+        /// `2026`); the header becomes «Видавці документів РРРР року:»
+        /// and the JSON body gains `"year":"yyyy"`. Anything else than
+        /// four ASCII digits exits 1 («рік має бути РРРР (наприклад
+        /// 2026)»); absent keeps the report exactly as today.
+        #[arg(long)]
+        year: Option<String>,
         /// Max publishers to print (default 20, clamped to 1..=200).
         #[arg(long, default_value_t = 20)]
         limit: usize,
         /// Emit the JSON body
-        /// (`{"orgs":[{count,label,org_num},…],"total":N}`) instead of the
-        /// report.
+        /// (`{"orgs":[{count,label,org_num},…],"total":N[,"year":"yyyy"]`)
+        /// instead of the report.
         #[arg(long)]
         json: bool,
         /// Write the exact stdout report (or the `--json` body) to this file
@@ -895,9 +905,12 @@ fn run() -> Result<()> {
             json,
             out.as_deref(),
         ),
-        Cmd::Orgs { limit, json, out } => {
-            cmd_orgs(&cli.db, limit, json, out.as_deref())
-        }
+        Cmd::Orgs {
+            year,
+            limit,
+            json,
+            out,
+        } => cmd_orgs(&cli.db, year.as_deref(), limit, json, out.as_deref()),
         Cmd::Statuses { json, out } => {
             cmd_statuses(&cli.db, json, out.as_deref())
         }
@@ -5342,9 +5355,15 @@ struct OrgRow {
 /// SQL sorts by count descending — no rank prefix, mirroring the
 /// `dates`/`dict-stats` body style, counts render plain like the
 /// `stats`/`verify` numbers), then the «всього документів: {total}»
-/// verdict. Informational: an empty histogram never fails the run.
-fn orgs_lines(rows: &[OrgRow], total: i64) -> Vec<String> {
-    let mut lines = vec!["Найкращі видавці (за документами):".to_string()];
+/// verdict. Informational: an empty histogram never fails the run. With
+/// `year` (the validated four-digit `--year` filter) the header becomes
+/// «Видавці документів {yyyy} року:»; `None` keeps the unfiltered
+/// header exactly as today.
+fn orgs_lines(rows: &[OrgRow], total: i64, year: Option<&str>) -> Vec<String> {
+    let mut lines = vec![match year {
+        Some(y) => format!("Видавці документів {y} року:"),
+        None => "Найкращі видавці (за документами):".to_string(),
+    }];
     for r in rows {
         lines.push(format!("{} [{}]: {}", r.label, r.org_num, r.count));
     }
@@ -5358,10 +5377,12 @@ fn orgs_lines(rows: &[OrgRow], total: i64) -> Vec<String> {
 /// built as hand-rolled `serde_json::Value`s like the other commands'
 /// JSON bodies (map keys sort, so `orgs` precedes `total` and
 /// `count`/`label`/`org_num` keep their alphabetical order inside every
-/// entry). stdout prints exactly this string plus a trailing newline; the
-/// `--out` file receives the same bytes BOM-less (machine data, the house
-/// JSON rule).
-fn orgs_json(rows: &[OrgRow], total: i64) -> String {
+/// entry). With `year` (the validated four-digit `--year` filter) the
+/// object gains `"year": "yyyy"` — map keys sort, so it lands last,
+/// after `total`. stdout prints exactly this string plus a trailing
+/// newline; the `--out` file receives the same bytes BOM-less (machine
+/// data, the house JSON rule).
+fn orgs_json(rows: &[OrgRow], total: i64, year: Option<&str>) -> String {
     let orgs: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
@@ -5372,7 +5393,10 @@ fn orgs_json(rows: &[OrgRow], total: i64) -> String {
             })
         })
         .collect();
-    let value = serde_json::json!({ "orgs": orgs, "total": total });
+    let mut value = serde_json::json!({ "orgs": orgs, "total": total });
+    if let Some(y) = year {
+        value["year"] = serde_json::Value::from(y);
+    }
     serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
 }
 
@@ -5401,21 +5425,57 @@ fn orgs_out_note(n: usize, file: &Path) -> String {
 /// stdout: the plain report is written UTF-8 with a BOM (Excel-friendly,
 /// like search/arrivals/stats/verify), the `--json` body BOM-less; one
 /// `[orgs] записано {n} видавців → {file}` note goes to stderr. The
-/// header always renders, so the file is never BOM-alone.
-fn cmd_orgs(db: &PathBuf, limit: usize, json: bool, out: Option<&Path>) -> Result<()> {
+/// header always renders, so the file is never BOM-alone. With `--year`
+/// (validated through the `years`/`months` [`normalize_year_arg`] rule:
+/// exactly four ASCII digits or «рік має бути РРРР (наприклад 2026)»,
+/// exit 1 through `main`) only documents whose `org_date` starts with
+/// those four digits and is a full 8-digit date — the `months` digit-
+/// guard GLOB idiom with the year prefix pinned — count toward the
+/// histogram and the «всього документів» verdict (the same `COUNT(*)`
+/// rule, filtered); the header names the year instead.
+fn cmd_orgs(
+    db: &PathBuf,
+    year: Option<&str>,
+    limit: usize,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<()> {
     if !db.exists() {
         return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
     }
+    // the `years`/`months` house validator: absent keeps the whole-index
+    // report, present must be exactly four ASCII digits; the canonical
+    // `yyyy` string drives the header, the JSON key and the GLOB prefix
+    let year = match year {
+        Some(_) => Some(format!("{:04}", normalize_year_arg(year)?)),
+        None => None,
+    };
     let limit = limit.clamp(1, 200);
     let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    // a row counts for `--year yyyy` only when `org_date` is a full
+    // 8-digit date starting with the four validated digits; the digits
+    // are interpolated only after `normalize_year_arg` (ASCII digits
+    // cannot carry SQL or GLOB metacharacters), the unfiltered path
+    // keeps today's queries verbatim
+    let (total_sql, where_sql) = match &year {
+        None => ("SELECT COUNT(*) FROM docs".to_string(), String::new()),
+        Some(y) => {
+            let glob = format!("{y}[0-9][0-9][0-9][0-9]");
+            (
+                format!("SELECT COUNT(*) FROM docs WHERE org_date GLOB '{glob}'"),
+                format!(" WHERE d.org_date GLOB '{glob}'"),
+            )
+        }
+    };
     let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
+        .query_row(&total_sql, [], |r| r.get(0))
         .unwrap_or(0);
+    let sql = format!(
+        "SELECT d.org_num, COUNT(*) AS c FROM docs d{where_sql}
+         GROUP BY d.org_num ORDER BY c DESC LIMIT ?1"
+    );
     let mut stmt = conn
-        .prepare(
-            "SELECT d.org_num, COUNT(*) AS c FROM docs d
-             GROUP BY d.org_num ORDER BY c DESC LIMIT ?1",
-        )
+        .prepare(&sql)
         .context("prepare orgs histogram")?;
     let mut mapped = stmt
         .query_map([limit as i64], |r| {
@@ -5455,7 +5515,7 @@ fn cmd_orgs(db: &PathBuf, limit: usize, json: bool, out: Option<&Path>) -> Resul
         });
     }
     if json {
-        let body = orgs_json(&rows, total);
+        let body = orgs_json(&rows, total, year.as_deref());
         match out {
             Some(p) => {
                 // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
@@ -5466,7 +5526,7 @@ fn cmd_orgs(db: &PathBuf, limit: usize, json: bool, out: Option<&Path>) -> Resul
         }
         return Ok(());
     }
-    let lines = orgs_lines(&rows, total);
+    let lines = orgs_lines(&rows, total, year.as_deref());
     match out {
         Some(p) => {
             // UTF-8 BOM prefix: the same Excel-friendly convention as
@@ -7947,7 +8007,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            orgs_lines(&rows, 295340),
+            orgs_lines(&rows, 295340, None),
             vec![
                 "Найкращі видавці (за документами):".to_string(),
                 "Кабінет Міністрів України [2]: 89343".to_string(),
@@ -7959,7 +8019,7 @@ mod tests {
         // empty index: the header and the zero total still render (the
         // `--out` file is never BOM-alone)
         assert_eq!(
-            orgs_lines(&[], 0),
+            orgs_lines(&[], 0, None),
             vec![
                 "Найкращі видавці (за документами):".to_string(),
                 "всього документів: 0".to_string(),
@@ -7985,14 +8045,14 @@ mod tests {
                 count: 3,
             },
         ];
-        let body = orgs_json(&rows, 5);
+        let body = orgs_json(&rows, 5, None);
         assert_eq!(
             body,
             "{\n  \"orgs\": [\n    {\n      \"count\": 2,\n      \"label\": \"Кабінет Міністрів України\",\n      \"org_num\": \"2\"\n    },\n    {\n      \"count\": 3,\n      \"label\": \"— не вказано\",\n      \"org_num\": \"\"\n    }\n  ],\n  \"total\": 5\n}"
         );
         assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
         // empty histogram: a well-formed empty report with total 0
-        assert_eq!(orgs_json(&[], 0), "{\n  \"orgs\": [],\n  \"total\": 0\n}");
+        assert_eq!(orgs_json(&[], 0, None), "{\n  \"orgs\": [],\n  \"total\": 0\n}");
     }
 
     #[test]
@@ -8014,6 +8074,88 @@ mod tests {
             orgs_out_note(0, file),
             format!("[orgs] записано 0 видавців → {}", file.display())
         );
+    }
+
+    #[test]
+    fn orgs_lines_year_filter_renders_year_header_and_rows() {
+        // `--year yyyy`: the header becomes «Видавці документів {yyyy}
+        // року:», the rows and the «всього документів» verdict keep
+        // today's rendering (the total is the filtered document count),
+        // and the unfiltered header stays exactly as today
+        let rows = vec![
+            OrgRow {
+                org_num: "2".into(),
+                label: "Кабінет Міністрів України".into(),
+                count: 7000,
+            },
+            OrgRow {
+                org_num: "".into(),
+                label: "— не вказано".into(),
+                count: 283,
+            },
+        ];
+        assert_eq!(
+            orgs_lines(&rows, 7283, Some("2024")),
+            vec![
+                "Видавці документів 2024 року:".to_string(),
+                "Кабінет Міністрів України [2]: 7000".to_string(),
+                "— не вказано []: 283".to_string(),
+                "всього документів: 7283".to_string(),
+            ]
+        );
+        // zero filtered rows: the year header and the zero verdict still
+        // render (the `--out` file is never BOM-alone)
+        assert_eq!(
+            orgs_lines(&[], 0, Some("2024")),
+            vec![
+                "Видавці документів 2024 року:".to_string(),
+                "всього документів: 0".to_string(),
+            ]
+        );
+        // unfiltered: today's header verbatim
+        assert_eq!(
+            orgs_lines(&[], 0, None),
+            vec![
+                "Найкращі видавці (за документами):".to_string(),
+                "всього документів: 0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn orgs_json_year_filter_adds_year_key_alphabetically() {
+        // with `--year` the body gains "year": "yyyy"; map keys sort, so
+        // «orgs» < «total» < «year» — the year renders last, after total
+        let rows = vec![OrgRow {
+            org_num: "2".into(),
+            label: "Кабінет Міністрів України".into(),
+            count: 5,
+        }];
+        let body = orgs_json(&rows, 5, Some("2024"));
+        assert_eq!(
+            body,
+            "{\n  \"orgs\": [\n    {\n      \"count\": 5,\n      \"label\": \"Кабінет Міністрів України\",\n      \"org_num\": \"2\"\n    }\n  ],\n  \"total\": 5,\n  \"year\": \"2024\"\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // absent year: exactly today's shape, no "year" key at all
+        assert_eq!(
+            orgs_json(&rows, 5, None),
+            "{\n  \"orgs\": [\n    {\n      \"count\": 5,\n      \"label\": \"Кабінет Міністрів України\",\n      \"org_num\": \"2\"\n    }\n  ],\n  \"total\": 5\n}"
+        );
+    }
+
+    #[test]
+    fn orgs_year_arg_accepts_four_digits_and_rejects_the_rest() {
+        // `orgs --year` reuses the `years`/`months` validator: absent is
+        // the whole-index report, exactly four ASCII digits pass,
+        // everything else — two digits, letters, the empty string —
+        // fails with the house message (exit 1 through `main`)
+        assert_eq!(normalize_year_arg(None).unwrap(), 0);
+        assert_eq!(normalize_year_arg(Some("2024")).unwrap(), 2024);
+        for bad in ["26", "abcd", ""] {
+            let err = normalize_year_arg(Some(bad)).unwrap_err().to_string();
+            assert_eq!(err, "рік має бути РРРР (наприклад 2026)");
+        }
     }
 
     #[test]

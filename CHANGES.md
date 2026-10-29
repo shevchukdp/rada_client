@@ -7,6 +7,11 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.54: `orgs --year` у CLI, «Свіжі документи» у веб-клієнті та Ctrl+W для вкладок / CLI `orgs --year`, web fresh-docs card & Ctrl+W tabs
+
+- **UKR:** 1) **`orgs --year РРРР` у CLI**: розклад видавців тепер фільтрується роком прийняття — «Видавці документів 2024 року:» раховує лише акти з повною датою цього року; `--json` додає «year», `--out` за загальним стандартом. 2) **«Свіжі документи (за датою)» на сторінці веб-клієнта**: той самий список, що й на головній програмі, — свіжі акти з офлайн-індексу (`/api/fresh`), рядок відкриває читалку; зникає після першого пошуку. 3) **Ctrl+W закриває активну вкладку читалки** (разом із «×»); підказка «клавіші» оновлена. 4) Тести: 378/378.
+- **ENG:** 1) **`orgs --year YYYY` in the CLI**: the publisher histogram now filters by adoption year — «Видавці документів 2024 року:» counts only acts with a full date of that year; `--json` gains «year», `--out` follows the common standard. 2) **A «Свіжі документи (за датою)» card on the web client's landing page**: the same list as the desktop home — the freshest acts from the offline index (`/api/fresh`), a row opens the reader; it disappears after the first search. 3) **Ctrl+W closes the active reader tab** (besides «×»); the shortcuts sheet is updated. 4) Tests: 378/378.
+
 ### 0.10.53: вкладки читалки, `years` у CLI та «кеш» у веб-результатах / reader tabs, CLI `years` & web cache badges
 
 - **UKR:** 1) **Вкладки у читалці**: кожен відкритий акт стає вкладкою — перемикання зберігає текст, пошук по сторінці й вибрану редакцію; **Ctrl+Tab / Ctrl+Shift+Tab** гортають вкладки, **×** закриває; повторно відкритий акт просто активує свою вкладку; відкриті вкладки (до 12) повертаються після перезапуску миттєвими оболонками. 2) **`years` у CLI**: офлайн-розклад документів по роках закритого періоду (`--from РРРР --to РРРР`), з «разом» і «без дати»; `--json` і `--out` за загальним стандартом. 3) **Значок «· кеш» у веб-результатах пошуку**: той самий, що й у програмі, — акти з уже кешованим текстом відкриваються без мережі. 4) Тести: 373/373.
