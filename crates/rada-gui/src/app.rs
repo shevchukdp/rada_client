@@ -1352,10 +1352,16 @@ impl App {
     /// Print the current reader document: write its structured HTML to a
     /// temp file and open it in the system browser (user prints with
     /// Ctrl+P there — egui has no printer API).
-    pub fn print_reader(&mut self, ctx: &egui::Context) {
+    pub fn print_reader(&mut self, ctx: &egui::Context, plain: bool) {
         let Some(r) = self.reader.as_ref() else { return };
-        let body = r.export_doc("html");
-        let path = std::env::temp_dir().join(format!("rada-print-{}.html", sanitize(&r.hit.nreg)));
+        let body = if plain {
+            r.print_doc_plain()
+        } else {
+            r.export_doc("html")
+        };
+        let prefix = if plain { "rada-print-plain" } else { "rada-print" };
+        let path =
+            std::env::temp_dir().join(format!("{prefix}-{}.html", sanitize(&r.hit.nreg)));
         match std::fs::write(&path, &body) {
             Ok(_) => {
                 let url = format!("file:///{}", path.display().to_string().replace('\\', "/"));

@@ -990,21 +990,48 @@ function fmtEd(d) {
 
 function setLive(msg) { $("live-note").textContent = msg; }
 
+/// Import date for the footer (pure like fmtSince/docStats): the index
+/// `last_import` stamp «YYYY-MM-DD HH:MM:SS» reduced to its date part and
+/// reordered to dd.mm.yyyy — «2026-10-25 07:30:00» becomes «25.10.2026».
+/// Empty, malformed or missing input returns null (the caller shows
+/// «невідомо»).
+function fmtImportDate(iso) {
+  const s = String(iso || "").slice(0, 10);
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+  return s.slice(8, 10) + "." + s.slice(5, 7) + "." + s.slice(0, 4);
+}
+
+/// The PURE single source of the #foot line (the builder the footer paints
+/// through), mirroring the desktop home/About facts: «rada-client v{version}
+/// · {N} документів · {M} тіл у кеші · оновлено: {dd.mm.yyyy}». Counts go
+/// through the file's existing groupTh idiom; a null/garbage last_import
+/// answers «оновлено: невідомо»; the offline text cache's size segment (the
+/// docs_text byte volume from cache_bytes) stays hidden while the cache is
+/// empty. Server strings go through escHtml.
+function statusFooterHtml(d) {
+  if (!d) return "";
+  const docs = Number.isFinite(d.docs) ? d.docs : 0;
+  const rows = Number.isFinite(d.cache_rows) ? d.cache_rows : 0;
+  const parts = [
+    "rada-client v" + escHtml(String(d.version || "?")),
+    groupTh(docs) + " документів",
+    groupTh(rows) + " тіл у кеші",
+    "оновлено: " + (fmtImportDate(d.last_import) || "невідомо"),
+  ];
+  if (rows > 0) {
+    const mb = ((d.cache_bytes || 0) / 1048576).toFixed(1);
+    parts.push("кеш текстів: " + mb + " MB");
+  }
+  return parts.join(" · ");
+}
+
 async function refreshFoot() {
   try {
     const s = await api("/api/status");
-    let foot =
-      "rada_client v" + (s.version || "?") + " · локальний індекс · " + s.docs + " документів · імпорт: " +
-      (s.last_import || "—") + " · анотацій: " + s.annotations;
-    // Offline text cache (docs_text); the segment is hidden while empty.
-    const rows = s.cache_rows || 0;
-    if (rows > 0) {
-      const mb = ((s.cache_bytes || 0) / 1048576).toFixed(1);
-      foot += " · кеш текстів: " + rows + " тіл · " + mb + " MB";
-    }
-    $("foot").textContent = foot;
+    $("foot").innerHTML = statusFooterHtml(s);
   } catch (e) {
-    $("foot").textContent = "не вдалося з’єднатися з індексом: " + e.message;
+    // A failed status fetch never blocks the page: version-only fallback.
+    $("foot").textContent = "rada-client";
   }
 }
 
@@ -3568,7 +3595,7 @@ const EXPORT_RULE = "===========================================================
 /// Version string as displayed in the footer («rada_client v1.2.3 · …»);
 /// empty while the status fetch has not run or has failed.
 function clientVersion() {
-  const m = /^rada_client v([0-9][^ \u00b7]*)/.exec($("foot").textContent || "");
+  const m = /^rada[-_]client v([0-9][^ \u00b7]*)/.exec($("foot").textContent || "");
   return m ? m[1] : "";
 }
 

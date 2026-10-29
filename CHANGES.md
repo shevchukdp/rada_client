@@ -7,6 +7,11 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.52: точні дати в CLI, «Друк (простий)» та статистика індексу в підвалі веб-клієнта / exact CLI dates, plain print & web footer index stats
+
+- **UKR:** 1) **Виправлено датну математику в CLI**: `arrivals --since` раніше плутав сусідні дні (кінець місяця зливався з наступним, від лютого до березня хибка сягала 3 днів); тепер лічба днів — за пролептичним григоріанським календарем, як у всього решти світу. 2) **«Друк (простий)» у читалці**: та сама друкована версія, але без форматування — тільки текст, без класів, золотих акцентів і підсвічувань виділень. 3) **Підвал веб-клієнта показує стан індексу**: «rada-client v… · 295 340 документів · 5 тіл у кеші · оновлено: 25.10.2026» (коли дату імпорту невідомо — «невідомо»). 4) Тести: 364/364.
+- **ENG:** 1) **CLI date math fixed**: `arrivals --since` used to confuse adjacent days (month ends collapsed into the next day, and Feb→Mar drifted by up to 3 days); day counting now follows the proleptic Gregorian calendar like everywhere else. 2) **«Друк (простий)» in the reader**: the same print-ready view without formatting — plain text only, no structural classes, gold accents or highlight marks. 3) **The web client footer shows index facts**: «rada-client v… · 295 340 документів · 5 тіл у кеші · оновлено: 25.10.2026» («невідомо» when the import date is unknown). 4) Tests: 364/364.
+
 ### 0.10.51: «Свіжі документи» на головній, `recent` у CLI та A+/A-/A0 у веб-читалці / home fresh-docs card, CLI `recent` & web reader font controls
 
 - **UKR:** 1) **Картка «Свіжі документи (за датою)» на головній**: 14 найсвіжіших карток за датою прийняття просто з індексу — без мережі; клік відкриває читалку. 2) **`recent` у CLI**: офлайн-список найсвіжіших документів за датою прийняття (`--days 1–365`, типово 7; відлік від найновішої дати індексу, не від годинника; `--limit` до 500), `--json` і `--out` за загальним стандартом. Команда анотацій перейменована на `recent-annots` — зрозуміліше, бо `recent` тепер про документи. 3) **A+/A-/A0 у веб-читалці**: розмір тексту кнопками або з клавіатури (Ctrl+= / Ctrl+- / Ctrl+0), той самий діапазон 60–250%, що й у програмі, вибір зберігається. 4) Тести: 356/356.

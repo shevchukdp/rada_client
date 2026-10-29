@@ -3292,48 +3292,21 @@ fn today_yyyymmdd() -> String {
     days_to_ymd(secs.div_euclid(86_400))
 }
 
-/// Proleptic-Gregorian `YYYYMMDD` → days since 1970-01-01 (Howard Hinnant's
-/// `days_from_civil`); `None` for non-8-digit input or an impossible
-/// calendar date (bad month, out-of-range day, non-leap Feb 29).
+/// Proleptic-Gregorian `YYYYMMDD` → days since 1970-01-01 — the exact
+/// inverse of [`days_to_ymd`] (`ymd_to_days("19700101") == Some(0)`,
+/// `days_to_ymd(0) == "19700101"`). Delegates to the crate's single
+/// canonical Howard Hinnant implementation [`recent_days_from_civil`]
+/// instead of carrying a second day-count formula: the previous
+/// Julian-flavoured body here counted 2440496 at 1970-01-01, collapsed
+/// adjacent month ends (`20261031` and `20261101` mapped to the same
+/// 2461254) and drifted +3 days across February→March. `None` for
+/// non-8-digit input or an impossible calendar date (bad month,
+/// out-of-range day, non-leap Feb 29). Its shipped consumer
+/// [`filter_since`] SUBTRACTS two values, so comparisons are
+/// epoch-relative either way; the epoch fix additionally lets the
+/// values compose with [`days_to_ymd`]/`today_yyyymmdd` correctly.
 fn ymd_to_days(s: &str) -> Option<i64> {
-    let b = s.as_bytes();
-    if b.len() != 8 || !b.iter().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    let y: i64 = s[0..4].parse().ok()?;
-    let m: i64 = s[4..6].parse().ok()?;
-    let d: i64 = s[6..8].parse().ok()?;
-    if !(1..=12).contains(&m) || d < 1 {
-        return None;
-    }
-    let days_in_month = |y: i64, m: i64| -> i64 {
-        match m {
-            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
-            4 | 6 | 9 | 11 => 30,
-            _ => {
-                if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
-                    29
-                } else {
-                    28
-                }
-            }
-        }
-    };
-    if d > days_in_month(y, m) {
-        return None;
-    }
-    let a = (14 - m) / 12;
-    let yy = y + 4800 - a;
-    let mm = m + 12 * a - 3;
-    Some(
-        d - 1
-            + 365 * yy
-            + yy / 4
-            - yy / 100
-            + yy / 400
-            + (367 * mm - 719) / 12
-            - 32075,
-    )
+    recent_days_from_civil(s)
 }
 
 /// Days since 1970-01-01 → `YYYYMMDD` (inverse of [`ymd_to_days`]).
@@ -4793,12 +4766,14 @@ fn normalize_recent_limit(limit: Option<&str>) -> Result<usize> {
 /// Hinnant's canonical `days_from_civil` — the exact inverse of the
 /// existing [`days_to_ymd`]); `None` for non-8-digit input or an
 /// impossible calendar date (bad month, out-of-range day, non-leap
-/// Feb 29). The `recent` window arithmetic uses THIS pair, not the
-/// `search` filter's [`ymd_to_days`]: that helper counts days on a
-/// different epoch (≈2.44 M at 1970-01-01) and provably collapses
-/// month ends (20261031 and 20261101 hash to the same value), so it is
-/// fine for same-formula order comparisons but cannot compose with
-/// [`days_to_ymd`] into a correct calendar walk.
+/// Feb 29). This is the crate's single canonical day count: the
+/// `recent` window arithmetic uses it directly and [`ymd_to_days`]
+/// delegates to it, so `arrivals --since` day-window math and the
+/// `recent` cutoff share one epoch (1970-01-01) and compose with
+/// [`days_to_ymd`] into correct calendar walks. (The
+/// `search --date-from/--date-to` filters never converted dates at
+/// all: `rada_db::search` compares the 8-digit `org_date` strings
+/// inclusively in SQL.)
 fn recent_days_from_civil(s: &str) -> Option<i64> {
     let b = s.as_bytes();
     if b.len() != 8 || !b.iter().all(|c| c.is_ascii_digit()) {
@@ -5496,6 +5471,7 @@ fn fmt_date(d: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
+        days_to_ymd, recent_days_from_civil, ymd_to_days,
         annot_json_body, annot_json_out_note, annot_list_out_note, annot_out_note,
         annot_search_lines, annot_search_match, annot_search_out_note, annot_table_lines,
         annot_text_file_note, arrivals_date_key, arrivals_json_body, arrivals_json_out_note,
@@ -7741,9 +7717,10 @@ mod tests {
         assert_eq!(recent_cutoff("20240301", 2).unwrap(), "20240229");
         assert_eq!(recent_cutoff("20230301", 2).unwrap(), "20230228");
         assert_eq!(recent_cutoff("20240101", 366).unwrap(), "20230101");
-        // month-end and year-end walks (the regression the `search`
-        // filter's ymd_to_days cannot do: it collapses 20261031 into
-        // 20261101)
+        // month-end and year-end walks (historic regression: the old
+        // Julian-flavoured ymd_to_days formula collapsed 20261031 into
+        // 20261101; ymd_to_days now delegates to this canonical pair
+        // and the inverse battery below pins that behaviour)
         assert_eq!(recent_cutoff("20261101", 2).unwrap(), "20261031");
         assert_eq!(recent_cutoff("20261031", 31).unwrap(), "20261001");
         assert_eq!(recent_cutoff("20260101", 31).unwrap(), "20251202");
@@ -8110,5 +8087,143 @@ mod tests {
         assert!(line.contains("записано"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn ymd_to_days_is_the_exact_inverse_of_days_to_ymd() {
+        // epoch: the pair must agree at 0 <-> 19700101 (the pre-fix
+        // Julian-flavoured formula returned 2440496 at 19700101, and
+        // days_to_ymd(2440496) = 86511108 — not a round trip)
+        assert_eq!(ymd_to_days("19700101"), Some(0));
+        assert_eq!(days_to_ymd(0), "19700101");
+        // round-trip battery: leap days, month ends, year boundaries,
+        // historic and far-future dates all survive ymd -> days -> ymd
+        let battery = [
+            "20240229", "20000229", "19000228", "20260131", "20261031", "20261231", "20260101",
+            "20270101", "17100101", "21001231",
+        ];
+        for s in battery {
+            let z = ymd_to_days(s).unwrap_or_else(|| panic!("{s} rejected"));
+            assert_eq!(days_to_ymd(z), s, "round trip {s}");
+        }
+        // strict consecutive-day monotonicity (the pre-fix formula
+        // collapsed 20261031 and 20261101 onto the same 2461254, and
+        // 20261231 and 20270101 onto the same 2461315)
+        let d30 = ymd_to_days("20261030").unwrap();
+        let d31 = ymd_to_days("20261031").unwrap();
+        let n01 = ymd_to_days("20261101").unwrap();
+        assert!(d30 < d31 && d31 < n01, "strictly increasing");
+        assert_eq!(d31 - d30, 1);
+        assert_eq!(n01 - d31, 1);
+        assert_eq!(
+            ymd_to_days("20270101").unwrap() - ymd_to_days("20261231").unwrap(),
+            1
+        );
+        // Feb -> Mar steps exactly one day, leap and non-leap alike
+        // (the pre-fix formula drifted +3 here: 2461011 - 2461008)
+        assert_eq!(
+            ymd_to_days("20260301").unwrap() - ymd_to_days("20260228").unwrap(),
+            1
+        );
+        assert_eq!(
+            ymd_to_days("20240301").unwrap() - ymd_to_days("20240229").unwrap(),
+            1
+        );
+        assert_eq!(
+            ymd_to_days("20240229").unwrap() - ymd_to_days("20240228").unwrap(),
+            1
+        );
+        // impossible / malformed inputs keep being rejected
+        for bad in [
+            "20250229", "20260230", "20261301", "20260000", "abcd", "2026103", "202610313",
+        ] {
+            assert_eq!(ymd_to_days(bad), None, "{bad} rejected");
+        }
+    }
+
+    #[test]
+    fn ymd_to_days_agrees_with_recent_days_from_civil_on_the_battery() {
+        // one canonical day count for the whole CLI; the absolute values
+        // were cross-checked against an independent [datetime] oracle
+        let battery = [
+            "20240229", "20000229", "19000228", "20260131", "20261030", "20261031", "20261101",
+            "20261231", "20260101", "20270101", "17100101", "21001231", "20260227", "20260228",
+            "20260301", "19700101",
+        ];
+        for s in battery {
+            assert_eq!(ymd_to_days(s), recent_days_from_civil(s), "{s}");
+        }
+        // absolute epoch-day anchors from the independent oracle
+        assert_eq!(ymd_to_days("20261031"), Some(20757));
+        assert_eq!(ymd_to_days("20261101"), Some(20758));
+        assert_eq!(ymd_to_days("17100101"), Some(-94963));
+        assert_eq!(ymd_to_days("21001231"), Some(47846));
+        // rejections agree too (identical validation contract)
+        for bad in ["", "20250229", "20261301", "1234567", "20260230"] {
+            assert_eq!(ymd_to_days(bad), recent_days_from_civil(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn filter_since_day_math_is_exact_across_month_end_and_leap_boundaries() {
+        // filter_since is the shipped consumer of ymd_to_days day
+        // DIFFERENCES. Pre-fix the formula collapsed 20261031 into
+        // 20261101 (days=0 wrongly kept yesterday) and drifted +3 from
+        // Feb 28 to Mar 1 (days=2 wrongly dropped 20260228 vs 20260302)
+        let docs: Vec<(&str, &str)> = vec![
+            ("/ed20261101", ""), // 0 today — kept even at days 0
+            ("/ed20261031", ""), // 1 yesterday — kept from days 1
+            ("/ed20261030", ""), // 2 two days back — kept from days 2
+        ];
+        assert_eq!(filter_since(&docs, 0, "20261101"), vec![0]);
+        assert_eq!(filter_since(&docs, 1, "20261101"), vec![0, 1]);
+        assert_eq!(filter_since(&docs, 2, "20261101"), vec![0, 1, 2]);
+        // Feb -> Mar of a non-leap year: pre-fix drift made 20260228
+        // look FOUR days older than 20260302 instead of two
+        let febmar: Vec<(&str, &str)> = vec![
+            ("/ed20260302", ""), // 0 today
+            ("/ed20260301", ""), // 1 yesterday
+            ("/ed20260228", ""), // 2 two days back (2026 is not a leap year)
+            ("/ed20260227", ""), // 3 three days back — dropped at days 2
+        ];
+        assert_eq!(filter_since(&febmar, 2, "20260302"), vec![0, 1, 2]);
+        assert_eq!(filter_since(&febmar, 3, "20260302"), vec![0, 1, 2, 3]);
+        // leap day: 20240229 is exactly one day before 20240301
+        let leap: Vec<(&str, &str)> = vec![("/ed20240229", ""), ("/ed20240228", "")];
+        assert_eq!(filter_since(&leap, 1, "20240301"), vec![0]);
+        assert_eq!(filter_since(&leap, 2, "20240301"), vec![0, 1]);
+    }
+
+    #[test]
+    fn search_date_window_endpoints_are_inclusive_and_match_day_numbers() {
+        // `search --date-from/--date-to` bounds rows with INCLUSIVE
+        // string comparisons on the 8-digit org_date (rada_db::search:
+        // `org_date >= ?1 AND org_date <= ?2`). That string windowing
+        // is calendar-correct exactly while ymd_to_days is strictly
+        // monotonic and epoch-consistent: pin that day-number window
+        // membership equals SQL string-range membership on every
+        // candidate across a Feb/Mar boundary, both endpoints included
+        let (from, to) = ("20260226", "20260302");
+        let zf = ymd_to_days(from).unwrap();
+        let zt = ymd_to_days(to).unwrap();
+        let candidates = [
+            "20260225", "20260226", "20260227", "20260228", "20260301", "20260302", "20260303",
+        ];
+        for s in candidates {
+            let z = ymd_to_days(s).unwrap();
+            assert_eq!(
+                zf <= z && z <= zt,
+                from <= s && s <= to,
+                "endpoint-inclusive window membership {s}"
+            );
+        }
+        // both endpoints belong to the window (inclusive-endpoint rule)
+        assert!(from <= from && from <= to && to <= to);
+        // the day-level inclusive window helper: 237 days ending at
+        // 20261023 start exactly on 20260301 (236 calendar days back,
+        // oracle-verified) and span 237 consecutive day numbers
+        let cutoff = recent_cutoff("20261023", 237).unwrap();
+        assert_eq!(cutoff, "20260301");
+        assert_eq!(ymd_to_days("20261023").unwrap() - ymd_to_days(&cutoff).unwrap(), 236);
     }
 }

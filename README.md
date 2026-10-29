@@ -111,10 +111,14 @@ official open-data API:
   - **Plain-text mode** — «Форматований/Простий» toggle (GUI) and «Простий»
     (web) switch off structural styling of titles/sections/articles.
   - **Printing** — «Друк» in the reader (and «🖨 Друк» in the web UI) opens a
-    print-ready HTML view in the browser (web: auto-opens the print dialog).
+    print-ready HTML view in the browser (web: auto-opens the print dialog);
+    **«Друк (простий)»** opens the same view with no structural classes, no
+    gold accents and no highlight marks — the «простий» mode on paper.
   - **About dialog («Про програму»)** — version, index path/size/docs, freshest
     fetched data, dictionaries, live-request counter, API limits and links;
-    the web footer shows the same version (`version` in `/api/status`).
+    the web footer shows the same version plus index facts —
+    «rada-client v… · N документів · M тіл у кеші · оновлено: dd.mm.yyyy»
+    (from `/api/status`: `version`, `docs`, `cache_rows`, `last_import`).
   - **Keyboard shortcuts** — **Ctrl+F** focuses the find-in-text field (reader),
     the query field (search) or the text filter (arrivals/favorites);
     **Ctrl+K** jumps to Пошук with the query

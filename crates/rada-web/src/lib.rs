@@ -250,7 +250,10 @@ fn status_handler(st: &State) -> Resp {
         Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
     };
     let docs = doc_count(&conn).unwrap_or(0);
-    let last = last_import(&conn).unwrap_or_default();
+    // The same Option value the desktop shows as «останній імпорт/синк»:
+    // serialized as a string, or null when the index was never imported
+    // (the footer then answers «оновлено: невідомо»).
+    let last = last_import(&conn);
     let annotations: i64 = conn
         .query_row("SELECT COUNT(*) FROM annotations", [], |r| r.get(0))
         .unwrap_or(0);
@@ -4707,5 +4710,69 @@ mod tests {
         assert!(h.contains("setFontScale(1);"), "Ctrl+0 resets to 1.0");
         assert!(h.contains("!$(\"doc-pane\").hidden"), "reader-scoped, like Ctrl+F");
         assert!(h.contains("clampFontScale"), "the comment cites the pure clamp route");
+    }
+
+    /// Index-stats footer line: the pure `statusFooterHtml(d)` builder is
+    /// present, carries the exact Ukrainian segments («тіл у кеші», the
+    /// «оновлено: » freshness label with its «невідомо» fallback) and is the
+    /// single paint point of `refreshFoot` (which keeps feeding it through
+    /// the file's existing `/api/status` fetch idiom).
+    #[test]
+    fn ui_page_has_status_footer_line() {
+        assert!(
+            ui::INDEX_HTML.contains("function statusFooterHtml(d) {"),
+            "pure footer builder present"
+        );
+        assert!(ui::INDEX_HTML.contains("тіл у кеші"), "cache bodies label");
+        assert!(ui::INDEX_HTML.contains("оновлено: "), "freshness label");
+        assert!(ui::INDEX_HTML.contains("невідомо"), "unknown-date fallback");
+        assert!(
+            ui::INDEX_HTML.contains("fmtImportDate(d.last_import)"),
+            "the builder formats the status date through fmtImportDate"
+        );
+        let start = ui::INDEX_HTML
+            .find("async function refreshFoot() {")
+            .expect("refreshFoot present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("refreshFoot end")];
+        assert!(
+            body.contains("statusFooterHtml(s)"),
+            "the footer paints through the builder"
+        );
+        assert!(
+            body.contains("\"/api/status\""),
+            "the builder is fed by the existing status fetch"
+        );
+    }
+
+    /// `fmtImportDate` semantics asserted on the source literal: the strict
+    /// ISO guard, the exact dd.mm.yyyy reordering (the doc comment pins
+    /// 2026-10-25 becoming 25.10.2026) and the garbage/empty/null null path;
+    /// plus the three footer fields present as serialized string literals
+    /// in the `/api/status` json! object of this very source file.
+    #[test]
+    fn fmt_import_date_semantics_and_status_fields() {
+        let start = ui::INDEX_HTML
+            .find("function fmtImportDate(iso) {")
+            .expect("fmtImportDate defined");
+        let comment = &ui::INDEX_HTML[start.saturating_sub(400)..start];
+        assert!(comment.contains("2026-10-25"), "doc comment pins the sample date");
+        assert!(comment.contains("25.10.2026"), "doc comment pins the expected day-first form");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("fmtImportDate end")];
+        assert!(
+            body.contains("/^\\d{4}-\\d{2}-\\d{2}$/.test(s)"),
+            "strict YYYY-MM-DD guard (garbage answers null)"
+        );
+        assert!(
+            body.contains("s.slice(8, 10) + \".\" + s.slice(5, 7) + \".\" + s.slice(0, 4)"),
+            "2026-10-25 reorders to 25.10.2026"
+        );
+        assert!(body.contains("return null"), "empty/null path returns null");
+        // /api/status serializes the footer fields (this file's own source).
+        let src = include_str!("lib.rs");
+        for field in ["\"docs\"", "\"cache_rows\"", "\"last_import\""] {
+            assert!(src.contains(field), "/api/status must serialize {field}");
+        }
     }
 }

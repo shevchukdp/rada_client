@@ -121,6 +121,60 @@ impl ReaderState {
 
     /// Export the current document as Markdown, plain text, or HTML.
     /// HTML inlines saved highlights as gold `<mark>` spans.
+    /// Print-ready PLAIN variant of the HTML export: no structural classes,
+    /// no gold accents, no `<mark>` highlights — the «простий» reading mode
+    /// put on paper. Keeps the header meta line and the annotation footer.
+    pub fn print_doc_plain(&self) -> String {
+        let title = self
+            .card
+            .as_ref()
+            .map(|c| c.nazva.clone())
+            .unwrap_or_else(|| self.hit.nazva.clone());
+        let text = self.text.clone().unwrap_or_default();
+        let esc = |s: &str| {
+            s.replace('&', "&amp;")
+                .replace('<', "&lt;")
+                .replace('>', "&gt;")
+        };
+        let mut s = String::new();
+        s.push_str("<!doctype html>\n<html lang=\"uk\">\n<meta charset=\"utf-8\">\n<title>");
+        s.push_str(&esc(&title));
+        s.push_str("</title>\n<style>\nbody{font-family:Georgia,'Times New Roman',serif;max-width:56em;margin:2em auto;padding:0 1.2em;line-height:1.5;color:#111}\nh1{font-size:1.25em}\nmain p{margin:.35em 0;font-size:1.02em}\nheader{border-bottom:1px solid #888;margin-bottom:1.2em;padding-bottom:.5em}\nfooter{border-top:1px solid #bbb;margin-top:2em;padding-top:.8em;font-size:.9em;color:#333}\n</style>\n");
+        s.push_str(&format!(
+            "<header><h1>{}</h1>\n<p><b>Рег. №:</b> <code>{}</code> · <b>Стан:</b> {} · <b>Номер:</b> {} · <b>Дата:</b> {} (ред. {})</p></header>\n",
+            esc(&title),
+            esc(&self.hit.nreg),
+            StatusId(self.hit.status).label(),
+            esc(&self.hit.org_num),
+            fmt_date(&self.hit.org_date),
+            fmt_date(&self.hit.poddat),
+        ));
+        s.push_str("<main>\n");
+        for line in text.lines() {
+            s.push_str(&format!("<p>{}</p>\n", esc(line)));
+        }
+        s.push_str("</main>\n");
+        if !self.annotations.is_empty() {
+            s.push_str("<footer><b>Примітки та виділення</b><ul>\n");
+            for a in &self.annotations {
+                let (tag, txt) = match a.kind.as_str() {
+                    "highlight" => ("виділення", esc(a.text.trim())),
+                    "bookmark" => ("закладка", String::new()),
+                    _ => ("коментар", esc(a.text.trim())),
+                };
+                let date = esc(&a.created_at);
+                if txt.is_empty() {
+                    s.push_str(&format!("<li><b>{tag}</b> · {date}</li>\n"));
+                } else {
+                    s.push_str(&format!("<li><b>{tag}</b> · {date}<br>{txt}</li>\n"));
+                }
+            }
+            s.push_str("</ul></footer>\n");
+        }
+        s.push_str("</html>\n");
+        s
+    }
+
     pub fn export_doc(&self, fmt: &str) -> String {
         let title = self
             .card
@@ -835,7 +889,17 @@ fn text_block(app: &mut App, ui: &mut egui::Ui) {
             .on_hover_text("відкрити друковану версію в браузері (друк — Ctrl+P)")
             .clicked()
         {
-            app.print_reader(ui.ctx());
+            app.print_reader(ui.ctx(), false);
+        }
+        if ui
+            .button("Друк (простий)")
+            .on_hover_text(
+                "друкована версія без форматування: тільки текст, \
+                 без класів, золотих акцентів і підсвічувань",
+            )
+            .clicked()
+        {
+            app.print_reader(ui.ctx(), true);
         }
         if let Some(t) = &text {
             let st = reading_stats(t);
@@ -2146,6 +2210,53 @@ mod tests {
             "both mentions wrapped"
         );
         assert!(s.ends_with("</html>\n"), "complete document");
+    }
+
+    #[test]
+    fn plain_print_has_no_classes_marks_or_gold() {
+        let mut r = ReaderState::new(rada_db::SearchHit {
+            nreg: "2-2".into(),
+            nazva: "Тест".into(),
+            status: 5,
+            org_date: "20240101".into(),
+            org_num: "2".into(),
+            poddat: String::new(),
+        });
+        r.text = Some("Стаття 1. Текст\n<safe> & <b>виділення</b>".into());
+        r.annotations = vec![rada_db::Annotation {
+            id: 1,
+            nreg: "2-2".into(),
+            kind: "highlight".into(),
+            text: "виділення".into(),
+            span_start: None,
+            span_end: None,
+            created_at: "2026-01-01 00:00:00".into(),
+        }];
+        let s = r.print_doc_plain();
+        assert!(!s.contains("<mark"), "no highlights in the plain variant");
+        assert!(!s.contains("class="), "no structural classes at all");
+        assert!(!s.contains("#8a6d00") && !s.contains("#c9a227"), "no gold accents");
+        assert!(s.contains("&lt;safe&gt; &amp; &lt;b&gt;"), "escaping kept");
+        assert!(s.contains("<p>Стаття 1. Текст</p>"), "one <p> per line");
+        assert!(s.contains("Рег. №:"), "header meta kept");
+        assert!(s.contains("<li><b>виділення</b>"), "annotation footer kept");
+        assert!(s.ends_with("</html>\n"), "complete document");
+    }
+
+    #[test]
+    fn plain_print_without_annotations_omits_footer() {
+        let mut r = ReaderState::new(rada_db::SearchHit {
+            nreg: "3-3".into(),
+            nazva: "Порожньо".into(),
+            status: 1,
+            org_date: String::new(),
+            org_num: String::new(),
+            poddat: String::new(),
+        });
+        r.text = Some("тільки текст".into());
+        let s = r.print_doc_plain();
+        assert!(!s.contains("<footer>"), "no footer without annotations");
+        assert!(s.contains("<p>тільки текст</p>"));
     }
 
     #[test]
