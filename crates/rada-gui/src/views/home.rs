@@ -145,6 +145,27 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 ui.end_row();
                             }
                         });
+                    if st.docs > 0 && !st.fresh.is_empty() {
+                        // Offline «fresh by adoption date» card: the same rows
+                        // the CLI `recent` command renders, straight from the
+                        // index (no network). Click opens the reader.
+                        let fresh = st.fresh.clone();
+                        ui.add_space(8.0);
+                        ui.label(
+                            egui::RichText::new("Свіжі документи (за датою):").strong(),
+                        );
+                        for (date, nreg, title) in fresh.iter() {
+                            let label = fresh_row_label(date, nreg, title);
+                            let (n, t, d) = (nreg.clone(), title.clone(), date.clone());
+                            if ui
+                                .button(egui::RichText::new(label).small())
+                                .on_hover_text("відкрити в читалці")
+                                .clicked()
+                            {
+                                app.open_reader_by_nreg(&n, &t, 0, &d, "", "");
+                            }
+                        }
+                    }
                 }
             }
 
@@ -632,9 +653,33 @@ pub fn dict_hits(dicts: &[(i64, String)], needle: &str, cap: usize) -> Vec<(i64,
         .collect()
 }
 
+/// Row label for the home «Свіжі документи» card:
+/// «dd.mm.yyyy  nreg  title», with the date shown only when it is a full
+/// 8-digit YYYYMMDD and the title truncated to 60 chars (+ ellipsis).
+/// An empty/blank title falls back to the bare nreg.
+pub fn fresh_row_label(date: &str, nreg: &str, title: &str) -> String {
+    let d = if date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()) {
+        format!("{}.{}.{}  ", &date[6..8], &date[4..6], &date[0..4])
+    } else {
+        String::new()
+    };
+    let full: Vec<char> = title.chars().collect();
+    let short: String = full.iter().take(60).collect();
+    let short = if full.len() > 60 {
+        format!("{short}…")
+    } else {
+        short
+    };
+    if short.trim().is_empty() {
+        format!("{d}{nreg}")
+    } else {
+        format!("{d}{nreg}  {short}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{dict_field, dict_hits, DictField};
+    use super::{dict_field, dict_hits, fresh_row_label, DictField};
 
     fn d(id: i64, label: &str) -> (i64, String) {
         (id, label.to_string())
@@ -679,5 +724,27 @@ mod tests {
         // no match = empty
         assert!(dict_hits(&dicts, "zzz", 10).is_empty());
         assert!(dict_hits(&[], "a", 10).is_empty());
+    }
+
+    #[test]
+    fn fresh_row_label_formats_full_date_and_truncates_title() {
+        assert_eq!(
+            fresh_row_label("20261023", "1234-2026", "Про тест"),
+            "23.10.2026  1234-2026  Про тест"
+        );
+        let long = "а".repeat(70);
+        let l = fresh_row_label("20260101", "N", &long);
+        assert!(l.starts_with("01.01.2026  N  "));
+        assert!(l.ends_with('…'));
+        // 10 date + 2 spaces + nreg + 2 spaces + 60 chars + ellipsis
+        assert_eq!(l.chars().count(), 10 + 2 + 1 + 2 + 60 + 1);
+    }
+
+    #[test]
+    fn fresh_row_label_skips_partial_dates_and_blank_titles() {
+        assert_eq!(fresh_row_label("2026", "N1", "Титл"), "N1  Титл");
+        assert_eq!(fresh_row_label("2026102a", "N1", "Титл"), "N1  Титл");
+        assert_eq!(fresh_row_label("", "N1", "  "), "N1");
+        assert_eq!(fresh_row_label("20261023", "N1", ""), "23.10.2026  N1");
     }
 }

@@ -130,6 +130,9 @@ pub struct IndexStatus {
     pub max_date: Option<String>,
     pub size_bytes: u64,
     pub dicts: Vec<(String, i64)>,
+    /// Freshest cards by adoption date (offline, index-only):
+    /// `(org_date YYYYMMDD, nreg, nazva)`, newest first, capped at 14.
+    pub fresh: Vec<(String, String, String)>,
 }
 
 /// Which app page is on screen.
@@ -2247,6 +2250,7 @@ fn read_index_status(db: &PathBuf) -> IndexStatus {
                 max_date: None,
                 size_bytes: 0,
                 dicts: Vec::new(),
+                fresh: Vec::new(),
             }
         }
         Ok(m) => m,
@@ -2257,6 +2261,7 @@ fn read_index_status(db: &PathBuf) -> IndexStatus {
         max_date: None,
         size_bytes: meta.len(),
         dicts: Vec::new(),
+        fresh: Vec::new(),
     };
     if let Ok(conn) = rada_db::open(db) {
         st.docs = rada_db::doc_count(&conn).unwrap_or(0);
@@ -2269,6 +2274,25 @@ fn read_index_status(db: &PathBuf) -> IndexStatus {
             )
             .ok()
             .flatten();
+        // Offline «fresh by adoption date» card rows for the home page
+        // (same anchor rules as the CLI `recent` command: full 8-digit dates).
+        st.fresh = conn
+            .prepare(
+                "SELECT org_date, nreg, nazva FROM docs \
+                 WHERE org_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' \
+                 ORDER BY org_date DESC, nreg ASC LIMIT 14",
+            )
+            .and_then(|mut ps| {
+                let rows = ps.query_map([], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap_or_default();
         for kind in ["stan", "typs", "organs"] {
             let count: i64 = conn
                 .query_row(

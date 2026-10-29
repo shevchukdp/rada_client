@@ -4617,4 +4617,95 @@ mod tests {
             "the find walker structurally skips the chip labels");
         assert!(r.contains("NodeFilter.SHOW_TEXT"), "the walker is still the find pipeline");
     }
+
+    #[test]
+    fn ui_page_has_font_scale_controls() {
+        // Reader text-resize toolbar buttons A+/A-/A-0 (plain ASCII labels,
+        // no emoji/arrows) sit in the reader toolbar beside the «Простий»
+        // toggle, and the scale persists in «rada-font-scale» (the same key
+        // family as «rada-toc-collapsed»). The clamped/stepped value is
+        // computed by the PURE clampFontScale() so it can be string-tested
+        // like fmtSince/countMatches/docStats, and the named bounds mirror
+        // the desktop GUI exactly: views/reader.rs zoom_step
+        // `(cur as i64 + delta as i64).clamp(60, 250) as u32` and
+        // settings.rs text_scale `(self.zoom as f32 / 100.0).clamp(0.6, 2.5)`
+        // — i.e. 0.6..=2.5 in 0.1 steps, reset to 1.0.
+        assert!(ui::INDEX_HTML.contains("id=\"btn-font-plus\""));
+        assert!(ui::INDEX_HTML.contains("id=\"btn-font-minus\""));
+        assert!(ui::INDEX_HTML.contains("id=\"btn-font-reset\""));
+        assert!(ui::INDEX_HTML.contains(">A+</button>"));
+        assert!(ui::INDEX_HTML.contains(">A-</button>"));
+        assert!(ui::INDEX_HTML.contains(">A0</button>"));
+        assert!(ui::INDEX_HTML.contains("\"rada-font-scale\""));
+        assert!(ui::INDEX_HTML.contains("fontScale: 1,"), "state keeps the scale");
+        // The GUI clamp values mirrored 1:1 from rada-gui (zoom 60..=250 %).
+        assert!(ui::INDEX_HTML.contains("const FONT_SCALE_MIN = 0.6;"));
+        assert!(ui::INDEX_HTML.contains("const FONT_SCALE_MAX = 2.5;"));
+        assert!(ui::INDEX_HTML.contains("const FONT_SCALE_STEP = 0.1;"));
+        assert!(ui::INDEX_HTML.contains("zoom_step"), "the GUI source is cited in the comment");
+        assert!(ui::INDEX_HTML.contains("clamp(60, 250)"), "the GUI bound is quoted");
+        // The pure helper clamps then rounds to the 0.1 grid.
+        let c = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function clampFontScale(v) {")
+            .expect("clampFontScale")..];
+        let c = &c[..c.find("\n}").expect("clampFontScale end")];
+        assert!(c.contains("Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, n))"),
+            "clamps with the named GUI-mirrored bounds");
+        assert!(c.contains("Math.round(clamped * 10) / 10"), "steps to 0.1");
+        assert!(c.contains("if (!isFinite(n)) return 1;"), "non-finite input resets to 1.0");
+        // Every change routes through setFontScale → clampFontScale + persist + repaint.
+        let s = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function setFontScale(v) {")
+            .expect("setFontScale")..];
+        let s = &s[..s.find("\n}").expect("setFontScale end")];
+        assert!(s.contains("state.fontScale = clampFontScale(v);"));
+        assert!(s.contains("localStorage.setItem(FONT_SCALE_KEY, String(state.fontScale));"));
+        assert!(s.contains("applyFontScale();"));
+        // Toolbar buttons step ±0.1 around state.fontScale; A0 resets to 1.0.
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"btn-font-plus\").onclick = () => setFontScale(state.fontScale + FONT_SCALE_STEP);"
+        ));
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"btn-font-minus\").onclick = () => setFontScale(state.fontScale - FONT_SCALE_STEP);"
+        ));
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"btn-font-reset\").onclick = () => setFontScale(1);"
+        ));
+        // Restored on load from «rada-font-scale».
+        assert!(ui::INDEX_HTML.contains(
+            "parseFloat(localStorage.getItem(FONT_SCALE_KEY))"
+        ));
+    }
+
+    #[test]
+    fn ui_page_has_font_scale_keyboard_shortcuts() {
+        // Ctrl+= / Ctrl+Plus grows, Ctrl+- shrinks, Ctrl+0 resets — the web
+        // twin of the GUI's Ctrl+Plus/Minus/0 reader zoom (app.rs
+        // zoom_reader). The branches live in the shared keydown listener
+        // beside the Ctrl+F find focus (the file's existing idiom), each
+        // guarded by the Ctrl/Cmd-mod + no-Alt + reader-open conditions,
+        // each preventDefaults so the browser never zooms the page, and all
+        // three route through setFontScale → clampFontScale (the pure
+        // 0.6..=2.5 GUI-mirrored clamp).
+        let h = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("// Ctrl+F / Cmd+F opens the document find bar instead of the browser find.")
+            .expect("reader keydown listener")..];
+        let h = &h[..h.find("\n});").expect("keydown listener end")];
+        // Distinct key literals for each of the three commands.
+        assert!(h.contains("ev.key === \"=\" || ev.key === \"+\" || ev.key === \"NumpadAdd\""),
+            "Ctrl+= / Ctrl+Plus grow branch");
+        assert!(h.contains("ev.key === \"-\" || ev.key === \"NumpadSubtract\""),
+            "Ctrl+- shrink branch");
+        assert!(h.contains("ev.key === \"0\" || ev.key === \"Numpad0\""),
+            "Ctrl+0 reset branch");
+        // Each handled branch cancels the browser's own page zoom.
+        assert_eq!(h.matches("ev.preventDefault();\n    setFontScale").count(), 3,
+            "every zoom branch preventDefaults before stepping");
+        // Routed through the clamped setter with the distinct literals.
+        assert!(h.contains("setFontScale(state.fontScale + FONT_SCALE_STEP);"));
+        assert!(h.contains("setFontScale(state.fontScale - FONT_SCALE_STEP);"));
+        assert!(h.contains("setFontScale(1);"), "Ctrl+0 resets to 1.0");
+        assert!(h.contains("!$(\"doc-pane\").hidden"), "reader-scoped, like Ctrl+F");
+        assert!(h.contains("clampFontScale"), "the comment cites the pure clamp route");
+    }
 }

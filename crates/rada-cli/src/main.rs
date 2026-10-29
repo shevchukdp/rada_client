@@ -434,8 +434,10 @@ enum Cmd {
     /// Offline «what did I highlight lately»: the most recently saved
     /// annotations across all documents (`created_at` descending — the GUI
     /// favorites «новіші» sort). Pure offline: the command never touches
-    /// the network.
-    Recent {
+    /// the network. (Formerly spelled `recent`; renamed `recent-annots`
+    /// when the freshest-documents-by-adoption-date report took the
+    /// shorter `recent` name.)
+    RecentAnnots {
         /// Max annotations to print (default 20, clamped to 1..=500).
         #[arg(long, default_value_t = 20)]
         limit: usize,
@@ -457,7 +459,7 @@ enum Cmd {
     /// filtered by kind, grouped under one header per document like the
     /// GUI grouped view. Pure offline: the command never touches the
     /// network (the chronological stream with `created_at DESC` stays the
-    /// `recent` command's niche).
+    /// `recent-annots` command's niche).
     Favorites {
         /// Keep only one kind: comment | highlight | bookmark (Ukrainian
         /// aliases «коментар|виділення|закладка» accepted too,
@@ -528,6 +530,39 @@ enum Cmd {
         /// instead of stdout (parent dirs created). Plain report gets a
         /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
         /// BOM-less; the `[months] записано …` note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Offline «what is the freshest»: the newest documents by adoption
+    /// date on the SAME primary date column `org_date` the
+    /// `search --date-from/--date-to` filters use — the day-level
+    /// companion of `months` / `dates`. The anchor is the freshest full
+    /// 8-digit `org_date` present in the index (NEVER today's system
+    /// date, so an idle index still reports its own newest documents);
+    /// `--days N` (default 7, 1..=365) keeps the documents whose 8-digit
+    /// `org_date` lies within the last N days ending at that anchor
+    /// (inclusive), `--limit M` (default 100, 1..=500) caps the rendered
+    /// rows. Rows order by `org_date` descending, `nreg` ascending. Pure
+    /// offline: the command never touches the network; informational —
+    /// always exits 0, even when no document qualifies (header +
+    /// «немає документів за цей період» + «разом: 0»).
+    Recent {
+        /// Days to look back from the freshest indexed date
+        /// (default 7, 1..=365).
+        #[arg(long)]
+        days: Option<String>,
+        /// Max documents to print (default 100, 1..=500).
+        #[arg(long)]
+        limit: Option<String>,
+        /// Emit the JSON body
+        /// (`{"days":N,"docs":[{date,nreg,title},…],"from":"YYYYMMDD"|null,"to":"YYYYMMDD"|null}`)
+        /// instead of the report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less; the `[recent] записано …` note goes to stderr.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -796,7 +831,7 @@ fn run() -> Result<()> {
         Cmd::Snapshot { what } => cmd_snapshot(&cli.db, what),
         Cmd::Status { out } => cmd_status(&cli.db, out.as_deref()),
         Cmd::Annot { what } => cmd_annot(&cli.db, what),
-        Cmd::Recent { limit, json, out } => cmd_recent(&cli.db, limit, json, out.as_deref()),
+        Cmd::RecentAnnots { limit, json, out } => cmd_recent(&cli.db, limit, json, out.as_deref()),
         Cmd::Favorites { kind, sort, json, out } => {
             cmd_favorites(&cli.db, kind.as_deref(), &sort, json, out.as_deref())
         }
@@ -804,6 +839,18 @@ fn run() -> Result<()> {
         Cmd::Months { year, json, out } => {
             cmd_months(&cli.db, year.as_deref(), json, out.as_deref())
         }
+        Cmd::Recent {
+            days,
+            limit,
+            json,
+            out,
+        } => cmd_recent_docs(
+            &cli.db,
+            days.as_deref(),
+            limit.as_deref(),
+            json,
+            out.as_deref(),
+        ),
         Cmd::Orgs { limit, json, out } => {
             cmd_orgs(&cli.db, limit, json, out.as_deref())
         }
@@ -4694,6 +4741,315 @@ fn cmd_months(db: &PathBuf, year: Option<&str>, json: bool, out: Option<&Path>) 
     Ok(())
 }
 
+/// One `recent` document row: the registration number, the title as
+/// stored in the TEXT `nazva` column of `docs` (the index has no `title`
+/// column — `nazva` is the title), and the raw 8-digit `org_date`
+/// (`YYYYMMDD`) the row qualified with.
+struct RecentDocRow {
+    nreg: String,
+    title: String,
+    org_date: String,
+}
+
+/// Validate the `recent --days` option (the `normalize_month_year` house
+/// rule: a clear Ukrainian error, exit 1 through `main`): absent means
+/// the 7-day default (`Ok(7)`); present must parse to an unsigned number
+/// inside 1..=365 (surrounding whitespace trimmed), anything else —
+/// `"0"`, `"366"`, `"abcd"`, the empty string — fails with
+/// «днів має бути 1–365».
+fn normalize_recent_days(days: Option<&str>) -> Result<u32> {
+    match days {
+        None => Ok(7),
+        Some(d) => {
+            let d = d.trim();
+            match d.parse::<u32>() {
+                Ok(n) if (1..=365).contains(&n) => Ok(n),
+                _ => Err(anyhow::anyhow!("днів має бути 1–365")),
+            }
+        }
+    }
+}
+
+/// Validate the `recent --limit` option (the same house rule as
+/// [`normalize_recent_days`], mirroring how `orgs` bounds its `--limit`
+/// at 500): absent means the 100-row default (`Ok(100)`); present must
+/// parse to an unsigned number inside 1..=500 (whitespace trimmed),
+/// anything else — `"0"`, `"501"`, `"abcd"`, the empty string — fails
+/// with «ліміт має бути 1–500».
+fn normalize_recent_limit(limit: Option<&str>) -> Result<usize> {
+    match limit {
+        None => Ok(100),
+        Some(l) => {
+            let l = l.trim();
+            match l.parse::<usize>() {
+                Ok(n) if (1..=500).contains(&n) => Ok(n),
+                _ => Err(anyhow::anyhow!("ліміт має бути 1–500")),
+            }
+        }
+    }
+}
+
+/// Proleptic-Gregorian `YYYYMMDD` → days since 1970-01-01 (Howard
+/// Hinnant's canonical `days_from_civil` — the exact inverse of the
+/// existing [`days_to_ymd`]); `None` for non-8-digit input or an
+/// impossible calendar date (bad month, out-of-range day, non-leap
+/// Feb 29). The `recent` window arithmetic uses THIS pair, not the
+/// `search` filter's [`ymd_to_days`]: that helper counts days on a
+/// different epoch (≈2.44 M at 1970-01-01) and provably collapses
+/// month ends (20261031 and 20261101 hash to the same value), so it is
+/// fine for same-formula order comparisons but cannot compose with
+/// [`days_to_ymd`] into a correct calendar walk.
+fn recent_days_from_civil(s: &str) -> Option<i64> {
+    let b = s.as_bytes();
+    if b.len() != 8 || !b.iter().all(|c| c.is_ascii_digit()) {
+        return None;
+    }
+    let y: i64 = s[0..4].parse().ok()?;
+    let m: i64 = s[4..6].parse().ok()?;
+    let d: i64 = s[6..8].parse().ok()?;
+    if !(1..=12).contains(&m) || d < 1 {
+        return None;
+    }
+    let days_in_month = |y: i64, m: i64| -> i64 {
+        match m {
+            1 | 3 | 5 | 7 | 8 | 10 | 12 => 31,
+            4 | 6 | 9 | 11 => 30,
+            _ => {
+                if (y % 4 == 0 && y % 100 != 0) || y % 400 == 0 {
+                    29
+                } else {
+                    28
+                }
+            }
+        }
+    };
+    if d > days_in_month(y, m) {
+        return None;
+    }
+    let yy = y - if m <= 2 { 1 } else { 0 };
+    let era = if yy >= 0 { yy } else { yy - 399 } / 400;
+    let yoe = yy - era * 400; // [0, 399]
+    let mp = if m > 2 { m - 3 } else { m + 9 };
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    Some(era * 146097 + doe - 719468)
+}
+
+/// The inclusive cutoff date of the `recent` window: the calendar date
+/// `days - 1` before the 8-digit `anchor` (the freshest indexed
+/// `org_date`), so `--days 1` selects exactly the anchor day and
+/// `--days 7` spans seven consecutive days ending at the anchor. Pure
+/// (the canonical [`recent_days_from_civil`] + [`days_to_ymd`] civil-date
+/// pair does the arithmetic, leap years and month ends included); `None`
+/// for a malformed or impossible anchor.
+fn recent_cutoff(anchor: &str, days: u32) -> Option<String> {
+    let z = recent_days_from_civil(anchor)?;
+    Some(days_to_ymd(z - (days as i64 - 1)))
+}
+
+/// The report body of `recent` (shared by stdout and `--out` so the two
+/// cannot drift): «Свіжі документи ({from}–{to}):» header with the
+/// inclusive cutoff window formatted `dd.mm.yyyy` via [`fmt_date`] (the
+/// header drops the range — «Свіжі документи:» — when the index carries
+/// no valid 8-digit date to anchor on), then one
+/// `{dd.mm.yyyy}  {nreg}  {title}` line per document in input order (the
+/// SQL orders by `org_date` descending, `nreg` ascending), then the
+/// verdict «разом: {count}» over the rendered rows (post-`--limit`, NOT
+/// the whole window). Informational: no qualifying document renders the
+/// header + «немає документів за цей період» + «разом: 0» and the run
+/// still exits 0.
+fn recent_docs_lines(range: Option<(&str, &str)>, rows: &[RecentDocRow]) -> Vec<String> {
+    let mut lines = vec![match range {
+        Some((from, to)) => format!(
+            "Свіжі документи ({}–{}):",
+            fmt_date(from),
+            fmt_date(to)
+        ),
+        None => "Свіжі документи:".to_string(),
+    }];
+    if rows.is_empty() {
+        lines.push("немає документів за цей період".to_string());
+    }
+    for r in rows {
+        lines.push(format!("{}  {}  {}", fmt_date(&r.org_date), r.nreg, r.title));
+    }
+    lines.push(format!("разом: {}", rows.len()));
+    lines
+}
+
+/// The `--json` body of `recent` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty
+/// `{"days":N,"docs":[{date,nreg,title},…],"from":"YYYYMMDD"|null,"to":"YYYYMMDD"|null}`
+/// object built as hand-rolled `serde_json::Value`s like the other
+/// commands' JSON bodies (map keys sort, so `days`/`docs`/`from`/`to` and
+/// the `date`/`nreg`/`title` inside every entry keep their alphabetical
+/// order). `date` is the `dd.mm.yyyy` rendering (the report rule);
+/// `from`/`to` are the raw `YYYYMMDD` cutoff bounds — both `null` when
+/// the index has no valid 8-digit date to anchor on (the `dates`
+/// `"newest": null` idiom). stdout prints exactly this string plus a
+/// trailing newline; the `--out` file receives the same bytes BOM-less
+/// (machine data, the house JSON rule).
+fn recent_docs_json(days: u32, range: Option<(&str, &str)>, rows: &[RecentDocRow]) -> String {
+    let docs: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "date": fmt_date(&r.org_date),
+                "nreg": r.nreg,
+                "title": r.title,
+            })
+        })
+        .collect();
+    let value = serde_json::json!({
+        "days": days,
+        "docs": docs,
+        "from": range.map(|(from, _)| from),
+        "to": range.map(|(_, to)| to),
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `recent --out` has written `file`
+/// (`n` rendered document rows, the same wording in both modes):
+/// `[recent] записано {n} документів → {file}`.
+fn recent_docs_out_note(n: usize, file: &Path) -> String {
+    format!("[recent] записано {n} документів → {}", file.display())
+}
+
+/// Offline «what is the freshest» (`recent`): the newest documents by
+/// adoption date over the `org_date` column of `docs` — the day-level
+/// companion of `months` / `dates`, so the window is anchored on the
+/// index's own freshest full 8-digit date (never the system clock: an
+/// idle index still reports its newest documents). Never builds a
+/// client, never touches the network. A missing index file is a hard
+/// error («індекс не знайдено: …», the `stats`/`verify` rule). `--days`
+/// passes [`normalize_recent_days`] and `--limit` [`normalize_recent_limit`]
+/// (malformed values are hard errors, exit 1). The anchor is the newest
+/// `org_date` surviving the full 8-digit `GLOB
+/// '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'` guard AND
+/// [`recent_days_from_civil`]' calendar check, walked `ORDER BY
+/// org_date DESC` until one validates (identical to `MAX(org_date)` on
+/// a well-formed index, robust on a dirty one); the inclusive cutoff
+/// comes from the pure [`recent_cutoff`]. The rows come straight from
+/// `docs` through
+/// the connection `rada_db::open` returns (the `verify` / `dict-stats`
+/// direct-SQL idiom): `nreg`/`nazva`/`org_date` between the cutoff and
+/// the anchor, ordered `org_date DESC, nreg ASC`, the renderer-side
+/// calendar filter dropping impossible dates before the `LIMIT`
+/// truncation. An index without a single valid dated row (empty DB
+/// included) renders the zero-rows report and exits 0. With `--out` the
+/// exact stdout body goes to the file (parent dirs created) and nothing
+/// prints to stdout: the plain report is written UTF-8 with a BOM
+/// (Excel-friendly, like search/arrivals/stats/verify), the `--json`
+/// body BOM-less; one `[recent] записано {n} документів → {file}` note
+/// goes to stderr. The header always renders, so the file is never
+/// BOM-alone.
+fn cmd_recent_docs(
+    db: &PathBuf,
+    days: Option<&str>,
+    limit: Option<&str>,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    let days = normalize_recent_days(days)?;
+    let limit = normalize_recent_limit(limit)?;
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    // Anchor: the freshest full 8-digit date present in the index (the
+    // `months`/`dates` MAX idiom, widened with the
+    // `recent_days_from_civil`
+    // calendar check so a malformed newest value — e.g. month 13 —
+    // cannot poison the window; on a well-formed index this is exactly
+    // MAX(org_date)).
+    let mut stmt = conn
+        .prepare(
+            "SELECT DISTINCT org_date FROM docs
+             WHERE org_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+             ORDER BY org_date DESC",
+        )
+        .context("prepare recent anchor")?;
+    let mut mapped = stmt
+        .query_map([], |r| r.get::<_, String>(0))
+        .context("run recent anchor")?;
+    let mut anchor: Option<String> = None;
+    while let Some(date) = mapped.next().transpose()? {
+        if recent_days_from_civil(&date).is_some() {
+            anchor = Some(date);
+            break;
+        }
+    }
+    // The inclusive window is [cutoff, anchor]; no anchor (no valid
+    // dated row at all) renders the zero-rows report.
+    let range: Option<(String, String)> = anchor
+        .as_deref()
+        .and_then(|a| recent_cutoff(a, days).map(|cutoff| (cutoff, a.to_string())));
+    let mut rows: Vec<RecentDocRow> = Vec::new();
+    if let Some((from, to)) = &range {
+        let mut stmt = conn
+            .prepare(
+                "SELECT nreg, nazva, org_date FROM docs
+                 WHERE org_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]'
+                   AND org_date >= ?1 AND org_date <= ?2
+                 ORDER BY org_date DESC, nreg ASC",
+            )
+            .context("prepare recent docs")?;
+        let mut mapped = stmt
+            .query_map([from.as_str(), to.as_str()], |r| {
+                Ok(RecentDocRow {
+                    nreg: r.get(0)?,
+                    title: r.get(1)?,
+                    org_date: r.get(2)?,
+                })
+            })
+            .context("run recent docs")?;
+        while let Some(row) = mapped.next().transpose()? {
+            // The SQL already bounds the string range; the calendar
+            // filter drops impossible in-range dates (e.g. 20260931)
+            // BEFORE the limit truncates, so a dirty row never steals
+            // a rendered slot.
+            if recent_days_from_civil(&row.org_date).is_none() {
+                continue;
+            }
+            if rows.len() >= limit {
+                break;
+            }
+            rows.push(row);
+        }
+    }
+    let range = range.as_ref().map(|(from, to)| (from.as_str(), to.as_str()));
+    if json {
+        let body = recent_docs_json(days, range, &rows);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", recent_docs_out_note(rows.len(), p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = recent_docs_lines(range, &rows);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout report (the header always renders, so never
+            // BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", recent_docs_out_note(rows.len(), p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One `orgs` histogram row: the publisher id as stored in the TEXT
 /// `org_num` column (the empty string is the «publisher unknown»
 /// convention), its label resolved from the offline `organs` dictionary
@@ -5157,9 +5513,11 @@ mod tests {
         export_markdown, export_out_note, export_plain, favorites_json_body,
         favorites_json_out_note, favorites_lines, favorites_out_note, facet_lines, filter_since,
         new_nregs, normalize_fav_kind, normalize_hits_format, normalize_month_year,
+        normalize_recent_days, normalize_recent_limit,
         hits_lines, hits_md_lines, hits_out_note,
         months_json, months_lines, months_out_note,
         normalize_fmt, out_note, orgs_json, orgs_lines, orgs_out_note,
+        recent_cutoff, recent_docs_json, recent_docs_lines, recent_docs_out_note,
         recent_json_body, recent_json_out_note, recent_lines,
         recent_out_note, related_json_body, related_json_out_note, related_out_note,
         resolve_json_body, resolve_json_out_note, resolve_out_note, search_out_note, since_note,
@@ -5168,7 +5526,7 @@ mod tests {
         text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
         toc_out_note, verify_lines, verify_out_note, DictStat, FavRow, FavSort, HitsFormat,
         OrgRow,
-        RecentRow, StatsInfo, StatusRow, TocEntry, YearRow,
+        RecentDocRow, RecentRow, StatsInfo, StatusRow, TocEntry, YearRow,
         MonthRow,
         VerifyCheck, VerifyStatus,
     };
@@ -7253,6 +7611,145 @@ mod tests {
             orgs_out_note(0, file),
             format!("[orgs] записано 0 видавців → {}", file.display())
         );
+    }
+
+    #[test]
+    fn recent_docs_lines_renders_header_rows_and_verdict() {
+        // header + one «{dd.mm.yyyy}  {nreg}  {title}» line per document
+        // in input order (the SQL orders by org_date DESC, nreg ASC) +
+        // the «разом» verdict over the RENDERED rows (post-limit,
+        // informational — the command still exits 0)
+        let rows = vec![
+            RecentDocRow {
+                nreg: "123/26".into(),
+                title: "Про щоось".into(),
+                org_date: "20261029".into(),
+            },
+            RecentDocRow {
+                nreg: "9/26".into(),
+                title: "Інше".into(),
+                org_date: "20261027".into(),
+            },
+        ];
+        assert_eq!(
+            recent_docs_lines(Some(("20261023", "20261029")), &rows),
+            vec![
+                "Свіжі документи (23.10.2026–29.10.2026):".to_string(),
+                "29.10.2026  123/26  Про щоось".to_string(),
+                "27.10.2026  9/26  Інше".to_string(),
+                "разом: 2".to_string(),
+            ]
+        );
+        // zero qualifying documents: header + the «немає» line +
+        // «разом: 0» still render (the informational empty rule, the
+        // `--out` file is never BOM-alone)
+        assert_eq!(
+            recent_docs_lines(Some(("20261023", "20261029")), &[]),
+            vec![
+                "Свіжі документи (23.10.2026–29.10.2026):".to_string(),
+                "немає документів за цей період".to_string(),
+                "разом: 0".to_string(),
+            ]
+        );
+        // an index without a single valid 8-digit date: the header
+        // drops the range (nothing to anchor the window on)
+        assert_eq!(
+            recent_docs_lines(None, &[]),
+            vec![
+                "Свіжі документи:".to_string(),
+                "немає документів за цей період".to_string(),
+                "разом: 0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn recent_docs_json_renders_pretty_body_with_alphabetical_keys() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «days»/«docs»/«from»/«to» and «date»/«nreg»/«title»
+        // keep their alphabetical order inside every entry; «date» is the
+        // dd.mm.yyyy rendering, «from»/«to» the raw YYYYMMDD bounds.
+        let rows = vec![RecentDocRow {
+            nreg: "123/26".into(),
+            title: "Про щоось".into(),
+            org_date: "20261029".into(),
+        }];
+        let body = recent_docs_json(7, Some(("20261023", "20261029")), &rows);
+        assert_eq!(
+            body,
+            "{\n  \"days\": 7,\n  \"docs\": [\n    {\n      \"date\": \"29.10.2026\",\n      \"nreg\": \"123/26\",\n      \"title\": \"Про щоось\"\n    }\n  ],\n  \"from\": \"20261023\",\n  \"to\": \"20261029\"\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // no valid dated row to anchor on: the zero report with both
+        // bounds null (the `dates` "newest": null idiom)
+        assert_eq!(
+            recent_docs_json(7, None, &[]),
+            "{\n  \"days\": 7,\n  \"docs\": [],\n  \"from\": null,\n  \"to\": null\n}"
+        );
+    }
+
+    #[test]
+    fn recent_docs_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//r.txt");
+        let line = recent_docs_out_note(7, file);
+        assert_eq!(
+            line,
+            format!("[recent] записано 7 документів → {}", file.display())
+        );
+        assert!(line.starts_with("[recent] "));
+        assert!(line.contains("7"));
+        assert!(line.contains("документів"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the informational zero rule: the note still formats with 0 rows
+        assert_eq!(
+            recent_docs_out_note(0, file),
+            format!("[recent] записано 0 документів → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn recent_cutoff_validates_days_and_computes_inclusive_window() {
+        // --days accepts 1 / 7 / 365 (whitespace trimmed, absent keeps
+        // the 7 default); 0 / 366 / «abcd» / empty are hard errors with
+        // the house Ukrainian wording (exit 1 through `main`)
+        assert_eq!(normalize_recent_days(None).unwrap(), 7);
+        assert_eq!(normalize_recent_days(Some("1")).unwrap(), 1);
+        assert_eq!(normalize_recent_days(Some(" 7 ")).unwrap(), 7);
+        assert_eq!(normalize_recent_days(Some("365")).unwrap(), 365);
+        for bad in ["0", "366", "abcd", ""] {
+            let err = normalize_recent_days(Some(bad)).unwrap_err();
+            assert_eq!(err.to_string(), "днів має бути 1–365");
+        }
+        // --limit mirrors the bound rule: 100 default, 1..=500 accepted,
+        // 0 / 501 / «abcd» rejected
+        assert_eq!(normalize_recent_limit(None).unwrap(), 100);
+        assert_eq!(normalize_recent_limit(Some("500")).unwrap(), 500);
+        for bad in ["0", "501", "abcd", ""] {
+            let err = normalize_recent_limit(Some(bad)).unwrap_err();
+            assert_eq!(err.to_string(), "ліміт має бути 1–500");
+        }
+        // the window is inclusive and spans exactly `days` calendar
+        // days ending AT the anchor (never the system clock): --days 1
+        // is the anchor day itself, leap Februaries cross correctly,
+        // and an impossible anchor validates to None
+        assert_eq!(recent_cutoff("20261029", 1).unwrap(), "20261029");
+        assert_eq!(recent_cutoff("20261029", 7).unwrap(), "20261023");
+        assert_eq!(recent_cutoff("20260101", 7).unwrap(), "20251226");
+        assert_eq!(recent_cutoff("20240301", 2).unwrap(), "20240229");
+        assert_eq!(recent_cutoff("20230301", 2).unwrap(), "20230228");
+        assert_eq!(recent_cutoff("20240101", 366).unwrap(), "20230101");
+        // month-end and year-end walks (the regression the `search`
+        // filter's ymd_to_days cannot do: it collapses 20261031 into
+        // 20261101)
+        assert_eq!(recent_cutoff("20261101", 2).unwrap(), "20261031");
+        assert_eq!(recent_cutoff("20261031", 31).unwrap(), "20261001");
+        assert_eq!(recent_cutoff("20260101", 31).unwrap(), "20251202");
+        assert_eq!(recent_cutoff("20261301", 7), None);
+        assert_eq!(recent_cutoff("20260230", 7), None);
+        assert_eq!(recent_cutoff("abcd", 7), None);
     }
 
     #[test]

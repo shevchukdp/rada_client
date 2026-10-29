@@ -850,6 +850,9 @@
       <button id="btn-export" type="button">Завантажити файл</button>
       <button id="btn-print" type="button" title="Відкрити друковану версію у новій вкладці">🖨 Друк</button>
       <button id="btn-raw" type="button" title="Простий текст без стилів заголовків/статей">Простий</button>
+      <button id="btn-font-plus" type="button" title="Збільшити розмір тексту (Ctrl++)">A+</button>
+      <button id="btn-font-minus" type="button" title="Зменшити розмір тексту (Ctrl+-)">A-</button>
+      <button id="btn-font-reset" type="button" title="Скинути розмір тексту (Ctrl+0)">A0</button>
       <button id="btn-copy-text" type="button" title="Скопіювати весь текст акту в буфер обміну">Копіювати текст</button>
       <button id="btn-cite" type="button" disabled title="Скопіювати реквізити посилання на акт">цилата</button>
       <button id="btn-export-md" type="button" disabled title="Завантажити текст акту файлом Markdown">.md</button>
@@ -881,6 +884,7 @@ const state = {
   curNreg: null,
   curCard: null,
   curText: "",
+  fontScale: 1,       // reader text zoom 0.6..=2.5 (GUI clamp), persisted in «rada-font-scale»
   annots: [],         // annotations of the current document (highlight rendering)
   statusLabels: new Map(),
   orgLabels: new Map(),
@@ -3681,6 +3685,59 @@ if (localStorage.getItem("rada-raw") === "1") {
   applyRawBtn(true);
 }
 
+// ---- Reader text zoom (the web twin of the GUI's Ctrl+Plus/Minus/0) ---------
+// Faithful mirror of the desktop reader zoom: rada-gui/src/views/reader.rs
+// `zoom_step` steps the percent value by ±10 and clamps with
+// `(cur as i64 + delta as i64).clamp(60, 250) as u32`, and
+// rada-gui/src/settings.rs `text_scale` turns that into a factor with
+// `(self.zoom as f32 / 100.0).clamp(0.6, 2.5)`. So the web keeps the SAME
+// bounds — factor 0.6..=2.5 in 0.1 steps — and A0/Ctrl+0 resets to 1.0.
+const FONT_SCALE_KEY = "rada-font-scale";   // same key family as «rada-toc-collapsed»
+const FONT_SCALE_MIN = 0.6;  // the GUI's clamp(60, 250) lower bound / 100
+const FONT_SCALE_MAX = 2.5;  // the GUI's clamp(60, 250) upper bound / 100
+const FONT_SCALE_STEP = 0.1; // the GUI's ±10 percent steps
+const READER_BASE_FONT_PX = 15; // mirrors the `font-size: 15px` of CSS #doc-text
+
+/// The ONE clamp/step source (pure like fmtSince/countMatches/docStats, so
+/// lib.rs can string-test it without a DOM): parses `v` (a number or the
+/// stored string), returns the default 1 for anything non-finite, otherwise
+/// clamps to [0.6, 2.5] — the GUI's zoom_step bounds — and rounds to the
+/// nearest 0.1 step so float addition drift (1.0 + 0.1 + 0.1) can never
+/// escape the stepped grid.
+function clampFontScale(v) {
+  const n = parseFloat(v);
+  if (!isFinite(n)) return 1;
+  const clamped = Math.min(FONT_SCALE_MAX, Math.max(FONT_SCALE_MIN, n));
+  return Math.round(clamped * 10) / 10;
+}
+
+/// Paints the scale onto the reader body: every structural block under
+/// #doc-text sizes itself in em, so scaling the base font-size scales the
+/// whole act proportionally.
+function applyFontScale() {
+  $("doc-text").style.fontSize = (READER_BASE_FONT_PX * state.fontScale) + "px";
+}
+
+/// The single change point for the reader font scale: routes every value
+/// through clampFontScale, persists it under «rada-font-scale» (tolerating
+/// privacy-mode errors like «rada-toc-collapsed»), and repaints the body.
+function setFontScale(v) {
+  state.fontScale = clampFontScale(v);
+  try { localStorage.setItem(FONT_SCALE_KEY, String(state.fontScale)); } catch (_) {}
+  applyFontScale();
+}
+
+$("btn-font-plus").onclick = () => setFontScale(state.fontScale + FONT_SCALE_STEP);
+$("btn-font-minus").onclick = () => setFontScale(state.fontScale - FONT_SCALE_STEP);
+$("btn-font-reset").onclick = () => setFontScale(1); // A0: back to 100%, persisted
+
+// Restore the saved scale on load/first render (a fresh session starts at 1.0
+// and only writes localStorage when the user actually changes it).
+let savedFontScale = NaN;
+try { savedFontScale = parseFloat(localStorage.getItem(FONT_SCALE_KEY)); } catch (_) {}
+if (isFinite(savedFontScale)) state.fontScale = clampFontScale(savedFontScale);
+applyFontScale();
+
 $("bulk-export").onclick = async () => {
   if (!state.nregs.length) { alert("Спочатка виконайте пошук."); return; }
   const btn = $("bulk-export");
@@ -3778,6 +3835,30 @@ document.addEventListener("keydown", (ev) => {
     }
     return;
   }
+  // Ctrl+= / Ctrl+Plus / Ctrl+- / Ctrl+0: reader text zoom, the web twin of
+  // the GUI's Ctrl+Plus/Minus/0 (app.rs zoom_reader, ±10% steps, reset).
+  // Every handled branch preventDefaults so the browser never zooms the
+  // page; while the reader is closed the keys stay with the browser. The
+  // steps route through setFontScale → clampFontScale (0.6..=2.5, the GUI's
+  // zoom_step bounds). Like Ctrl+F above, an Alt combo never matches.
+  if (mod && !ev.altKey && !$("doc-pane").hidden &&
+      (ev.key === "=" || ev.key === "+" || ev.key === "NumpadAdd")) {
+    ev.preventDefault();
+    setFontScale(state.fontScale + FONT_SCALE_STEP);
+    return;
+  }
+  if (mod && !ev.altKey && !$("doc-pane").hidden &&
+      (ev.key === "-" || ev.key === "NumpadSubtract")) {
+    ev.preventDefault();
+    setFontScale(state.fontScale - FONT_SCALE_STEP);
+    return;
+  }
+  if (mod && !ev.altKey && !$("doc-pane").hidden &&
+      (ev.key === "0" || ev.key === "Numpad0")) {
+    ev.preventDefault();
+    setFontScale(1); // Ctrl+0: reset to 1.0 and persist
+    return;
+  }
   // Alt+arrows step through the results list the reader was opened from
   // (the desktop GUI reader's «N / M» parity); an input/textarea/select
   // target keeps its keystrokes. Plain arrows below still drive navDoc.
@@ -3800,6 +3881,7 @@ document.addEventListener("keydown", (ev) => {
 function helpRows() {
   return [
     ["Ctrl+F", "поле пошуку (у читачі — пошук по тексту)"],
+    ["A+ / A- / A0", "збільшити/зменшити/скинути розмір тексту (Ctrl+= / Ctrl+- / Ctrl+0)"],
     ["Alt+← / Alt+→", "попередній/наступний документ"],
     ["← / →", "попередній/наступний документ у списку результатів"],
     ["Enter / Shift+Enter", "наступний/попередній збіг (у полі пошуку по тексту)"],

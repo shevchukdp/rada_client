@@ -98,7 +98,10 @@ official open-data API:
     document body (Unicode case-insensitive, ranked, context snippets); rows
     open in the reader. Also `--cache-search TERM` on launch, CLI
     `cache --search TERM`, and web «Пошук у тексті». The home page shows the
-    cache size («кеш текстів») with an «очистити» button (confirm dialog).
+    cache size («кеш текстів») with an «очистити» button (confirm dialog), and
+    an offline **«Свіжі документи (за датою)»** card — the freshest cards by
+    adoption date straight from the index (no network; same anchor rules as the
+    CLI `recent` command), each row opening the reader with one click.
   - **Reader outline («Зміст»)** — a collapsible panel listing every
     «Розділ/Глава/Стаття» heading; one click scrolls straight to it (shown for
     acts with at least two headings, e.g. 604 entries in the Criminal Code).
@@ -366,7 +369,8 @@ Launch arguments:
 .\rada-client.exe annot list 2041-15 --json
 .\rada-client.exe annot list --out annots.txt    # table to file (BOM); --json → BOM-less JSON array
 .\rada-client.exe annot search "податок"      # grep ALL annotations: text, kind and nreg; --json / --out too
-.\rada-client.exe recent                     # newest annotations across all docs (title/kind/time/text); --limit N, --json / --out too
+.\rada-client.exe recent-annots              # newest annotations across all docs (title/kind/time/text); --limit N, --json / --out too
+.\rada-client.exe recent --days 7            # offline freshest docs by adoption date (anchored to the index's newest date, never the clock); --limit ≤500, --json / --out too
 .\rada-client.exe favorites                  # ALL annotations grouped by nreg (titles resolved); --kind comment|highlight|bookmark (+коментарі/виділення/закладки), --sort nreg|title|new, --json / --out too
 .\rada-client.exe annot add 2041-15 highlight "текст виділення"
 .\rada-client.exe annot add 2341-14 comment "увага на розділ 3"
