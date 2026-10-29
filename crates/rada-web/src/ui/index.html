@@ -2010,8 +2010,24 @@ function renderDocText() {
 // Entries are collected from the RENDERED heading blocks (#doc-text
 // .p-section / .p-article), i.e. from the very elements the per-line
 // classifier produced, so labels and order can never drift from the
-// renderer. Session-only: openDoc and every text reload clear the list via
-// resetToc, and runFind rebuilds it right after each repaint of the body.
+// renderer. openDoc and every text reload clear the list via resetToc, and
+// runFind rebuilds it right after each repaint of the body. The header is a
+// clickable toggle (the GUI reader's outline_open parity): clicking «Зміст»
+// folds/unfolds #toc-list, and the choice survives reloads in localStorage
+// (the same "1"/"0" idiom as the favorites «rada-fav-group» chip) and
+// documents (resetToc never touches it, so a collapsed outline stays
+// collapsed into the next openDoc).
+const TOC_COLLAPSED_KEY = "rada-toc-collapsed";
+let tocCollapsed = false;
+try { tocCollapsed = localStorage.getItem(TOC_COLLAPSED_KEY) === "1"; } catch (_) {}
+
+/// Pure single source for the header paint: base label plus the muted
+/// « — згорнуто» suffix (exact glyph style of the arrivals/favourites
+/// group headers, painted through the shared .hint class) when collapsed.
+function tocCollapsedHtml(baseLabel, collapsed) {
+  return collapsed ? baseLabel + " <span class=\"hint\">— згорнуто</span>" : baseLabel;
+}
+
 function tocLabel(t) {
   const s = t.trim();
   const chars = Array.from(s); // Cyrillic-safe: 90 characters, not UTF-16 units
@@ -2037,7 +2053,7 @@ function buildToc() {
     return;
   }
   btn.hidden = false;
-  btn.textContent = "Зміст (" + heads.length + ")";
+  paintTocHeader(heads.length);
   for (const h of heads) {
     const title = h.textContent || "";
     const row = document.createElement("div");
@@ -2050,16 +2066,28 @@ function buildToc() {
   }
 }
 
+/// Paint the «Зміст» header and the container's hidden state from the
+/// current collapse choice (the entries themselves are rebuilt separately).
+function paintTocHeader(n) {
+  $("btn-toc").innerHTML = tocCollapsedHtml("Зміст (" + n + ")", tocCollapsed);
+  $("toc-list").hidden = tocCollapsed;
+}
+
 /// Empty the outline and hide the toggle (called on openDoc and text reload).
+/// The user's collapse choice lives in tocCollapsed/localStorage and survives
+/// untouched — the next buildToc repaints it (the GUI keeps outline_open).
 function resetToc() {
   $("toc-list").innerHTML = "";
   $("toc-list").hidden = true;
   $("btn-toc").hidden = true;
 }
 
+// Header click: flip the collapse choice, persist it (privacy-mode errors
+// tolerated, same as the fav-group chip), and repaint header + container.
 $("btn-toc").onclick = () => {
-  const list = $("toc-list");
-  list.hidden = !list.hidden;
+  tocCollapsed = !tocCollapsed;
+  try { localStorage.setItem(TOC_COLLAPSED_KEY, tocCollapsed ? "1" : "0"); } catch (_) {}
+  paintTocHeader($("toc-list").children.length);
 };
 
 // ---- floating «догори» button (back to the top of enormous acts) -------------

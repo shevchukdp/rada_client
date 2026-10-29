@@ -3130,6 +3130,51 @@ mod tests {
     }
 
     #[test]
+    fn ui_page_has_toc_collapse() {
+        // «Зміст» header is a clickable collapse toggle (the GUI reader's
+        // outline_open parity): the header click flips the collapse state,
+        // a pure tocCollapsedHtml helper is the single source for the header
+        // paint, the folded state shows the muted « — згорнуто» suffix in the
+        // exact glyph style of the arrivals/favourites group headers, and
+        // #toc-list's hidden flag is driven solely by that state.
+        assert!(ui::INDEX_HTML.contains("$(\"btn-toc\").onclick = () => {"));
+        assert!(ui::INDEX_HTML.contains("tocCollapsed = !tocCollapsed;"));
+        assert!(ui::INDEX_HTML.contains("$(\"toc-list\").hidden = tocCollapsed;"));
+        assert!(ui::INDEX_HTML.contains("function tocCollapsedHtml(baseLabel, collapsed)"));
+        assert!(ui::INDEX_HTML.contains("paintTocHeader(heads.length);"));
+        // muted suffix: .hint span with the same em-dash « — згорнуто» glyph
+        // the arrivals/fav collapse paint (rendered text = base + « — згорнуто»).
+        assert!(ui::INDEX_HTML.contains("<span class=\\\"hint\\\">— згорнуто</span>"));
+        assert!(ui::INDEX_HTML.contains("— згорнуто"));
+        // collapse choice persisted in its own key (never collides with the
+        // arrivals/fav keys — mirroring the «rada-fav-group» "1"/"0" idiom).
+        assert!(ui::INDEX_HTML.contains("localStorage.setItem(TOC_COLLAPSED_KEY, tocCollapsed ? \"1\" : \"0\")"));
+    }
+
+    #[test]
+    fn ui_page_has_toc_collapse_persisted() {
+        // The collapse choice survives reloads and document switches: init
+        // reads "rada-toc-collapsed" (default expanded when absent), every
+        // toggle writes it back, resetToc leaves the choice untouched so the
+        // next buildToc repaints header + container from it, and the entry
+        // markup / smooth jump stay byte-identical.
+        assert!(ui::INDEX_HTML.contains("const TOC_COLLAPSED_KEY = \"rada-toc-collapsed\";"));
+        assert!(ui::INDEX_HTML.contains("let tocCollapsed = false;"));
+        assert!(ui::INDEX_HTML.contains("localStorage.getItem(TOC_COLLAPSED_KEY) === \"1\""));
+        // resetToc clears and hides but never resets the persisted choice.
+        assert!(ui::INDEX_HTML.contains(
+            "function resetToc() {\n  $(\"toc-list\").innerHTML = \"\";\n  $(\"toc-list\").hidden = true;\n  $(\"btn-toc\").hidden = true;\n}"
+        ));
+        // rebuild repaints header and container from the persisted state.
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"btn-toc\").innerHTML = tocCollapsedHtml(\"Зміст (\" + n + \")\", tocCollapsed);"
+        ));
+        // list and jump markup untouched.
+        assert!(ui::INDEX_HTML.contains("row.className = \"toc-item\";"));
+        assert!(ui::INDEX_HTML.contains("scrollIntoView({ behavior: \"smooth\", block: \"start\" })"));
+    }
+
+    #[test]
     fn ui_page_has_copy_text() {
         // «Копіювати текст» in the export row (the GUI reader's copy parity):
         // the clipboard API with a textarea/execCommand fallback and the

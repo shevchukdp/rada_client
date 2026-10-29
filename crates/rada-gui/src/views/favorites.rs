@@ -196,6 +196,30 @@ pub fn filter_and_group(
     groups
 }
 
+/// Plain-text report of the CURRENTLY filtered/sorted Favorites — the exact
+/// rows the page shows (same [`row_matches`] filter), so what you see is what
+/// downloads. Mirrors the web «експорт .txt»: header «Обрані анотації —
+/// {shown} з {total}», then one block per row «[kind] title||nreg ({nreg})»
+/// + the annotation text. `rows` is already sorted by [`sort_rows`].
+pub fn favorites_txt_report(rows: &[FavRow], total: usize, needle: &str, kind: usize) -> String {
+    let kept: Vec<&FavRow> = rows
+        .iter()
+        .filter(|(a, t)| row_matches(a, t, needle, kind))
+        .collect();
+    let mut out = format!("Обрані анотації — {} з {total}\n", kept.len());
+    for (a, title) in kept {
+        let head = if title.trim().is_empty() {
+            a.nreg.clone()
+        } else {
+            title.clone()
+        };
+        out.push_str(&format!("\n[{}] {head} ({})\n", a.kind, a.nreg));
+        out.push_str(a.text.trim_end());
+        out.push('\n');
+    }
+    out
+}
+
 /// Validate an annotations JSON exactly the way the real importer
 /// (`rada_db::annotations::import_json`) accepts rows, *before* anything is
 /// written: the same top-level shape rules (array or `{"annotations": [...]}`),
@@ -285,6 +309,17 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     .clicked()
                 {
                     app.export_annotations();
+                }
+                if ui
+                    .button(egui::RichText::new("експорт .txt").small())
+                    .on_hover_text("зберегти показані анотації у текстовий файл")
+                    .clicked()
+                {
+                    let mut rows = app.fav.items.clone();
+                    sort_rows(&mut rows, app.fav.sort_sel);
+                    let total = app.fav.items.len();
+                    let (needle, kind) = (app.fav.filter.clone(), app.fav.kind_sel);
+                    app.export_favorites_txt(rows, total, needle, kind);
                 }
                 if ui
                     .button(egui::RichText::new("⬆ Імпорт .json").small())
@@ -654,6 +689,32 @@ mod tests {
                 "Про запобігання корупції".to_string(),
             ),
         ]
+    }
+
+    #[test]
+    fn favorites_txt_report_is_wysiwyg() {
+        let all = rows();
+        // Full export: header shows 5 з 5, every row present in given order.
+        let full = favorites_txt_report(&all, all.len(), "", 0);
+        let mut it = full.lines();
+        assert_eq!(it.next().unwrap(), "Обрані анотації — 5 з 5");
+        assert_eq!(it.next().unwrap(), "");
+        assert_eq!(it.next().unwrap(), "[comment] Про освіту (2961-20)");
+        assert_eq!(it.next().unwrap(), "треба перечитати");
+        assert!(full.contains("[bookmark] Про запобігання корупції (1556-18)"), "bookmark row shows title");
+        assert!(full.contains("[comment] 777-21 (777-21)"), "title-less doc uses nreg as head");
+
+        // Filtered by kind=comment (index 1) + needle «підсумок»: only one row,
+        // header reflects the reduced shown count against the total.
+        let only = favorites_txt_report(&all, all.len(), "підсумок", 1);
+        assert!(only.starts_with("Обрані анотації — 1 з 5\n"));
+        assert!(only.contains("підсумок"));
+        assert!(!only.contains("треба перечитати"));
+        assert_eq!(only.matches("\n[comment]").count(), 1);
+
+        // Zero matches: header only, no trailing row blocks.
+        let none = favorites_txt_report(&all, all.len(), "нема-такого-слова", 0);
+        assert_eq!(none, "Обрані анотації — 0 з 5\n");
     }
 
     #[test]

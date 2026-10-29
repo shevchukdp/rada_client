@@ -392,6 +392,37 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Offline «Обрані анотації»: the full CLI mirror of the GUI/web
+    /// Favorites list — every annotation across all documents, optionally
+    /// filtered by kind, grouped under one header per document like the
+    /// GUI grouped view. Pure offline: the command never touches the
+    /// network (the chronological stream with `created_at DESC` stays the
+    /// `recent` command's niche).
+    Favorites {
+        /// Keep only one kind: comment | highlight | bookmark (Ukrainian
+        /// aliases «коментар|виділення|закладка» accepted too,
+        /// case-insensitive). Omit to keep every kind.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Row order: nreg (default — grouped by document, like the GUI
+        /// grouped view) | title (by resolved title, then nreg) | new
+        /// (`created_at` descending, flat).
+        #[arg(long, default_value = "nreg")]
+        sort: String,
+        /// Emit the JSON body (`{"grouped":{nreg:[…]},"total":N}` for
+        /// `--sort nreg`, `{"items":[…],"total":N}` otherwise) instead of
+        /// the table.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout table (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain table gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less. Zero annotations write the BOM alone; the «Обраних
+        /// анотацій немає» line stays on stdout (the house `search --out`
+        /// zero-hit rule); the note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Offline export of a CACHED document body as md / txt / html: the
     /// text comes from the local text cache only — the command never
     /// touches the network. Export the current edition; read the document
@@ -610,6 +641,9 @@ fn run() -> Result<()> {
         Cmd::Status => cmd_status(&cli.db),
         Cmd::Annot { what } => cmd_annot(&cli.db, what),
         Cmd::Recent { limit, json, out } => cmd_recent(&cli.db, limit, json, out.as_deref()),
+        Cmd::Favorites { kind, sort, json, out } => {
+            cmd_favorites(&cli.db, kind.as_deref(), &sort, json, out.as_deref())
+        }
         Cmd::Export { nreg, fmt, out } => {
             cmd_export(&cli.db, &nreg, &fmt, out.as_deref())
         }
@@ -3559,6 +3593,317 @@ fn cmd_recent(db: &PathBuf, limit: usize, json: bool, out: Option<&Path>) -> Res
     Ok(())
 }
 
+/// Sort order behind `favorites --sort` (the GUI favorites' grouped view
+/// and its sort choices, projected onto the CLI): [`FavSort::Nreg`] is the
+/// default — one group per document like the GUI grouped render;
+/// [`FavSort::Title`] orders by the resolved title (the GUI «за назвою»);
+/// [`FavSort::New`] is the flat `created_at DESC` stream.
+#[derive(Clone, Copy)]
+enum FavSort {
+    Nreg,
+    Title,
+    New,
+}
+
+/// Parse `--sort` for `favorites` (the `normalize_fmt` house rule: a clear
+/// Ukrainian error listing the accepted values, exit 1 through `main`).
+fn parse_fav_sort(s: &str) -> Result<FavSort> {
+    match s.trim().to_ascii_lowercase().as_str() {
+        "nreg" => Ok(FavSort::Nreg),
+        "title" => Ok(FavSort::Title),
+        "new" => Ok(FavSort::New),
+        _ => Err(anyhow::anyhow!("невідомий порядок сортування {s} (nreg|title|new)")),
+    }
+}
+
+/// Canonicalise `--kind` for `favorites` to the stored English token (the
+/// same mapping the GUI chips apply: «коментарі»→comment,
+/// «виділення»→highlight, «закладки»→bookmark; singular and plural
+/// Ukrainian forms are accepted). Case-insensitive; an unknown kind is a
+/// clear error listing the accepted values (the `normalize_fmt` rule).
+fn normalize_fav_kind(kind: &str) -> Result<&'static str> {
+    match kind.trim().to_lowercase().as_str() {
+        "comment" | "коментар" | "коментарі" => Ok("comment"),
+        "highlight" | "виділення" => Ok("highlight"),
+        "bookmark" | "закладка" | "закладки" => Ok("bookmark"),
+        _ => Err(anyhow::anyhow!(
+            "невідомий тип анотації {kind} (comment|highlight|bookmark)"
+        )),
+    }
+}
+
+/// One `favorites` row: the annotation surfaces the view renders, with the
+/// title resolved from the offline index (`title_by_nreg`; empty when the
+/// nreg is not indexed, then the row renders its own nreg — the same
+/// `title||nreg` rule as [`RecentRow`]). `created_at` is the stored UTC
+/// `YYYY-MM-DD HH:MM:SS` stamp, printed verbatim.
+#[derive(Clone)]
+struct FavRow {
+    nreg: String,
+    kind: String,
+    text: String,
+    created_at: String,
+    title: String,
+}
+
+/// The row label shared by both render modes: the trimmed title when the
+/// doc is indexed, otherwise the nreg itself (the `recent` rule).
+fn fav_label(r: &FavRow) -> &str {
+    if r.title.trim().is_empty() {
+        r.nreg.as_str()
+    } else {
+        r.title.trim()
+    }
+}
+
+/// Fold one annotation text into a single printable line: trimmed, newlines
+/// folded to spaces, capped at 60 chars (the shared `annot list` / `recent`
+/// style); an empty text (bookmarks) renders as an empty string.
+fn fav_text_line(text: &str) -> String {
+    text.trim()
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .take(60)
+        .collect()
+}
+
+/// Reorder the rows for one `--sort` choice (stable, so ties keep the base
+/// `nreg ASC, id ASC` order the query returns): `nreg` sorts by the nreg
+/// itself (groups stay together, `id ASC` inside each), `title` sorts by
+/// the resolved `title||nreg` label then the nreg (the GUI «за назвою»), `new` flips to `created_at` descending. Shared by
+/// both renderers so the table and the JSON body can never disagree.
+fn favorites_sorted(rows: &[FavRow], sort: FavSort) -> Vec<FavRow> {
+    let mut rows = rows.to_vec();
+    match sort {
+        // stable: ties keep the query's id order inside each nreg group
+        FavSort::Nreg => rows.sort_by(|a, b| a.nreg.cmp(&b.nreg)),
+        FavSort::Title => rows.sort_by(|a, b| {
+            fav_label(a)
+                .cmp(fav_label(b))
+                .then_with(|| a.nreg.cmp(&b.nreg))
+        }),
+        FavSort::New => rows.sort_by(|a, b| b.created_at.cmp(&a.created_at)),
+    }
+    rows
+}
+
+/// The plain-table body of `favorites` (shared by stdout and `--out` so the
+/// two cannot drift): «Обрані анотації ({n}):» header (the `recent_lines`
+/// header style), then either — `nreg` sort (the default, the GUI grouped
+/// view): a `{title||nreg}:` group header per document with the rows
+/// indented under it (`  [{kind}] {created_at}` plus the doubly-indented
+/// text line, empty texts rendering none, the `recent_lines` text rule);
+/// or — `title` / `new` sorts: a flat list rendered exactly like
+/// [`recent_lines`] (`[{kind}] {title||nreg} · {created_at}` + the indented
+/// text). Rows are reordered through [`favorites_sorted`] first, so the
+/// body always matches the requested order. Zero rows render the single
+/// stdout-only «Обраних анотацій немає» line (the house `search --out`
+/// rule): the `--out` file carries the BOM alone, the message never enters
+/// it.
+fn favorites_lines(rows: &[FavRow], sort: FavSort) -> Vec<String> {
+    if rows.is_empty() {
+        return vec!["Обраних анотацій немає".to_string()];
+    }
+    let rows = favorites_sorted(rows, sort);
+    let mut lines = Vec::with_capacity(1 + 2 * rows.len());
+    lines.push(format!("Обрані анотації ({}):", rows.len()));
+    match sort {
+        FavSort::Nreg => {
+            let mut group: Option<&str> = None;
+            for r in &rows {
+                if group != Some(r.nreg.as_str()) {
+                    lines.push(format!("{}:", fav_label(r)));
+                    group = Some(r.nreg.as_str());
+                }
+                lines.push(format!("  [{}] {}", r.kind, r.created_at));
+                let t = fav_text_line(&r.text);
+                if !t.is_empty() {
+                    lines.push(format!("    {t}"));
+                }
+            }
+        }
+        FavSort::Title | FavSort::New => {
+            for r in &rows {
+                lines.push(format!("[{}] {} · {}", r.kind, fav_label(r), r.created_at));
+                let t = fav_text_line(&r.text);
+                if !t.is_empty() {
+                    lines.push(format!("  {t}"));
+                }
+            }
+        }
+    }
+    lines
+}
+
+/// One JSON annotation object (the `recent_json_body` field set; map keys
+/// sort, the house JSON style).
+fn fav_json_item(r: &FavRow) -> serde_json::Value {
+    serde_json::json!({
+        "nreg": r.nreg,
+        "kind": r.kind,
+        "created_at": r.created_at,
+        "text": r.text,
+        "title": r.title,
+    })
+}
+
+/// The `--json` body of `favorites` (shared by stdout and `--out` so the
+/// two cannot drift): `nreg` sort (grouped) renders
+/// `{"grouped":{nreg:[{…},…]…},"total":N}` — the per-document grouping of
+/// the default table; `title` / `new` sorts render the flat
+/// `{"items":[{…}…],"total":N}`. Rows are reordered through
+/// [`favorites_sorted`] first, so the body matches the table. Pretty,
+/// BOM-less in both modes (the house JSON rule). Empty:
+/// `{"grouped":{},"total":0}` / `{"items":[],"total":0}`.
+fn favorites_json_body(rows: &[FavRow], sort: FavSort) -> String {
+    let rows = favorites_sorted(rows, sort);
+    let body = match sort {
+        FavSort::Nreg => {
+            let mut grouped = serde_json::Map::new();
+            for r in &rows {
+                grouped
+                    .entry(r.nreg.clone())
+                    .or_insert_with(|| serde_json::Value::Array(Vec::new()))
+                    .as_array_mut()
+                    .expect("group inserted as an array")
+                    .push(fav_json_item(r));
+            }
+            serde_json::json!({ "grouped": grouped, "total": rows.len() })
+        }
+        FavSort::Title | FavSort::New => serde_json::json!({
+            "items": rows.iter().map(fav_json_item).collect::<Vec<_>>(),
+            "total": rows.len(),
+        }),
+    };
+    serde_json::to_string_pretty(&body).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `favorites --out` has written the plain
+/// table (`n` annotations) to `file`.
+fn favorites_out_note(n: usize, file: &Path) -> String {
+    format!("[favorites] записано {n} анотацій → {}", file.display())
+}
+
+/// The stderr note printed after `favorites --json --out` has written the
+/// JSON body to `file` (`[favorites] записано JSON → {file}` — the same
+/// wording as the `search` / `cache` / `annot list` / `recent` JSON notes).
+fn favorites_json_out_note(file: &Path) -> String {
+    format!("[favorites] записано JSON → {}", file.display())
+}
+
+/// Offline Favorites (`favorites`): every annotation across all documents —
+/// the CLI mirror of the GUI/web Favorites list — never building a client
+/// and never touching the network (annotations live in the local index).
+/// A missing index file is a hard error («індекс не знайдено: …», the
+/// `stats`/`verify`/`recent` rule). The rows come straight from the
+/// `annotations` table through the connection `rada_db::open` returns (the
+/// `verify` / `recent` direct-SQL idiom), base-ordered `nreg ASC, id ASC`
+/// so the default grouping keeps documents together with `id ASC` inside
+/// each group; `--kind` filters case-insensitively against the canonical
+/// English token (`normalize_fav_kind` mirrors the GUI chip mapping), and
+/// `--sort title|new` reorders in memory (stable sorts keep the base order
+/// within ties). Titles come from the offline index once per distinct
+/// nreg (a `HashMap` cache over the `cache --search` / `recent` lookup).
+/// With `--out` the exact stdout body goes to the file (parent dirs
+/// created) and nothing prints to stdout: the plain table is written UTF-8
+/// with a BOM (Excel-friendly, like search/arrivals/stats/verify), the
+/// `--json` body BOM-less; one `[favorites] записано …` note goes to
+/// stderr. Zero annotations write the BOM alone (n=0 note) while the
+/// «Обраних анотацій немає» line stays stdout-only (the house `search
+/// --out` zero-hit rule).
+fn cmd_favorites(
+    db: &PathBuf,
+    kind: Option<&str>,
+    sort: &str,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    // Validate both selectors before opening the database (clear errors,
+    // exit 1 through `main`, nothing printed).
+    let kind = kind.map(normalize_fav_kind).transpose()?;
+    let sort = parse_fav_sort(sort)?;
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT nreg, kind, text, created_at FROM annotations
+             ORDER BY nreg ASC, id ASC",
+        )
+        .context("prepare favorites annotations")?;
+    let mut rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .context("run favorites annotations")?;
+    // Offline title lookup cached per distinct nreg (the `recent` idiom,
+    // but one lookup per document instead of one per row); an nreg missing
+    // from `docs` keeps the empty title, and the row renders its own nreg.
+    let mut titles: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+    let mut items: Vec<FavRow> = Vec::new();
+    while let Some((nreg, k, text, created_at)) = rows.next().transpose()? {
+        if let Some(want) = kind {
+            if !k.eq_ignore_ascii_case(want) {
+                continue;
+            }
+        }
+        let title = titles
+            .entry(nreg.clone())
+            .or_insert_with(|| rada_db::title_by_nreg(&conn, &nreg).unwrap_or_default())
+            .clone();
+        items.push(FavRow {
+            nreg,
+            kind: k,
+            text,
+            created_at,
+            title,
+        });
+    }
+    // Reorder per --sort lives in the pure [`favorites_sorted`] helper the
+    // two renderers share (stable sorts keep the base order within ties).
+    if json {
+        let body = favorites_json_body(&items, sort);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", favorites_json_out_note(p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = favorites_lines(&items, sort);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout table, so a zero-annotation result carries the BOM
+            // alone (the «немає» line is the stdout-only zero message,
+            // the house rule).
+            let text = if items.is_empty() {
+                "\u{FEFF}".to_string()
+            } else {
+                format!("\u{FEFF}{}\n", lines.join("\n"))
+            };
+            write_out_file(p, text.as_bytes())?;
+            eprintln!("{}", favorites_out_note(items.len(), p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
 fn cmd_status(db: &PathBuf) -> Result<()> {
     if !db.exists() {
         eprintln!("no index at {} (run `rada-client init` first)", db.display());
@@ -3642,12 +3987,15 @@ mod tests {
         dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, dict_stats_json,
         dict_stats_lines, dict_stats_out_note, export_html,
         grep_body, grep_render,
-        export_markdown, export_out_note, export_plain, facet_lines, filter_since, new_nregs,
+        export_markdown, export_out_note, export_plain, favorites_json_body,
+        favorites_json_out_note, favorites_lines, favorites_out_note, facet_lines, filter_since,
+        new_nregs, normalize_fav_kind,
         normalize_fmt, out_note, recent_json_body, recent_json_out_note, recent_lines,
         recent_out_note, related_json_body, related_json_out_note, related_out_note,
         resolve_out_note, search_out_note, since_note,
         stats_lines, stats_out_note, text_grep_out_note, today_yyyymmdd, toc_entries, toc_lines,
-        toc_out_note, verify_lines, verify_out_note, DictStat, RecentRow, StatsInfo, TocEntry,
+        toc_out_note, verify_lines, verify_out_note, DictStat, FavRow, FavSort, RecentRow,
+        StatsInfo, TocEntry,
         VerifyCheck, VerifyStatus,
     };
 
@@ -4961,6 +5309,240 @@ mod tests {
         let line = recent_json_out_note(file);
         assert_eq!(line, format!("[recent] записано JSON → {}", file.display()));
         assert!(line.starts_with("[recent] записано "));
+        assert!(line.contains("JSON"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn favorites_lines_groups_by_nreg_and_sorts() {
+        // The input is deliberately shuffled: the renderers reorder it
+        // through favorites_sorted (the query base is nreg ASC, id ASC and
+        // the sorts are stable, so the 1556-18 pair keeps its order).
+        let rows = vec![
+            FavRow {
+                nreg: "2341-14".into(),
+                kind: "highlight".into(),
+                text: "Стаття 3 — Вища освіта".into(),
+                created_at: "2026-10-27 10:00:00".into(),
+                title: String::new(),
+            },
+            FavRow {
+                nreg: "1556-18".into(),
+                kind: "comment".into(),
+                text: "  корисний\nзакон  ".into(),
+                created_at: "2026-10-28 07:30:00".into(),
+                title: "Про вищу освіту".into(),
+            },
+            FavRow {
+                nreg: "1556-18".into(),
+                kind: "bookmark".into(),
+                text: "   ".into(),
+                created_at: "2026-10-29 09:00:00".into(),
+                title: "Про вищу освіту".into(),
+            },
+        ];
+        // default: grouped by nreg ASC — one «{title||nreg}:» header per
+        // document (unindexed 2341-14 renders its own nreg), rows indented
+        // under it, an empty bookmark text renders no text line
+        assert_eq!(
+            favorites_lines(&rows, FavSort::Nreg),
+            vec![
+                "Обрані анотації (3):".to_string(),
+                "Про вищу освіту:".to_string(),
+                "  [comment] 2026-10-28 07:30:00".to_string(),
+                "    корисний закон".to_string(),
+                "  [bookmark] 2026-10-29 09:00:00".to_string(),
+                "2341-14:".to_string(),
+                "  [highlight] 2026-10-27 10:00:00".to_string(),
+                "    Стаття 3 — Вища освіта".to_string(),
+            ]
+        );
+        // title sort: flat like recent_lines, ordered by title||nreg
+        // (digits sort before Ukrainian letters)
+        assert_eq!(
+            favorites_lines(&rows, FavSort::Title),
+            vec![
+                "Обрані анотації (3):".to_string(),
+                "[highlight] 2341-14 · 2026-10-27 10:00:00".to_string(),
+                "  Стаття 3 — Вища освіта".to_string(),
+                "[comment] Про вищу освіту · 2026-10-28 07:30:00".to_string(),
+                "  корисний закон".to_string(),
+                "[bookmark] Про вищу освіту · 2026-10-29 09:00:00".to_string(),
+            ]
+        );
+        // new sort: flat, created_at DESC (the recent direction through
+        // this command's non-default path)
+        assert_eq!(
+            favorites_lines(&rows, FavSort::New),
+            vec![
+                "Обрані анотації (3):".to_string(),
+                "[bookmark] Про вищу освіту · 2026-10-29 09:00:00".to_string(),
+                "[comment] Про вищу освіту · 2026-10-28 07:30:00".to_string(),
+                "  корисний закон".to_string(),
+                "[highlight] 2341-14 · 2026-10-27 10:00:00".to_string(),
+                "  Стаття 3 — Вища освіта".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn favorites_lines_kind_filter_and_empty() {
+        // --kind canonicalises through normalize_fav_kind (the GUI chip
+        // mapping): case-insensitive English tokens plus the Ukrainian
+        // aliases, singular and plural
+        assert_eq!(normalize_fav_kind("Comment").unwrap(), "comment");
+        assert_eq!(normalize_fav_kind(" highlight ").unwrap(), "highlight");
+        assert_eq!(normalize_fav_kind("КОМЕНТАР").unwrap(), "comment");
+        assert_eq!(normalize_fav_kind("виділення").unwrap(), "highlight");
+        assert_eq!(normalize_fav_kind("закладки").unwrap(), "bookmark");
+        // unknown kinds are a clear error (exit 1 through main)
+        assert!(normalize_fav_kind("note").is_err());
+        assert!(normalize_fav_kind("").is_err());
+        let rows = vec![
+            FavRow {
+                nreg: "1556-18".into(),
+                kind: "comment".into(),
+                text: "  корисний\nзакон  ".into(),
+                created_at: "2026-10-28 07:30:00".into(),
+                title: "Про вищу освіту".into(),
+            },
+            FavRow {
+                nreg: "2341-14".into(),
+                kind: "highlight".into(),
+                text: "Стаття 3".into(),
+                created_at: "2026-10-27 10:00:00".into(),
+                title: String::new(),
+            },
+        ];
+        // cmd_favorites keeps rows whose kind matches the canonical token
+        // (case-insensitive): «коментарі» keeps only the comment row
+        let want = normalize_fav_kind("коментарі").unwrap();
+        let kept: Vec<FavRow> = rows
+            .iter()
+            .filter(|r| r.kind.eq_ignore_ascii_case(want))
+            .cloned()
+            .collect();
+        assert_eq!(
+            favorites_lines(&kept, FavSort::Nreg),
+            vec![
+                "Обрані анотації (1):".to_string(),
+                "Про вищу освіту:".to_string(),
+                "  [comment] 2026-10-28 07:30:00".to_string(),
+                "    корисний закон".to_string(),
+            ]
+        );
+        // a kind with no rows (this data has no bookmarks): the filter
+        // empties the set and the table collapses to the stdout-only
+        // «немає» line (the --out file then carries the BOM alone)
+        let want = normalize_fav_kind("закладка").unwrap();
+        let kept: Vec<FavRow> = rows
+            .iter()
+            .filter(|r| r.kind.eq_ignore_ascii_case(want))
+            .cloned()
+            .collect();
+        assert!(kept.is_empty());
+        assert_eq!(
+            favorites_lines(&kept, FavSort::Nreg),
+            vec!["Обраних анотацій немає".to_string()]
+        );
+        assert_eq!(
+            favorites_lines(&[], FavSort::Title),
+            vec!["Обраних анотацій немає".to_string()]
+        );
+    }
+
+    #[test]
+    fn favorites_json_body_grouped_and_flat() {
+        // the same three rows as the table test, shuffled base order
+        let rows = vec![
+            FavRow {
+                nreg: "2341-14".into(),
+                kind: "highlight".into(),
+                text: "Стаття 3 — Вища освіта".into(),
+                created_at: "2026-10-27 10:00:00".into(),
+                title: String::new(),
+            },
+            FavRow {
+                nreg: "1556-18".into(),
+                kind: "comment".into(),
+                text: "  корисний\nзакон  ".into(),
+                created_at: "2026-10-28 07:30:00".into(),
+                title: "Про вищу освіту".into(),
+            },
+            FavRow {
+                nreg: "1556-18".into(),
+                kind: "bookmark".into(),
+                text: "   ".into(),
+                created_at: "2026-10-29 09:00:00".into(),
+                title: "Про вищу освіту".into(),
+            },
+        ];
+        // grouped (the nreg default): one array per nreg + the total
+        let body = favorites_json_body(&rows, FavSort::Nreg);
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        assert!(body.contains("\n  \"grouped\""), "pretty-printed body");
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(v["total"], 3);
+        assert!(v.get("items").is_none(), "grouped shape has no items key");
+        let groups = v["grouped"].as_object().unwrap();
+        assert_eq!(groups.keys().collect::<Vec<_>>(), vec!["1556-18", "2341-14"]);
+        let group = groups["1556-18"].as_array().unwrap();
+        assert_eq!(group.len(), 2, "same-nreg rows stay together");
+        assert_eq!(group[0]["kind"], "comment");
+        assert_eq!(group[0]["created_at"], "2026-10-28 07:30:00");
+        assert_eq!(group[0]["text"], "  корисний\nзакон  ", "raw text verbatim");
+        assert_eq!(group[0]["title"], "Про вищу освіту");
+        assert_eq!(group[1]["kind"], "bookmark");
+        assert_eq!(groups["2341-14"].as_array().unwrap().len(), 1);
+        // flat shapes: title sort renders items[] in title order + total
+        let body = favorites_json_body(&rows, FavSort::Title);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert!(v.get("grouped").is_none(), "flat shape has no grouped key");
+        assert_eq!(v["total"], 3);
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0]["nreg"], "2341-14", "title-ordered first");
+        assert_eq!(items[2]["kind"], "bookmark");
+        // new sort: also flat, created_at DESC
+        let body = favorites_json_body(&rows, FavSort::New);
+        let v: serde_json::Value = serde_json::from_str(&body).unwrap();
+        let items = v["items"].as_array().unwrap();
+        assert_eq!(items[0]["kind"], "bookmark", "newest first");
+        assert_eq!(items[2]["kind"], "highlight");
+        // empty: both shapes keep the total at 0 (the «немає» line is
+        // stdout-only and never enters the JSON)
+        assert_eq!(
+            favorites_json_body(&[], FavSort::Nreg),
+            "{\n  \"grouped\": {},\n  \"total\": 0\n}"
+        );
+        assert_eq!(
+            favorites_json_body(&[], FavSort::New),
+            "{\n  \"items\": [],\n  \"total\": 0\n}"
+        );
+    }
+
+    #[test]
+    fn favorites_out_note_formats_count_and_json() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//f.txt");
+        let line = favorites_out_note(5, file);
+        assert_eq!(line, format!("[favorites] записано 5 анотацій → {}", file.display()));
+        assert!(line.starts_with("[favorites] записано "));
+        assert!(line.contains("5"));
+        assert!(line.contains("анотацій"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the house zero-result rule: the note still formats with n = 0
+        assert_eq!(
+            favorites_out_note(0, file),
+            format!("[favorites] записано 0 анотацій → {}", file.display())
+        );
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//f.json");
+        let line = favorites_json_out_note(file);
+        assert_eq!(line, format!("[favorites] записано JSON → {}", file.display()));
+        assert!(line.starts_with("[favorites] записано "));
         assert!(line.contains("JSON"));
         assert!(line.contains('→'));
         assert!(line.contains(&file.display().to_string()));

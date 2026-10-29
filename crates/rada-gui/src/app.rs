@@ -1210,6 +1210,27 @@ impl App {
         });
     }
 
+    /// Export the CURRENTLY shown Favorites rows (filter + sort applied,
+    /// web «експорт .txt» parity) as a UTF-8 .txt through a save dialog.
+    pub fn export_favorites_txt(
+        &mut self,
+        rows: Vec<views::favorites::FavRow>,
+        total: usize,
+        needle: String,
+        kind: usize,
+    ) {
+        let body = views::favorites::favorites_txt_report(&rows, total, &needle, kind);
+        let Some(path) = self.dlg_save("annots.txt".to_string()) else {
+            return;
+        };
+        self.spawn(move |tx| {
+            let res = std::fs::write(&path, body.as_bytes())
+                .map(|_| path)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Exported(res));
+        });
+    }
+
     /// Import annotations from a JSON file (array or `{"annotations":[...]}`)
     /// picked through a file dialog. Existing rows are kept; valid entries are appended.
     pub fn import_annotations(&mut self) {

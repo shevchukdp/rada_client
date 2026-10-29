@@ -7,6 +7,15 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-29
 
+### 0.10.43: «Зміст» складається у веб, `favorites` з CLI та .txt-експорт Обраних у програмі / collapsible outline, CLI favorites & favorites .txt export
+
+- **UKR:** 1) **«Зміст» у веб-читалці тепер складається**: клік по заголовку ховає список і дописує «— згорнуто»; вибір запам'ятається (навіть після перезавантаження сторінки), а стрибки по заголовках лишились ті самі. 2) **CLI `favorites [--kind] [--sort]`**: весь список анотацій офлайн — груповання за номером (типово), або «за назвою», або найновіші; `--kind` приймає і українські мітки (коментарі/виділення/закладки); `--json` (групований або плаский) і `--out FILE` (таблиця з BOM / JSON без BOM). 3) **«експорт .txt» на Обраних у програмі** — саме те, що бачиш: фільтр, чип виду й сортування враховуються, як у вебі. 4) Тести: 298/298.
+- **ENG:** 1) **The web reader's «Зміст» is now collapsible**: clicking the header hides the list and appends «— згорнуто»; the choice persists across documents and page reloads, and the heading jumps stay exactly as they were. 2) **CLI `favorites [--kind] [--sort]`**: the whole annotation list, offline — grouped by number (default), by title, or newest first; `--kind` also accepts the Ukrainian labels (коментарі/виділення/закладки); `--json` (grouped or flat) and `--out FILE` (BOM table / BOM-less JSON). 3) **An «експорт .txt» button on the app's Favorites** downloads exactly what's on screen — text filter, kind chip and sort all apply, web parity. 4) Tests: 298/298.
+
+---
+
+## 2026-10-29
+
 ### 0.10.42: «цилата» в Обраних (програма і веб) та `recent` з CLI / favorites citation & recent annotations
 
 - **UKR:** 1) **«цилата» на кожному рядку Обраних** — і в програмі, і у веб: копіює повне посилання на акт (««Назва» // Офіційний вебпортал парламенту України. URL: …») у той самий формат, що й читалка; у веб ще й блимає «скопійовано» на кнопці. 2) **CLI `recent [--limit N]`**: найсвіжіші анотації з усіх документів одним списком (як «новіші» в Обраних програми) — назва або номер, вид, час і текст; `--json` і `--out FILE` (таблиця з BOM / JSON без BOM). Офлайн. 3) Тести: 291/291.

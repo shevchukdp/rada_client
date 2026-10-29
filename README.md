@@ -123,7 +123,8 @@ official open-data API:
     list (same source as the About dialog's shortcut table).
   - **Favorites (Обране)** — every saved annotation across all documents on one
     page: kind filters, one-click open, «цилата» (copy the full act reference),
-    delete; bare bookmarks show an italic context snippet from the offline text
+    «експорт .txt» (exactly the filtered/sorted view, web parity), delete;
+    bare bookmarks show an italic context snippet from the offline text
     cache (GUI and web).
   - **Bandwidth-friendly** — repeated dictionary / arrivals-feed fetches use
     conditional HTTP (`ETag`/`If-None-Match`, `Last-Modified`/`If-Modified-Since`);
@@ -202,7 +203,8 @@ official open-data API:
   adding browser-history entries), a floating **«догори» button** in the reader
   (appears past 800 px of scroll, smooth-scrolls back to the top),
   **web reader outline («Зміст»** —
-  smooth-scroll jump list of «Розділ/Глава/Стаття» headings),
+  smooth-scroll jump list of «Розділ/Глава/Стаття» headings, collapsible with a
+  persisted «— згорнуто» choice),
   **reader copy-text + reading-time stats** (clipboard button and a muted
   «N слів · M симв. · ~K хв» label),
   **reader export buttons** (`.md` / `.txt` / `.html` download the open act
@@ -340,6 +342,7 @@ Launch arguments:
 .\rada-client.exe annot list --out annots.txt    # table to file (BOM); --json → BOM-less JSON array
 .\rada-client.exe annot search "податок"      # grep ALL annotations: text, kind and nreg; --json / --out too
 .\rada-client.exe recent                     # newest annotations across all docs (title/kind/time/text); --limit N, --json / --out too
+.\rada-client.exe favorites                  # ALL annotations grouped by nreg (titles resolved); --kind comment|highlight|bookmark (+коментарі/виділення/закладки), --sort nreg|title|new, --json / --out too
 .\rada-client.exe annot add 2041-15 highlight "текст виділення"
 .\rada-client.exe annot add 2341-14 comment "увага на розділ 3"
 .\rada-client.exe annot add 2341-14 comment --text-file note.txt   # long UTF-8 comment from a file
