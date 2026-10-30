@@ -7,6 +7,11 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-30
 
+### 0.10.62: `statuses --org` у CLI, «недавні переглянуті» у вебі та Ctrl+Shift+S у програмі / CLI `statuses --org`, web recently-viewed chips & Ctrl+Shift+S in the app
+
+- **UKR:** 1) **`statuses --org <ID>` у CLI**: розподіл статусів одного видавця — «Документи видавця {label}: розподіл за статусами:» і «всього документів» лише його актів; без фільтра вивід не змінився ані байтом. 2) **«недавні переглянуті» на сторінці веб-клієнта**: двійник рядка «недавні запити» — вісім останніх відкритих документів з сховища браузера чипами «nreg  назва», чип відкриває акт, «очистити» забуває; записується при кожному відкритті, включно з посиланням `#doc=`. 3) **Ctrl+Shift+S у програмі**: синхронізація з радою запускається з будь-якої сторінки, коли жоден домашній процес не зайнятий; рядок додано й до «клавіші». 4) Тести: 433/433.
+- **ENG:** 1) **`statuses --org <ID>` in the CLI**: one publisher's status distribution — «Документи видавця {label}: розподіл за статусами:» with «всього документів» counting only its acts; the unfiltered output did not change by a single byte. 2) **«недавні переглянуті» on the web client's landing page**: the recent-queries row's twin — the last eight documents opened in the reader ship from browser storage as «nreg  title» chips, a chip reopens the act, «очистити» forgets them; recorded on every open, the `#doc=` deep link included. 3) **Ctrl+Shift+S in the app**: the rada sync starts from any page whenever no home worker is busy; the «клавіші» sheet gained the row. 4) Tests: 433/433.
+
 ### 0.10.61: `months --org` у CLI, сторінки пошуку у вебі та CSV обраного у програмі / CLI `months --org`, web search pager & favorites CSV in the app
 
 - **UKR:** 1) **`months --year РРРР --org <ID>` у CLI**: сезонність одного видавця — «Документи видавця {label}: РРРР за місяцями:» з тими самими 12 рядками й «разом»; без фільтра вивід не змінився ані байтом. 2) **«попередня / наступна» у веб-пошуку**: кнопки біля «сторінка N» гаснуть на першій/останній сторінці та під час завантаження; посилання-глибинка тепер носить і `offset=`. 3) **«експорт .csv» на сторінці «Обране»** у програмі: показаний список (фільтр + сортування) виїжджає файлом `nreg,title,kind,created_at,text` з BOM — двійник веб-експорта обраного. 4) Тести: 427/427.

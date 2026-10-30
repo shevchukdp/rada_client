@@ -401,6 +401,19 @@
     cursor: pointer; padding: 0 4px;
   }
   #recent-q .clear:hover { color: var(--err); }
+  /* «недавні переглянуті» row (the recent-queries row's twin, for documents
+     opened in the reader): one chip per opened doc (nreg + short title) +
+     «очистити», same chip language as the recent-queries row. */
+  #recent-docs .chip {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #recent-docs .chip:hover { color: var(--text); border-color: var(--accent); }
+  #recent-docs .clear {
+    background: transparent; border: none; color: var(--muted);
+    cursor: pointer; padding: 0 4px;
+  }
+  #recent-docs .clear:hover { color: var(--err); }
   /* «пошук у кеші» banner: visible while cache-search results are shown,
      the chip returns to the regular search; same chip language as the
      filter rows. */
@@ -763,6 +776,7 @@
       </div>
       <div id="dicts-rows"></div>
     </div>
+    <div id="recent-docs" class="row" hidden></div>
     <div id="results-meta"></div>
     <div class="row" id="sort-bar" hidden>
       <button class="chip" type="button" id="sort-nazva" data-col="nazva" title="Сортувати за назвою">Назва</button>
@@ -1034,6 +1048,12 @@ let dictsHomeStarted = false;
 let dictsHomeDismissed = false;
 let dictsHomeShown = false;
 let dictsHomeKind = "organs";
+// Landing «недавні переглянуті» row (the recent-queries row's twin, for the
+// documents the user opened in the reader): same lifetime as the fresh card,
+// the histogram and the dictionary row — the startup search leaves it alone,
+// every later manual search retires it for good.
+let recentDocsHomeStarted = false;
+let recentDocsHomeDismissed = false;
 
 function api(path, opts) {
   return fetch(path, opts).then(async (r) => {
@@ -1174,6 +1194,7 @@ async function init() {
   fillDict("f-org", "organs");
   renderRecent();
   renderRecentQ();
+  renderRecentDocs();
   renderFreshHome();
   renderYearsHome();
   renderDictsHome();
@@ -1855,6 +1876,89 @@ function renderRecentQ() {
   row.appendChild(clr);
 }
 
+// ---- recent documents row («недавні переглянуті», the recent-queries twin) --
+// localStorage key holding up to RECENT_DOCS_MAX documents opened in the
+// reader ({nreg, title}: the card's nazva when the card fetch brought one,
+// "" when it did not; newest first, deduped by nreg; JSON errors tolerated
+// silently, the same idiom as the arrivals seen-set). The key sits in the
+// recent-queries family («rada-recent-q») as its documents sibling.
+const RECENT_DOCS_KEY = "rada-recent-docs";
+const RECENT_DOCS_MAX = 8;
+
+function getRecentDocs() {
+  try {
+    const arr = JSON.parse(localStorage.getItem(RECENT_DOCS_KEY) || "[]");
+    return Array.isArray(arr) ? arr.filter(r => r && typeof r.nreg === "string") : [];
+  } catch (_) { return []; }
+}
+
+/// Pure shape helper: `entry` ({nreg, title}; nreg trimmed) goes to the
+/// front of `items`, older copies of the same nreg are dropped (re-opening a
+/// document moves it to front); an entry with a blank nreg leaves the list
+/// unchanged; the result is capped at RECENT_DOCS_MAX.
+function pushRecentDocs(items, entry) {
+  const n = String((entry && entry.nreg) || "").trim();
+  if (!n) return items;
+  const fresh = { nreg: n, title: String((entry && entry.title) || "") };
+  return [fresh].concat(items.filter(r => r && r.nreg !== n)).slice(0, RECENT_DOCS_MAX);
+}
+
+/// Persist the opened document as the newest recent one and repaint the row.
+/// Storage failures (private mode etc.) stay silent; the row must never
+/// block the reader.
+function rememberRecentDocs(nreg, title) {
+  try {
+    localStorage.setItem(RECENT_DOCS_KEY,
+      JSON.stringify(pushRecentDocs(getRecentDocs(), { nreg: nreg, title: title })));
+  } catch (_) {}
+  renderRecentDocs();
+}
+
+function clearRecentDocs() {
+  try { localStorage.removeItem(RECENT_DOCS_KEY); } catch (_) {}
+  renderRecentDocs();
+}
+
+/// Pure: the «недавні переглянуті» row's markup — the hint label plus one
+/// chip per stored doc («nreg  title», the title truncated with the 40-char
+/// ellipsis the recent-queries and «Останні» rows use) and a trailing
+/// «очистити»; empty (or non-array) input returns "" so the painter can
+/// blank the row cleanly. Chips carry data-i so the painter re-binds openDoc
+/// without putting raw nregs into HTML attributes; the chip's hover title
+/// keeps the full «nreg — title». Server-side strings go through escHtml.
+function recentDocsHtml(items) {
+  if (!Array.isArray(items) || !items.length) return "";
+  let html = '<span class="hint">недавні переглянуті:</span>';
+  for (let i = 0; i < items.length; i++) {
+    const r = items[i];
+    const t = r.title || "";
+    const short = t.length > 40 ? t.slice(0, 40) + "…" : t;
+    html += '<button class="chip" type="button" data-i="' + i + '" title="' +
+      escHtml(t ? r.nreg + " — " + t : r.nreg) + '">' +
+      escHtml(short ? r.nreg + "  " + short : r.nreg) + "</button>";
+  }
+  return html + '<button class="clear" type="button" id="recent-docs-clear" ' +
+    'title="очистити історію переглянутих документів">очистити</button>';
+}
+
+/// Repaint the «недавні переглянуті» row through the pure builder: the whole
+/// row hides while nothing is stored or a later manual search has retired
+/// the landing (recentDocsHomeDismissed, the fresh-card lifetime). Chips open
+/// the document (the openDoc idiom), «очистити» empties storage.
+function renderRecentDocs() {
+  const row = $("recent-docs");
+  const items = getRecentDocs().slice(0, RECENT_DOCS_MAX);
+  row.innerHTML = recentDocsHtml(items);
+  row.hidden = !items.length || recentDocsHomeDismissed;
+  if (row.hidden) return;
+  for (const chip of row.querySelectorAll("button.chip[data-i]")) {
+    const it = items[Number(chip.dataset.i)];
+    if (it) chip.onclick = () => openDoc(it.nreg);
+  }
+  const clr = $("recent-docs-clear");
+  if (clr) clr.onclick = clearRecentDocs;
+}
+
 // ---- zero-results state on the search page (the GUI search page parity) ----
 // A hitless search used to leave only the muted «Знайдено: 0» meta line.
 // The GUI shows a rich empty state instead: the same zero-hits line plus
@@ -1989,6 +2093,14 @@ async function doSearch(offset) {
     $("dicts-home").hidden = true;
   }
   dictsHomeStarted = true;
+  // The «недавні переглянуті» row answers to the initial view only, exactly
+  // like the landing cards above: the startup search leaves it alone, every
+  // later search retires it (renderRecentDocs).
+  if (recentDocsHomeStarted) {
+    recentDocsHomeDismissed = true;
+    $("recent-docs").hidden = true;
+  }
+  recentDocsHomeStarted = true;
   resetFacetLabels(); // never show counts from the previous result set
   renderActiveFilters(); // the chips mirror exactly the filters this query goes out with
   syncStatusChips(); // the quick status chips mirror the select the query goes out with
@@ -2387,6 +2499,7 @@ async function loadCard() {
     state.curCard = d.card;
     $("doc-head").textContent = d.card.nazva + "  [" + d.status_label + "]";
     rememberRecent(nreg, d.card.nazva);
+    rememberRecentDocs(nreg, d.card.nazva);
     fillCardDetails(d.card, d.status_label);
     const sel = $("editions");
     sel.innerHTML = "";
@@ -2421,6 +2534,7 @@ async function loadCard() {
     $("card-retry-row").hidden = false;
     setLive("");
     rememberRecent(nreg, "");
+    rememberRecentDocs(nreg, "");
   }
 }
 

@@ -2572,6 +2572,20 @@ impl eframe::App for App {
         if ctrl_shift_t {
             self.tab_reopen();
         }
+        // Ctrl+Shift+S: start the incremental sync from any page, whenever
+        // every home worker is idle (sync/fetch/init share the db file).
+        let ctrl_shift_s = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::S)
+        });
+        if ctrl_shift_s
+            && sync_shortcut_allowed(
+                self.home.sync_running,
+                self.home.fetch_running,
+                self.home.init_running,
+            )
+        {
+            self.run_sync();
+        }
 
         // toast lifetime
         self.toasts
@@ -2752,6 +2766,12 @@ fn sync_log_line(now_secs: u64, text: &str) -> String {
     format!("[{}] {text}", hhmm_from_secs(now_secs))
 }
 
+/// Whether the global Ctrl+Shift+S may start a sync: every home worker
+/// (sync/fetch/init) must be idle — they all write the same db file.
+fn sync_shortcut_allowed(sync_running: bool, fetch_running: bool, init_running: bool) -> bool {
+    !sync_running && !fetch_running && !init_running
+}
+
 /// «20261027-1530» stamp for backup file names (UTC, no external crates).
 fn backup_stamp() -> String {
     stamp_from_secs(now_secs())
@@ -2779,7 +2799,7 @@ fn stamp_from_secs(secs: u64) -> String {
 mod tests {
     use super::{
         closed_pop, closed_push, hhmm_from_secs, page_for_alt_digit, stamp_from_secs,
-        sync_log_line, Page,
+        sync_log_line, sync_shortcut_allowed, Page,
     };
 
     #[test]
@@ -2844,5 +2864,14 @@ mod tests {
         assert_eq!(s.len(), 10);
         assert_eq!(s[0], ("n3".into(), "Т3".into()));
         assert_eq!(s[9], ("n12".into(), "Т12".into()));
+    }
+
+    #[test]
+    fn sync_shortcut_needs_every_worker_idle() {
+        assert!(sync_shortcut_allowed(false, false, false));
+        assert!(!sync_shortcut_allowed(true, false, false), "sync running");
+        assert!(!sync_shortcut_allowed(false, true, false), "fetch running");
+        assert!(!sync_shortcut_allowed(false, false, true), "init running");
+        assert!(!sync_shortcut_allowed(true, true, true));
     }
 }

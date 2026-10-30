@@ -96,7 +96,9 @@ official open-data API:
     `nreg,title,kind,created_at,text`, UTF-8 with BOM — the web twin.
   - **Keyboard shortcuts** — Ctrl+F focuses find/query; Alt+←/→ **or**
     Alt+PageUp/PageDown step through the results list inside the reader;
-    **Ctrl+Plus / Ctrl+Minus / Ctrl+0** zoom the reader text (±10%, reset).
+    **Ctrl+Plus / Ctrl+Minus / Ctrl+0** zoom the reader text (±10%, reset);
+    **Ctrl+Shift+S** starts the rada sync from any page when no other
+    worker is busy.
   - **Cache full-text search («Знайти в кеші»)** — offline scan of every cached
     document body (Unicode case-insensitive, ranked, context snippets); rows
     open in the reader. Also `--cache-search TERM` on launch, CLI
@@ -296,6 +298,11 @@ official open-data API:
   ASCII), Enter to run; a row applies the label as the matching status /
   type / publisher filter and searches, falling back to a plain title
   search; same lifetime as the fresh card),
+  **a «недавні переглянуті» chip row** (the recent-queries row's twin for
+  documents: the last 8 acts opened in the reader come from browser storage
+  as «nreg  title» chips, deduped newest first; a chip reopens the act,
+  «очистити» forgets them; recorded on every open, the `#doc=` deep link
+  included; same lifetime as the fresh card),
   **search date range** («з від:» / «до:» inputs, dd.mm.yyyy with a
   «дата у форматі дд.мм.рррр» hint on typos; validated bounds go to
   `/api/search` `date_from`/`date_to` — the CLI `--date-from/--date-to`
@@ -409,7 +416,7 @@ Launch arguments:
 .\rada-client.exe dicts organs           # offline dictionary browse: «Словник organs:» + id/label rows; --query міністер, --limit ≤1000, --json / --out too
 .\rada-client.exe dates                  # offline year histogram of adoption dates («без дати» + «найновіший рік»); --json / --out too
 .\rada-client.exe orgs                   # offline top publishers by document count + «всього документів»; --year РРРР filters to one adoption year, --limit ≤200, --json / --out too
-.\rada-client.exe statuses               # offline status distribution (dict labels) + «всього документів»; --json / --out too
+.\rada-client.exe statuses               # offline status distribution (dict labels) + «всього документів»; --org <ID> scopes to one publisher («Документи видавця …: розподіл за статусами:»); --json / --out too
 .\rada-client.exe months                 # offline month histogram of one year (--year РРРР, always 12 rows + «разом»); --org <ID> scopes to one publisher («Документи видавця …: РРРР за місяцями:»); --json / --out too
 .\rada-client.exe years                  # offline per-year histogram of a closed range (--from РРРР --to РРРР, zero years omitted + «разом» + «без дати»); --org <ID> gives one publisher's activity timeline («Документи видавця … за роками:», no «без дати»); --json / --out too
 .\rada-client.exe docs --org 1           # offline documents, newest first: one publisher («Документи видавця …:»), one year (--year РРРР alone or combined); --limit ≤500, --json / --out too

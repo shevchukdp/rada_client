@@ -847,12 +847,24 @@ enum Cmd {
     /// distribution on the `status` column of `docs` — how many documents
     /// are чинний / не чинний / …, with labels resolved from the offline
     /// `stan` dictionary. Complements `dates` / `orgs`, shows the index
-    /// freshness mix, and helps pick the status filters. Pure offline: the
-    /// command never touches the network; informational — always exits 0.
+    /// freshness mix, and helps pick the status filters. `--org KEY`
+    /// restricts the histogram to one publisher (the `docs --org` key
+    /// family): only rows whose `org_num` equals the key count, the
+    /// header names the publisher («Документи видавця {label}: розподіл
+    /// за статусами:», the offline `organs` label or the raw key) and
+    /// «всього документів» reports the publisher's own documents; an
+    /// unknown publisher reports the empty histogram and still exits 0.
+    /// Pure offline: the command never touches the network; informational
+    /// — always exits 0.
     Statuses {
+        /// Publisher key to filter by (the `[org_num]` value `orgs`
+        /// prints; matched exactly like `docs --org`, and a numeric key
+        /// also resolves its label from the offline `organs` dictionary).
+        #[arg(long)]
+        org: Option<String>,
         /// Emit the JSON body
-        /// (`{"statuses":[{count,id,label},…],"total":N}`) instead of the
-        /// report.
+        /// (`{"statuses":[{count,id,label},…][,"org":…,"org_label":…],
+        /// "total":N}`) instead of the report.
         #[arg(long)]
         json: bool,
         /// Write the exact stdout report (or the `--json` body) to this file
@@ -1171,8 +1183,8 @@ fn run() -> Result<()> {
             out,
         } => cmd_docs(&cli.db, org.as_deref(), year.as_deref(), limit, json, out.as_deref()),
         Cmd::Doc { nreg, json, out } => cmd_doc(&cli.db, &nreg, json, out.as_deref()),
-        Cmd::Statuses { json, out } => {
-            cmd_statuses(&cli.db, json, out.as_deref())
+        Cmd::Statuses { org, json, out } => {
+            cmd_statuses(&cli.db, org.as_deref(), json, out.as_deref())
         }
         Cmd::Export { nreg, fmt, out } => {
             cmd_export(&cli.db, &nreg, &fmt, out.as_deref())
@@ -7036,9 +7048,24 @@ struct StatusRow {
 /// `stats`/`verify` numbers), then the «всього документів: {total}»
 /// verdict, or «індекс порожній» when the histogram has no rows at all
 /// (the `dates_lines` empty idiom). Informational: an empty histogram
-/// never fails the run.
-fn statuses_lines(rows: &[StatusRow], total: i64) -> Vec<String> {
-    let mut lines = vec!["Розподіл за статусами:".to_string()];
+/// never fails the run. With `org` (the `--org` publisher report: the
+/// display string the caller resolved — the `organs`-dictionary label
+/// when the numeric key resolved, the raw publisher key otherwise, the
+/// `docs` header rule) the header becomes «Документи видавця {org}:
+/// розподіл за статусами:» (the `docs --org` / `months --org`
+/// «Документи видавця {org}: …» header family) and NOTHING else moves:
+/// the rows and the «всього документів» verdict keep their exact wording,
+/// the caller's `total` just reports the filtered universe (the
+/// publisher's own document count — equal to the sum of the SHOWN rows,
+/// `status` being `NOT NULL`, the `years`/`months` «разом» choice
+/// mirrored), and the empty case keeps today's «індекс порожній» line
+/// under the publisher header; absent keeps the body byte-identical to
+/// the unfiltered report.
+fn statuses_lines(rows: &[StatusRow], total: i64, org: Option<&str>) -> Vec<String> {
+    let mut lines = vec![match org {
+        None => "Розподіл за статусами:".to_string(),
+        Some(o) => format!("Документи видавця {o}: розподіл за статусами:"),
+    }];
     for r in rows {
         lines.push(format!("{} [{}]: {}", r.label, r.id, r.count));
     }
@@ -7057,8 +7084,19 @@ fn statuses_lines(rows: &[StatusRow], total: i64) -> Vec<String> {
 /// `count`/`id`/`label` keep their alphabetical order inside every entry).
 /// stdout prints exactly this string plus a trailing newline; the `--out`
 /// file receives the same bytes BOM-less (machine data, the house JSON
-/// rule).
-fn statuses_json(rows: &[StatusRow], total: i64) -> String {
+/// rule). With `org`/`org_label` (the `--org` publisher report: `org` the
+/// key as given, `org_label` the header's display string, the
+/// `docs_list_json`/`years_json` rule) the object gains `"org"`/
+/// `"org_label"` (map keys sort, so they land before «statuses»: `org` <
+/// `org_label` < `statuses` < `total`) and NOTHING else changes; the
+/// `total` just carries the caller's filtered-universe count; absent
+/// keeps the body byte-identical to the unfiltered report.
+fn statuses_json(
+    rows: &[StatusRow],
+    total: i64,
+    org: Option<&str>,
+    org_label: Option<&str>,
+) -> String {
     let statuses: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
@@ -7069,7 +7107,13 @@ fn statuses_json(rows: &[StatusRow], total: i64) -> String {
             })
         })
         .collect();
-    let value = serde_json::json!({ "statuses": statuses, "total": total });
+    let mut value = serde_json::json!({ "statuses": statuses, "total": total });
+    // the publisher keys appear only in the filtered report (the
+    // `years_json` rule): the map sorts them before «statuses»
+    if let Some(o) = org {
+        value["org"] = serde_json::Value::from(o);
+        value["org_label"] = serde_json::Value::from(org_label.unwrap_or(o));
+    }
     serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
 }
 
@@ -7095,29 +7139,91 @@ fn statuses_out_note(n: usize, file: &Path) -> String {
 /// populated — and falls back to the built-in `StatusId(id).label()` when
 /// the dict row is missing; an empty label renders the «— не визначено»
 /// placeholder. The `total` is the whole index (`COUNT(*) FROM docs`, the
-/// `dates` rule). Informational: the run always exits 0. With `--out` the
+/// `dates` rule) — or, with `--org`, the publisher's own document count
+/// (`COUNT(*) FROM docs WHERE org_num = ?1`: the verdict reports the
+/// filtered universe, the `years`/`months` «разом» choice mirrored; equal
+/// to the sum of the SHOWN histogram rows, `status` being `NOT NULL`).
+/// Informational: the run always exits 0. With `--out` the
 /// exact stdout body goes to the file (parent dirs created) and nothing
 /// prints to stdout: the plain report is written UTF-8 with a BOM
 /// (Excel-friendly, like search/arrivals/stats/verify), the `--json` body
 /// BOM-less; one `[statuses] записано {n} статусів → {file}` note goes to
 /// stderr. The header always renders, so the file is never BOM-alone.
-fn cmd_statuses(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
+/// With `--org` the histogram narrows to one publisher: a status counts
+/// only rows whose `org_num` equals the given key (bound as a parameter,
+/// never interpolated, the `docs`/`months`/`years` rule) AND the report
+/// names the publisher through the offline `organs` dictionary exactly
+/// like `docs`/`months`/`years` («Документи видавця {label}: розподіл за
+/// статусами:», the raw key on a miss) and the JSON gains
+/// `"org"`/`"org_label"`; the rows, the empty-case «індекс порожній» line
+/// and the `--out` note keep their exact unfiltered wording (documented
+/// deviations — the `--help` stays terse, these docs are the contract).
+/// An unknown publisher reports header + «індекс порожній» and still
+/// exits 0.
+fn cmd_statuses(
+    db: &PathBuf,
+    org: Option<&str>,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<()> {
     if !db.exists() {
         return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
     }
     let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
-    let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
-        .unwrap_or(0);
+    // Offline label lookup, the `docs --org` rule verbatim (the
+    // `cmd_years` idiom), only with `--org`: the TEXT key resolves
+    // through the `organs` dictionary only when it parses to a nonzero id;
+    // a non-numeric / zero / empty key or a dict miss leaves the header
+    // (and the JSON `org_label`) naming the raw key instead.
+    let header_org: Option<String> = org.map(|org| {
+        let label = match org.trim().parse::<i64>() {
+            Ok(id) if id != 0 => conn
+                .query_row(
+                    "SELECT label FROM dict WHERE kind = 'organs' AND id = ?1",
+                    [id],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        if label.is_empty() {
+            org.to_string()
+        } else {
+            label
+        }
+    });
+    // The `total` is the whole index (`COUNT(*) FROM docs`, the `dates`
+    // rule), or — with `--org` — the publisher's own document count: the
+    // verdict reports the filtered universe (the `years`/`months` «разом»
+    // choice mirrored; the `org_num` filter is bound as a parameter,
+    // never interpolated, the `docs`/`months`/`years` rule)
+    let total: i64 = match org {
+        None => conn
+            .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
+            .unwrap_or(0),
+        Some(o) => conn
+            .query_row(
+                "SELECT COUNT(*) FROM docs WHERE org_num = ?1",
+                [o],
+                |r| r.get(0),
+            )
+            .unwrap_or(0),
+    };
+    // with `--org` the `org_num` filter is bound as a parameter (never
+    // interpolated), exactly the `docs`/`months`/`years` statement idiom;
+    // the unfiltered statement is the historical query kept verbatim
+    let sql = match org {
+        None => "SELECT status, COUNT(*) AS c FROM docs
+             GROUP BY status ORDER BY c DESC"
+            .to_string(),
+        Some(_) => "SELECT status, COUNT(*) AS c FROM docs
+             WHERE org_num = ?1
+             GROUP BY status ORDER BY c DESC"
+            .to_string(),
+    };
     let mut stmt = conn
-        .prepare(
-            "SELECT status, COUNT(*) AS c FROM docs
-             GROUP BY status ORDER BY c DESC",
-        )
+        .prepare(&sql)
         .context("prepare statuses histogram")?;
-    let mut mapped = stmt
-        .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
-        .context("run statuses histogram")?;
     // Offline label lookup cached per distinct status (the `orgs`
     // label-cache idiom): the `stan` dictionary wins where populated (the
     // output then matches `dict --kind stan` byte for byte), a dict miss
@@ -7126,30 +7232,65 @@ fn cmd_statuses(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
     let mut labels: std::collections::HashMap<i64, String> =
         std::collections::HashMap::new();
     let mut rows: Vec<StatusRow> = Vec::new();
-    while let Some((id, count)) = mapped.next().transpose()? {
-        let label = labels
-            .entry(id)
-            .or_insert_with(|| {
-                conn.query_row(
-                    "SELECT label FROM dict WHERE kind = 'stan' AND id = ?1",
-                    [id],
-                    |r| r.get::<_, String>(0),
-                )
-                .unwrap_or_else(|_| rada_core::models::StatusId(id).label().to_string())
-            })
-            .clone();
-        rows.push(StatusRow {
-            id,
-            label: if label.is_empty() {
-                "— не визначено".to_string()
-            } else {
-                label
-            },
-            count,
-        });
+    match org {
+        Some(o) => {
+            let mut mapped = stmt
+                .query_map([o], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+                .context("run statuses histogram")?;
+            while let Some((id, count)) = mapped.next().transpose()? {
+                let label = labels
+                    .entry(id)
+                    .or_insert_with(|| {
+                        conn.query_row(
+                            "SELECT label FROM dict WHERE kind = 'stan' AND id = ?1",
+                            [id],
+                            |r| r.get::<_, String>(0),
+                        )
+                        .unwrap_or_else(|_| rada_core::models::StatusId(id).label().to_string())
+                    })
+                    .clone();
+                rows.push(StatusRow {
+                    id,
+                    label: if label.is_empty() {
+                        "— не визначено".to_string()
+                    } else {
+                        label
+                    },
+                    count,
+                });
+            }
+        }
+        // the unfiltered histogram has no publisher parameter to bind
+        None => {
+            let mut mapped = stmt
+                .query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)?)))
+                .context("run statuses histogram")?;
+            while let Some((id, count)) = mapped.next().transpose()? {
+                let label = labels
+                    .entry(id)
+                    .or_insert_with(|| {
+                        conn.query_row(
+                            "SELECT label FROM dict WHERE kind = 'stan' AND id = ?1",
+                            [id],
+                            |r| r.get::<_, String>(0),
+                        )
+                        .unwrap_or_else(|_| rada_core::models::StatusId(id).label().to_string())
+                    })
+                    .clone();
+                rows.push(StatusRow {
+                    id,
+                    label: if label.is_empty() {
+                        "— не визначено".to_string()
+                    } else {
+                        label
+                    },
+                    count,
+                });
+            }
+        }
     }
     if json {
-        let body = statuses_json(&rows, total);
+        let body = statuses_json(&rows, total, org, header_org.as_deref());
         match out {
             Some(p) => {
                 // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
@@ -7160,7 +7301,7 @@ fn cmd_statuses(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
         }
         return Ok(());
     }
-    let lines = statuses_lines(&rows, total);
+    let lines = statuses_lines(&rows, total, header_org.as_deref());
     match out {
         Some(p) => {
             // UTF-8 BOM prefix: the same Excel-friendly convention as
@@ -10675,7 +10816,7 @@ mod tests {
             },
         ];
         assert_eq!(
-            statuses_lines(&rows, 295340),
+            statuses_lines(&rows, 295340, None),
             vec![
                 "Розподіл за статусами:".to_string(),
                 "Чинний [5]: 200000".to_string(),
@@ -10688,7 +10829,7 @@ mod tests {
         // BOM-alone) and the verdict flips to «індекс порожній» (the
         // `dates_lines` empty idiom)
         assert_eq!(
-            statuses_lines(&[], 0),
+            statuses_lines(&[], 0, None),
             vec![
                 "Розподіл за статусами:".to_string(),
                 "індекс порожній".to_string(),
@@ -10714,7 +10855,7 @@ mod tests {
                 count: 3,
             },
         ];
-        let body = statuses_json(&rows, 5);
+        let body = statuses_json(&rows, 5, None, None);
         assert_eq!(
             body,
             "{\n  \"statuses\": [\n    {\n      \"count\": 2,\n      \"id\": 5,\n      \"label\": \"Чинний\"\n    },\n    {\n      \"count\": 3,\n      \"id\": 0,\n      \"label\": \"— не визначено\"\n    }\n  ],\n  \"total\": 5\n}"
@@ -10722,7 +10863,7 @@ mod tests {
         assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
         // empty histogram: a well-formed empty report with total 0
         assert_eq!(
-            statuses_json(&[], 0),
+            statuses_json(&[], 0, None, None),
             "{\n  \"statuses\": [],\n  \"total\": 0\n}"
         );
     }
@@ -10746,6 +10887,128 @@ mod tests {
             statuses_out_note(0, file),
             format!("[statuses] записано 0 статусів → {}", file.display())
         );
+    }
+
+    #[test]
+    fn statuses_lines_org_filter_renders_publisher_header_and_verdict() {
+        // `--org` report: the header names the publisher through the
+        // caller-resolved display string (the `organs` label, or the raw
+        // key on a miss — the `docs` header rule), the rows keep their
+        // exact unfiltered shape, and the «всього документів» verdict
+        // reports the filtered universe: the caller's publisher count,
+        // equal to the sum of the SHOWN rows (`status` is `NOT NULL`, so
+        // the histogram partitions the publisher's rows — the
+        // `years`/`months` «разом» choice mirrored)
+        let rows = vec![
+            StatusRow {
+                id: 5,
+                label: "Чинний".into(),
+                count: 200,
+            },
+            StatusRow {
+                id: 1,
+                label: "Втратив чинність".into(),
+                count: 108,
+            },
+        ];
+        let sum: i64 = rows.iter().map(|r| r.count).sum();
+        assert_eq!(sum, 308);
+        assert_eq!(
+            statuses_lines(&rows, sum, Some("Верховна Рада України")),
+            vec![
+                "Документи видавця Верховна Рада України: розподіл за статусами:".to_string(),
+                "Чинний [5]: 200".to_string(),
+                "Втратив чинність [1]: 108".to_string(),
+                "всього документів: 308".to_string(),
+            ]
+        );
+        // the filtered zero report (unknown publisher): header + today's
+        // empty-case presentation — the «індекс порожній» verdict line
+        // kept verbatim under the publisher header (informational — the
+        // command still exits 0); the raw-key header flavor (dict miss)
+        // renders the key verbatim
+        assert_eq!(
+            statuses_lines(&[], 0, Some("999999")),
+            vec![
+                "Документи видавця 999999: розподіл за статусами:".to_string(),
+                "індекс порожній".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn statuses_json_org_filter_adds_org_keys_alphabetically() {
+        // filtered body: the unfiltered keys plus «org»/«org_label»
+        // (map keys sort, so they land before «statuses»: «org» <
+        // «org_label» < «statuses» < «total»), the entries keeping their
+        // alphabetical rule and «total» carrying the filtered-universe
+        // count (the sum of the SHOWN rows)
+        let rows = vec![
+            StatusRow {
+                id: 5,
+                label: "Чинний".into(),
+                count: 2,
+            },
+            StatusRow {
+                id: 0,
+                label: "— не визначено".into(),
+                count: 3,
+            },
+        ];
+        let sum: i64 = rows.iter().map(|r| r.count).sum();
+        let body = statuses_json(&rows, sum, Some("1"), Some("Верховна Рада України"));
+        assert_eq!(
+            body,
+            "{\n  \"org\": \"1\",\n  \"org_label\": \"Верховна Рада України\",\n  \"statuses\": [\n    {\n      \"count\": 2,\n      \"id\": 5,\n      \"label\": \"Чинний\"\n    },\n    {\n      \"count\": 3,\n      \"id\": 0,\n      \"label\": \"— не визначено\"\n    }\n  ],\n  \"total\": 5\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // the rendered counts sum to the «total» key
+        assert_eq!(sum, 5);
+        assert!(body.contains("\"total\": 5"));
+        // dict-miss fallback: `org_label` equals the raw key (the
+        // `docs_list_json`/`years_json` `unwrap_or` rule) — here a caller
+        // passing the unresolved key as the display string
+        let body = statuses_json(&rows, sum, Some("999999"), Some("999999"));
+        assert!(body.contains("\"org\": \"999999\""));
+        assert!(body.contains("\"org_label\": \"999999\""));
+    }
+
+    #[test]
+    fn statuses_unfiltered_report_unchanged_by_org_option() {
+        // the regression guard for the new trailing params: with
+        // `None`/`None` the unfiltered report stays byte-identical to the
+        // pre-`--org` report — «Розподіл за статусами:» header, rows, the
+        // «всього документів» verdict, the «індекс порожній» empty case,
+        // and the JSON keeping «statuses»/«total» without gaining any
+        // org keys
+        let rows = vec![StatusRow {
+            id: 5,
+            label: "Чинний".into(),
+            count: 2,
+        }];
+        assert_eq!(
+            statuses_lines(&rows, 2, None),
+            vec![
+                "Розподіл за статусами:".to_string(),
+                "Чинний [5]: 2".to_string(),
+                "всього документів: 2".to_string(),
+            ]
+        );
+        assert!(
+            !statuses_lines(&rows, 2, None)[0].contains("видавця"),
+            "the unfiltered header names no publisher"
+        );
+        assert_eq!(
+            statuses_lines(&[], 0, None),
+            vec![
+                "Розподіл за статусами:".to_string(),
+                "індекс порожній".to_string(),
+            ]
+        );
+        let body = statuses_json(&rows, 2, None, None);
+        assert!(body.contains("\"statuses\": ["));
+        assert!(body.contains("\"total\": 2"));
+        assert!(!body.contains("org"), "the unfiltered body gains no org keys");
     }
 
     #[test]

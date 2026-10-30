@@ -6162,4 +6162,134 @@ mod tests {
         let d = &d[..d.find("\n}").expect("doSearch end")];
         assert!(d.contains("if (offset === 0) {"), "the shareable fragment is still written from page 1 only");
     }
+
+    #[test]
+    fn ui_page_recent_docs_push_pure() {
+        // Pure pushRecentDocs(items, entry): the entry's trimmed nreg goes
+        // to the front, older copies of the same nreg drop out (re-opening a
+        // document just moves it there), a blank-nreg entry leaves the list
+        // unchanged, and the list is capped at RECENT_DOCS_MAX. The Rust
+        // mirror below implements the EXACT expressions asserted from the
+        // source, so the JS list op and its truth table cannot drift apart.
+        let p = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function pushRecentDocs(items, entry) {")
+            .expect("pushRecentDocs")..];
+        let p = &p[..p.find("\n}").expect("pushRecentDocs end")];
+        assert!(p.contains("const n = String((entry && entry.nreg) || \"\").trim();"),
+            "the nreg is normalised through trim");
+        assert!(p.contains("if (!n) return items;"), "a blank nreg leaves the list unchanged");
+        assert!(p.contains("[fresh].concat(items.filter(r => r && r.nreg !== n)).slice(0, RECENT_DOCS_MAX)"),
+            "newest first, deduped by nreg, capped");
+        assert!(ui::INDEX_HTML.contains("const RECENT_DOCS_MAX = 8;"), "the cap is 8");
+        let mirror = |items: &[(String, String)], nreg: &str, title: &str| -> Vec<(String, String)> {
+            let n = nreg.trim().to_string();
+            if n.is_empty() {
+                return items.to_vec();
+            }
+            let mut out = vec![(n.clone(), title.to_string())];
+            out.extend(items.iter().filter(|(r, _)| r != &n).cloned());
+            out.truncate(8);
+            out
+        };
+        // Dedupe moves the nreg to the front, carrying the freshest title.
+        let base: Vec<(String, String)> = ["1-1", "2-2", "3-3"]
+            .iter()
+            .map(|n| (n.to_string(), format!("t{n}")))
+            .collect();
+        let got = mirror(&base, "2-2", "fresh");
+        assert_eq!(got, vec![
+            ("2-2".to_string(), "fresh".to_string()),
+            ("1-1".to_string(), "t1-1".to_string()),
+            ("3-3".to_string(), "t3-3".to_string()),
+        ], "re-opening moves the nreg to front, deduped, newest first");
+        // Cap 8: pushing a ninth document drops the oldest entry only.
+        let eight: Vec<(String, String)> =
+            (1..=8).map(|i| (i.to_string(), String::new())).collect();
+        let got = mirror(&eight, "9", "x");
+        assert_eq!(got.len(), 8, "capped at RECENT_DOCS_MAX");
+        assert_eq!(got[0].0, "9", "newest first");
+        assert_eq!(got[7].0, "7", "the tail (oldest) entry fell off");
+        assert!(!got.iter().any(|(r, _)| r == "8"), "the oldest entry is the one dropped");
+        // Blank nreg entries are no-ops; a padded nreg is stored trimmed.
+        assert_eq!(mirror(&base, "   ", "x"), base, "blank nreg leaves the list unchanged");
+        assert_eq!(mirror(&base, "", "x"), base, "empty nreg leaves the list unchanged");
+        let got = mirror(&[], " 5-5 ", "t");
+        assert_eq!(got[0], ("5-5".to_string(), "t".to_string()), "the nreg is stored trimmed");
+    }
+
+    #[test]
+    fn ui_page_has_recent_docs_row() {
+        // Landing «недавні переглянуті» row (the recent-queries row's twin,
+        // for documents opened in the reader): the family-sibling storage
+        // key, the pure builder's empty-to-"" and escHtml contract, the chip
+        // + «очистити» markup painted right after the dictionary card, the
+        // record hook on the reader's card path (behind every openDoc
+        // caller, including the #doc= startup deep link), and the landing
+        // cards' lifetime (hidden while empty, retired by later searches).
+        assert!(ui::INDEX_HTML.contains("const RECENT_DOCS_KEY = \"rada-recent-docs\";"),
+            "the storage key is the «rada-recent-q» family's documents sibling");
+        assert!(ui::INDEX_HTML.contains("<div id=\"recent-docs\" class=\"row\" hidden></div>"),
+            "the row starts hidden");
+        // Anchor: right after the dictionary home card, before the results meta.
+        let dicts = ui::INDEX_HTML.find("id=\"dicts-home\"").expect("dicts-home card");
+        let row = ui::INDEX_HTML.find("id=\"recent-docs\"").expect("recent-docs row");
+        let meta = ui::INDEX_HTML.find("id=\"results-meta\"").expect("results-meta");
+        assert!(dicts < row && row < meta, "the row sits right after the dict card");
+        // Pure builder: empty → "", chip markup, escHtml escaping, «очистити».
+        let b = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function recentDocsHtml(items) {")
+            .expect("recentDocsHtml")..];
+        let b = &b[..b.find("\n}").expect("recentDocsHtml end")];
+        assert!(b.contains("if (!Array.isArray(items) || !items.length) return \"\";"),
+            "empty (or non-array) input builds nothing");
+        assert!(b.contains("недавні переглянуті:"), "the hint label");
+        assert!(b.contains("class=\"chip\"") && b.contains("data-i=\""),
+            "one chip per doc, data-i for the painter's openDoc re-bind");
+        assert!(b.contains("escHtml("), "nregs and titles escape through escHtml");
+        assert!(b.contains("очистити</button>"), "the trailing clear chip");
+        // Painter: paints through the builder, hides on empty or retired
+        // landing, opens docs through the openDoc idiom, wires «очистити».
+        let r = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function renderRecentDocs() {")
+            .expect("renderRecentDocs")..];
+        let r = &r[..r.find("\n}").expect("renderRecentDocs end")];
+        assert!(r.contains("row.innerHTML = recentDocsHtml(items);"), "painted through the pure builder");
+        assert!(r.contains("row.hidden = !items.length || recentDocsHomeDismissed;"),
+            "empty storage hides the row entirely, a retired landing keeps it hidden");
+        assert!(r.contains("chip.onclick = () => openDoc(it.nreg);"), "a chip opens that document");
+        assert!(r.contains("clr.onclick = clearRecentDocs;"), "«очистити» wired to the clearer");
+        let c = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function clearRecentDocs() {")
+            .expect("clearRecentDocs")..];
+        let c = &c[..c.find("\n}").expect("clearRecentDocs end")];
+        assert!(c.contains("localStorage.removeItem(RECENT_DOCS_KEY)"), "«очистити» empties storage");
+        assert!(c.contains("catch (_) {}"), "storage failures stay silent");
+        // Record hook: the reader's card path stores the {nreg, title} pair
+        // with the fetched card's nazva, and nreg-only when the card fetch
+        // failed. That choke point sits behind every openDoc caller — the
+        // result rows, the chips, the reader's prev/next and the init #doc=
+        // startup deep link — so every opened document is recorded once.
+        let lc = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function loadCard() {")
+            .expect("loadCard")..];
+        let lc = &lc[..lc.find("\n}").expect("loadCard end")];
+        assert!(lc.contains("rememberRecentDocs(nreg, d.card.nazva);"), "card success records nreg + title");
+        assert!(lc.contains("rememberRecentDocs(nreg, \"\");"), "card failure records nreg only");
+        let i = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function init() {")
+            .expect("init")..];
+        let i = &i[..i.find("\n}").expect("init end")];
+        assert!(i.contains("openDoc(h.doc);"), "the #doc= startup opens through the recording path");
+        assert!(i.contains("renderRecentDocs();"), "the row paints at startup");
+        // The landing lifetime (the fresh-card rule): the startup search
+        // leaves the row alone, every later manual search retires it.
+        let d = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function doSearch(offset) {")
+            .expect("doSearch")..];
+        let d = &d[..d.find("\n}").expect("doSearch end")];
+        assert!(d.contains("if (recentDocsHomeStarted) {"), "only later searches retire");
+        assert!(d.contains("recentDocsHomeDismissed = true;"), "the retirement is permanent");
+        assert!(d.contains("$(\"recent-docs\").hidden = true;"), "the retired row hides");
+        assert!(d.contains("recentDocsHomeStarted = true;"), "the startup search passes through");
+    }
 }
