@@ -105,7 +105,11 @@ official open-data API:
     **«Документи за роками»** chip row (the last 15 years from the index,
     «2026 · 5 492»…): a chip opens a window with the newest 200 acts of that
     year, each row opening the reader, with an «експорт .csv» of the shown list
-    (UTF-8 with BOM, the arrivals export's own format).
+    (UTF-8 with BOM, the arrivals export's own format). The «останній
+    імпорт/синк» row adds a relative suffix in words —
+    **«щойно / N хвилин тому / N годин тому / N днів тому»** with correct
+    Ukrainian plurals, computed on the same UTC clock the stamp was written
+    with.
   - **Reader tabs** — every document you open becomes a tab («Вкладки:» above
     the title): tabs keep their text, find query and edition when you switch
     between them; **Ctrl+Tab / Ctrl+Shift+Tab** cycle them, **Ctrl+W** (or **×**)
@@ -283,6 +287,12 @@ official open-data API:
   accent bars with thousands-spaced counts, the last 15 years present;
   a bar opens that year's newest acts via `GET /api/yeardocs`, each row
   opening the reader, click again to collapse; same lifetime as the fresh card),
+  **a «Пошук у словниках» landing row** (the desktop home dictionary search's
+  twin: an input + «стани / типи / органи» chips query `GET /api/dicts`
+  (Rust-side case-insensitive label matching — SQLite `LOWER` folds only
+  ASCII), Enter to run; a row applies the label as the matching status /
+  type / publisher filter and searches, falling back to a plain title
+  search; same lifetime as the fresh card),
   **search date range** («з від:» / «до:» inputs, dd.mm.yyyy with a
   «дата у форматі дд.мм.рррр» hint on typos; validated bounds go to
   `/api/search` `date_from`/`date_to` — the CLI `--date-from/--date-to`
@@ -391,7 +401,7 @@ Launch arguments:
 .\rada-client.exe orgs                   # offline top publishers by document count + «всього документів»; --year РРРР filters to one adoption year, --limit ≤200, --json / --out too
 .\rada-client.exe statuses               # offline status distribution (dict labels) + «всього документів»; --json / --out too
 .\rada-client.exe months                 # offline month histogram of one year (--year РРРР, always 12 rows + «разом»); --json / --out too
-.\rada-client.exe years                  # offline per-year histogram of a closed range (--from РРРР --to РРРР, zero years omitted + «разом» + «без дати»); --json / --out too
+.\rada-client.exe years                  # offline per-year histogram of a closed range (--from РРРР --to РРРР, zero years omitted + «разом» + «без дати»); --org <ID> gives one publisher's activity timeline («Документи видавця … за роками:», no «без дати»); --json / --out too
 .\rada-client.exe docs --org 1           # offline documents, newest first: one publisher («Документи видавця …:»), one year (--year РРРР alone or combined); --limit ≤500, --json / --out too
 .\rada-client.exe annots 2341-14         # offline annotations of one document («Анотації документа …:» + «разом»); --kind коментар|закладка|виділення, --limit ≤500, --json / --out too
 

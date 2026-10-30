@@ -2688,7 +2688,7 @@ fn sanitize(s: &str) -> String {
 }
 
 /// Unix seconds since the epoch (UTC), 0 when the clock is broken.
-fn now_secs() -> u64 {
+pub(crate) fn now_secs() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())

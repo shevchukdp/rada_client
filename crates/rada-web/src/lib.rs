@@ -236,6 +236,13 @@ fn route(
                     json_err(405, "method not allowed")
                 }
             }
+            "dicts" => {
+                if method == &Method::Get {
+                    dicts_handler(st, q)
+                } else {
+                    json_err(405, "method not allowed")
+                }
+            }
             "resolve" => {
                 if method == &Method::Get {
                     resolve_handler(st, q)
@@ -721,6 +728,50 @@ fn dict_handler(method: &Method, rest: &str, st: &State) -> Resp {
         .map(|(id, label)| json!({ "id": id, "label": label }))
         .collect::<Vec<_>>();
     json_ok(&json!({ "kind": kind, "items": items }))
+}
+
+/// `GET /api/dicts?kind=K&q=TEXT&limit=N` — the web twin of the CLI `dicts`
+/// command (the desktop home «Пошук у словниках» panel): browse/search ONE
+/// reference dictionary. `kind` (stan|typs|organs) is required — missing or
+/// anything else is a 400 in the file's error family; `q` is an optional
+/// case-insensitive substring of the label. The filter runs on the Rust side
+/// through plain `to_lowercase` instead of a SQL `LIKE`/`LOWER`: SQLite folds
+/// only ASCII case, so a Cyrillic needle like «міністер» would silently miss
+/// every «Міністерство …» label, while `to_lowercase` folds Ukrainian letters
+/// (the CLI `dicts` precedent, which shares this exact reasoning with
+/// `dict --search`); skipping `LIKE` also sidesteps the `%`/`_`
+/// wildcard-escaping caveat entirely. Rows arrive `ORDER BY id ASC` from
+/// [`all_labels`] and the limit (default 50, clamped 1..=200, the
+/// arrivals/fresh clamp idiom) is applied AFTER the filter — a SQL LIMIT
+/// before the filter would drop matches sorted past the cutoff, and the
+/// dictionaries hold a few hundred rows, so the full-kind read is cheap.
+/// Fully offline through the index.
+fn dicts_handler(st: &State, q: &[(String, String)]) -> Resp {
+    let Some(kind) = qget(q, "kind") else {
+        return json_err(400, "kind required (stan|typs|organs)");
+    };
+    if !matches!(kind, "stan" | "typs" | "organs") {
+        return json_err(400, &format!("unknown kind {kind}"));
+    }
+    // Trim once and fold with plain `to_lowercase` (the CLI `dict_matches`
+    // rule: an empty or whitespace-only needle matches every label).
+    let needle = qget(q, "q").unwrap_or("").trim().to_lowercase();
+    let limit = qget(q, "limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(50)
+        .max(1)
+        .min(200);
+    let conn = match open_db(st) {
+        Ok(c) => c,
+        Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
+    };
+    let rows = all_labels(&conn, kind)
+        .into_iter()
+        .filter(|(_, label)| needle.is_empty() || label.to_lowercase().contains(&needle))
+        .take(limit)
+        .map(|(id, label)| json!({ "id": id, "label": label }))
+        .collect::<Vec<_>>();
+    json_ok(&json!({ "rows": rows, "kind": kind }))
 }
 
 /// `GET /api/annotations?nreg=`, `POST /api/annotations`,
@@ -5660,5 +5711,184 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("$(\"date-to\").value = fmtYmd8(h.to);"));
         assert!(ui::INDEX_HTML.contains("+ \"from=\" + hf;"));
         assert!(ui::INDEX_HTML.contains("+ \"to=\" + ht;"));
+    }
+
+    // ---- landing dictionary quick-search («Пошук у словниках», the CLI
+    // `dicts` twin) -------------------------------------------------------------
+
+    #[test]
+    fn dicts_endpoint_filters_kind_and_limit() {
+        // Seeded temp index in the yeardocs idiom: dict rows across the three
+        // kinds incl. a capital-М «Міністер» and a «МІНІСТЕРСТВО …» row to
+        // pin the Rust-side case-insensitivity (SQLite LOWER() folds ASCII
+        // only, so the folding must happen through to_lowercase on the Rust
+        // side — the CLI `dicts` reasoning), and 205 typs rows to pin the
+        // limit clamp. Unique dir keeps parallel tests from colliding.
+        let dir = std::env::temp_dir().join("rada-web-dicts-test-main");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let st = Arc::new(State {
+            db_path: dir.join("test.sqlite"),
+            client: RadaClient::with_pacing(Duration::from_secs(3600)),
+            pace_secs: 3600,
+            jobs: Mutex::new(HashMap::new()),
+            job_seq: AtomicU64::new(0),
+        });
+        let conn = db_open(&st.db_path).expect("open test index");
+        let typs = (1..=205)
+            .map(|i| format!("('typs', {i}, 'Тип {i}')"))
+            .collect::<Vec<_>>()
+            .join(",");
+        conn.execute_batch(&format!(
+            "INSERT INTO dict(kind, id, label) VALUES
+             ('organs', 3, 'Міністер'),
+             ('organs', 7, 'МІНІСТЕРСТВО юстиції'),
+             ('organs', 11, 'Верховна Рада'),
+             ('stan', 5, 'Чинний'),
+             {typs};"
+        ))
+        .expect("seed dicts");
+        drop(conn);
+        // `GET /api/dicts?{query}` through `route` (query parsed exactly
+        // as `handle_request` does), answering status + JSON body.
+        let dicts_get = |query: &str| -> (u16, Value) {
+            let mut req: Request = TestRequest::new()
+                .with_method(Method::Get)
+                .with_path("/api/dicts")
+                .into();
+            let resp = route(&Method::Get, "/api/dicts", &parse_query(query), &mut req, &st)
+                .expect("route");
+            let code = resp.status_code().0;
+            let v = serde_json::from_slice(&resp.into_reader().into_inner())
+                .unwrap_or(Value::Null);
+            (code, v)
+        };
+        // A lowercase Cyrillic needle matches the capital-М «Міністер» AND
+        // «МІНІСТЕРСТВО …» (Rust-side to_lowercase folding), rows come back
+        // id ASC, and every non-matching label stays out.
+        let (code, v) = dicts_get("kind=organs&q=міністер");
+        assert_eq!(code, 200);
+        assert_eq!(v["kind"], "organs");
+        let ids: Vec<i64> = v["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|r| r["id"].as_i64().unwrap())
+            .collect();
+        assert_eq!(ids, [3, 7], "{v}");
+        assert_eq!(v["rows"][0]["label"], "Міністер");
+        // The uppercase needle folds the same pair the other way round.
+        let (code, v) = dicts_get("kind=organs&q=МІНІСТЕР");
+        assert_eq!(code, 200);
+        assert_eq!(v["rows"].as_array().unwrap().len(), 2, "{v}");
+        // A whitespace-only needle matches every label (the CLI
+        // `dict_matches` rule), and the kind stays scoped: no stan row
+        // surfaces through an organs query.
+        let (code, v) = dicts_get("kind=organs&q=%20");
+        assert_eq!(code, 200);
+        assert_eq!(v["rows"].as_array().unwrap().len(), 3);
+        let raw = v.to_string();
+        assert!(!raw.contains("Чинний"), "organ rows only: {raw}");
+        // The stan dictionary answers through the same filter.
+        let (code, v) = dicts_get("kind=stan&q=чин");
+        assert_eq!(code, 200);
+        assert_eq!(v["rows"][0]["id"], 5);
+        assert_eq!(v["rows"][0]["label"], "Чинний");
+        // Limits: default 50, floor 1, ceiling 200 (the arrivals/fresh clamp
+        // idiom), pinned against the 205 seeded typs rows, order id ASC.
+        let (code, v) = dicts_get("kind=typs");
+        assert_eq!(code, 200);
+        assert_eq!(v["rows"].as_array().unwrap().len(), 50, "default limit 50");
+        let (code, v) = dicts_get("kind=typs&limit=0");
+        assert_eq!(code, 200);
+        assert_eq!(v["rows"].as_array().unwrap().len(), 1, "limit floors at 1");
+        let (code, v) = dicts_get("kind=typs&limit=9999");
+        assert_eq!(code, 200);
+        let rows = v["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 200, "limit caps at 200");
+        assert_eq!(rows[0]["id"], 1);
+        assert_eq!(rows[199]["id"], 200, "ORDER BY id ASC survives the cap");
+        // Kind is required and one of the three canonical tokens: missing,
+        // empty and unknown values are all 400s in the file's json_err
+        // error family.
+        assert_eq!(dicts_get("").0, 400);
+        assert_eq!(dicts_get("q=чин").0, 400);
+        let (code, v) = dicts_get("kind=bogus");
+        assert_eq!(code, 400);
+        assert!(v["error"].as_str().unwrap().contains("unknown kind"), "{v}");
+        // Only GET is routed.
+        assert_eq!(call(&st, Method::Post, "/api/dicts", "").0, 405);
+    }
+
+    #[test]
+    fn ui_page_has_dicts_home_search() {
+        // The landing row under the years card: «Пошук у словниках:» label,
+        // the text input and three tiny kind chips carrying the canonical
+        // kind tokens.
+        assert!(ui::INDEX_HTML.contains("id=\"dicts-home\""));
+        assert!(ui::INDEX_HTML.contains(">Пошук у словниках:<"));
+        assert!(ui::INDEX_HTML.contains("id=\"dicts-q\""));
+        for kind in ["stan", "typs", "organs"] {
+            assert!(
+                ui::INDEX_HTML.contains(&format!("data-kind=\"{kind}\"")),
+                "kind chip for {kind}"
+            );
+        }
+        // The pure builder: empty in → empty out, «id · label» rows with
+        // data-i indexes so the painter rebinds without raw labels.
+        let start = ui::INDEX_HTML
+            .find("function dictHomeHtml(rows) {")
+            .expect("pure builder present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("dictHomeHtml end")];
+        assert!(body.contains("return \"\""), "empty rows paint nothing");
+        assert!(body.contains("data-i=\""), "rows matched by index, not raw labels");
+        assert!(body.contains(" · "), "rows read «id · label»");
+        assert!(body.contains("escHtml("), "labels escape through the shared helper");
+        // The painter: fetches the endpoint, paints through the pure
+        // builder, binds rows to the filter-apply flow, skips silently and
+        // stays retired once a search has run.
+        let start = ui::INDEX_HTML
+            .find("async function renderDictsHome() {")
+            .expect("painter present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("renderDictsHome end")];
+        assert!(body.contains("/api/dicts?kind="), "fetches the dicts endpoint");
+        assert!(body.contains("dictHomeHtml(rows)"), "rows built by the pure builder");
+        assert!(body.contains("applyDictRow(dictsHomeKind, r)"), "rows apply the filter on click");
+        assert!(body.contains("dictsHomeDismissed"), "a searched-away card stays retired");
+        // Click-to-filter: the kind→select map (the three fillDict targets),
+        // the option matched by its fillDict-cached label, the select-set +
+        // doSearch idiom, and the plain-search fallback for a label no
+        // option carries.
+        let start = ui::INDEX_HTML
+            .find("function applyDictRow(kind, row) {")
+            .expect("filter-apply present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("applyDictRow end")];
+        assert!(body.contains("\"f-status\""), "stan rows target the status select");
+        assert!(body.contains("\"f-typ\""), "typs rows target the type select");
+        assert!(body.contains("\"f-org\""), "organs rows target the organs select");
+        assert!(body.contains("optionLabels[selectId]"), "options matched by the fillDict-cached label");
+        assert!(body.contains("sel.value = hit;"), "the select is set on a label match");
+        assert!(
+            body.contains(r##"$("q").value = String(row.label);"##),
+            "a label no option carries falls back to a plain search"
+        );
+        assert!(body.contains("doSearch(0);"), "the click runs the shared search entry point");
+        // Lifetime and wiring: retired from doSearch like the fresh/years
+        // cards, painted from init, fetched on Enter (the resolve-input
+        // idiom — no fetch per keystroke), chips switch the dictionary and
+        // organs is the documented default.
+        assert!(ui::INDEX_HTML
+            .contains("dictsHomeDismissed = true;\n    $(\"dicts-home\").hidden = true;"));
+        assert!(
+            ui::INDEX_HTML.contains("renderDictsHome();\n  const dl = readDeepLink();"),
+            "the card paints from init like the fresh/years cards"
+        );
+        assert!(ui::INDEX_HTML
+            .contains("if (ev.key === \"Enter\") { ev.preventDefault(); renderDictsHome(); }"));
+        assert!(ui::INDEX_HTML.contains("selectDictKind(b.dataset.kind)"));
+        assert!(ui::INDEX_HTML.contains("let dictsHomeKind = \"organs\";"), "organs is the default kind");
     }
 }

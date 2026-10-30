@@ -629,7 +629,12 @@ enum Cmd {
     /// year of `org_date` over a CLOSED year range — the range-selected
     /// companion of `dates` (which always prints the whole histogram).
     /// `--from YYYY` / `--to YYYY` default to the oldest / newest year
-    /// present in the index (the `dates` MIN/MAX rule). Unlike `months`
+    /// present in the index (the `dates` MIN/MAX rule). `--org KEY`
+    /// restricts the histogram to one publisher (the `docs --org` key
+    /// family): only rows with a full 8-digit `org_date` count, the
+    /// header names the publisher («Документи видавця {label} за
+    /// роками:», the offline `organs` label or the raw key) and the
+    /// «без дати» line is omitted. Unlike `months`
     /// the grid is NOT zero-filled: a year inside the range without a
     /// single document is simply omitted — only years the histogram has a
     /// row for render, ascending. Only rows whose four-digit year parses
@@ -649,10 +654,15 @@ enum Cmd {
         /// Default: the newest year present in the index.
         #[arg(long)]
         to: Option<String>,
+        /// Publisher key to filter by (the `[org_num]` value `orgs`
+        /// prints; matched exactly like `docs --org`, and a numeric key
+        /// also resolves its label from the offline `organs` dictionary).
+        #[arg(long)]
+        org: Option<String>,
         /// Emit the JSON body
-        /// (`{"count_total":N,"from":"YYYY","rows":[{count,year},…],
-        /// "to":"YYYY","undated":N}` — pretty, keys alphabetical) instead
-        /// of the report.
+        /// (`{"count_total":N,"from":"YYYY"[,"org":…,"org_label":…],
+        /// "rows":[{count,year},…],"to":"YYYY"[,"undated":N]}` — pretty,
+        /// keys alphabetical) instead of the report.
         #[arg(long)]
         json: bool,
         /// Write the exact stdout report (or the `--json` body) to this file
@@ -1057,10 +1067,17 @@ fn run() -> Result<()> {
         Cmd::Months { year, json, out } => {
             cmd_months(&cli.db, year.as_deref(), json, out.as_deref())
         }
-        Cmd::Years { from, to, json, out } => cmd_years(
+        Cmd::Years {
+            from,
+            to,
+            org,
+            json,
+            out,
+        } => cmd_years(
             &cli.db,
             from.as_deref(),
             to.as_deref(),
+            org.as_deref(),
             json,
             out.as_deref(),
         ),
@@ -5419,10 +5436,28 @@ fn years_range_rows(from: u32, to: u32, rows: &[YearRow]) -> Vec<YearRow> {
 /// {undated}» line only when `undated > 0` — the `dates` line, computed
 /// over the WHOLE index, independent of the range. Informational: an
 /// empty range still renders header + «немає документів за цей період» +
-/// «разом: 0» (+ the undated line), and the run exits 0.
-fn years_lines(from: u32, to: u32, rows: &[YearRow], undated: i64) -> Vec<String> {
+/// «разом: 0» (+ the undated line), and the run exits 0. With `org` (the
+/// `--org` publisher report: the display string the caller resolved — the
+/// `organs`-dictionary label when the numeric key resolved, the raw
+/// publisher key otherwise, the `docs` header rule) the header becomes
+/// «Документи видавця {org} за роками:» and the «без дати» line is
+/// OMITTED whatever `undated` holds: an undated document carries no
+/// publisher to filter on, so the whole-index line would only mislead
+/// (documented deviation — the `--help` stays terse, this comment is the
+/// contract). The «разом» verdict keeps summing the SHOWN rows in both
+/// modes.
+fn years_lines(
+    from: u32,
+    to: u32,
+    rows: &[YearRow],
+    undated: i64,
+    org: Option<&str>,
+) -> Vec<String> {
     let kept = years_range_rows(from, to, rows);
-    let mut lines = vec!["Документи за роками:".to_string()];
+    let mut lines = vec![match org {
+        None => "Документи за роками:".to_string(),
+        Some(o) => format!("Документи видавця {o} за роками:"),
+    }];
     if kept.is_empty() {
         lines.push("немає документів за цей період".to_string());
     }
@@ -5432,7 +5467,10 @@ fn years_lines(from: u32, to: u32, rows: &[YearRow], undated: i64) -> Vec<String
         lines.push(format!("{}: {}", r.year, r.count));
     }
     lines.push(format!("разом: {total}"));
-    if undated > 0 {
+    // the publisher-filtered report never shows the whole-index «без
+    // дати» line (see the docs above); `undated` arrives as `0` from
+    // `cmd_years` here anyway (the whole-index count is not even run)
+    if undated > 0 && org.is_none() {
         lines.push(format!("без дати: {undated}"));
     }
     lines
@@ -5450,27 +5488,52 @@ fn years_lines(from: u32, to: u32, rows: &[YearRow], undated: i64) -> Vec<String
 /// `count_total` sums the SHOWN rows; `undated` is the whole-index `dates`
 /// count. stdout prints exactly this string plus a trailing newline; the
 /// `--out` file receives the same bytes BOM-less (machine data, the house
-/// JSON rule).
-fn years_json(from: u32, to: u32, rows: &[YearRow], undated: i64) -> String {
+/// JSON rule). With `org`/`org_label` (the `--org` publisher report:
+/// `org` the key as given, `org_label` the header's display string, the
+/// `docs_list_json` rule) the object gains `"org"`/`"org_label"` (map
+/// keys sort, so they land between `from` and `rows`) and DROPS the
+/// `"undated"` key — the `years_lines` deviation: an undated document
+/// carries no publisher to filter on (documented deviation, this comment
+/// is the contract); absent keeps the body byte-identical to the
+/// unfiltered report.
+fn years_json(
+    from: u32,
+    to: u32,
+    rows: &[YearRow],
+    undated: i64,
+    org: Option<&str>,
+    org_label: Option<&str>,
+) -> String {
     let kept = years_range_rows(from, to, rows);
     let total: i64 = kept.iter().map(|r| r.count).sum();
     let entries: Vec<serde_json::Value> = kept
         .iter()
         .map(|r| serde_json::json!({ "year": r.year, "count": r.count }))
         .collect();
-    let value = serde_json::json!({
+    let mut value = serde_json::json!({
         "rows": entries,
         "count_total": total,
         "from": format!("{from:04}"),
         "to": format!("{to:04}"),
-        "undated": undated,
     });
+    // the whole-index undated count describes no publisher-filtered
+    // report (see the docs above): the key is omitted, not faked
+    if org.is_none() {
+        value["undated"] = serde_json::json!(undated);
+    }
+    if let Some(o) = org {
+        value["org"] = serde_json::Value::from(o);
+        value["org_label"] = serde_json::Value::from(org_label.unwrap_or(o));
+    }
     serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
 }
 
 /// The stderr note printed after `years --out` has written `file` (the
 /// resolved closed period, the same wording in both modes):
-/// `[years] записано період {from}–{to} → {file}`.
+/// `[years] записано період {from}–{to} → {file}`. The wording is
+/// identical in every mode: even a publisher-filtered report keeps this
+/// period-only note (documented deviation — the note gains no org
+/// context, zero churn on the existing wording).
 fn years_out_note(from: u32, to: u32, file: &Path) -> String {
     format!(
         "[years] записано період {from:04}–{to:04} → {}",
@@ -5504,10 +5567,25 @@ fn years_out_note(from: u32, to: u32, file: &Path) -> String {
 /// search/arrivals/stats/verify), the `--json` body BOM-less; one
 /// `[years] записано період {from}–{to} → {file}` note goes to stderr.
 /// The header always renders, so the file is never BOM-alone.
+/// With `--org` the histogram narrows to one publisher: a row counts only
+/// when `org_num` equals the given key (bound as a parameter, never
+/// interpolated, the `docs` rule) AND `org_date` is a full 8-digit date
+/// (the `docs` digit-GLOB — an undated row carries no publisher to filter
+/// on, so the whole-index `COUNT(*)` is not run, the «без дати» line and
+/// the JSON `"undated"` key are dropped, and the report gains
+/// `"org"`/`"org_label"`; documented deviations — the `--help` stays
+/// terse, these docs are the contract). The header names the publisher
+/// through the offline `organs` dictionary exactly like `docs`
+/// («Документи видавця {label} за роками:», the raw key on a miss), and
+/// the `--from`/`--to` defaults scope to the publisher's own dated rows
+/// (the same MIN/MAX rule over the filtered `WHERE`). An unknown
+/// publisher reports zero rows and still exits 0; the `--out` note keeps
+/// its exact unfiltered wording.
 fn cmd_years(
     db: &PathBuf,
     from: Option<&str>,
     to: Option<&str>,
+    org: Option<&str>,
     json: bool,
     out: Option<&Path>,
 ) -> Result<()> {
@@ -5517,65 +5595,154 @@ fn cmd_years(
     let from = normalize_year_arg(from)?;
     let to = normalize_year_arg(to)?;
     let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    // Offline label lookup, the `docs --org` rule verbatim, only with
+    // `--org`: the TEXT key resolves through the `organs` dictionary only
+    // when it parses to a nonzero id; a non-numeric / zero / empty key or
+    // a dict miss leaves the header (and the JSON `org_label`) naming the
+    // raw key instead.
+    let header_org: Option<String> = org.map(|org| {
+        let label = match org.trim().parse::<i64>() {
+            Ok(id) if id != 0 => conn
+                .query_row(
+                    "SELECT label FROM dict WHERE kind = 'organs' AND id = ?1",
+                    [id],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        if label.is_empty() {
+            org.to_string()
+        } else {
+            label
+        }
+    });
+    // a publisher-filtered row counts only with a full 8-digit
+    // `org_date` (the `docs` digit-GLOB); the unfiltered path keeps
+    // today's four-digit year-prefix GLOB verbatim
+    let eight = "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]";
     // Default bounds: the oldest / newest year present in the index (the
-    // `dates` MIN/MAX rule — same GLOB guard over the four-digit prefix);
-    // an index with no dated row at all leaves the `0` sentinel, which
-    // renders the zero report (the all-zero `0000` idiom of `months`).
+    // `dates` MIN/MAX rule — same GLOB guard over the four-digit prefix),
+    // or — with `--org` — present in the publisher's own dated rows (the
+    // same MIN/MAX rule scoped to the histogram's filtered `WHERE`); an
+    // empty selection leaves the `0` sentinel, which renders the zero
+    // report (the all-zero `0000` idiom of `months`).
     let from = if from == 0 {
-        conn.query_row(
-            "SELECT MIN(substr(org_date,1,4)) FROM docs
-             WHERE org_date GLOB '[0-9][0-9][0-9][0-9]*'",
-            [],
-            |r| r.get::<_, Option<String>>(0),
-        )
-        .unwrap_or(None)
+        match org {
+            None => conn
+                .query_row(
+                    "SELECT MIN(substr(org_date,1,4)) FROM docs
+                     WHERE org_date GLOB '[0-9][0-9][0-9][0-9]*'",
+                    [],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .unwrap_or(None),
+            Some(o) => conn
+                .query_row(
+                    &format!(
+                        "SELECT MIN(substr(org_date,1,4)) FROM docs
+                         WHERE org_num = ?1 AND org_date GLOB '{eight}'"
+                    ),
+                    [o],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .unwrap_or(None),
+        }
         .and_then(|y| y.parse::<u32>().ok())
         .unwrap_or(0)
     } else {
         from
     };
     let to = if to == 0 {
-        conn.query_row(
-            "SELECT MAX(substr(org_date,1,4)) FROM docs
-             WHERE org_date GLOB '[0-9][0-9][0-9][0-9]*'",
-            [],
-            |r| r.get::<_, Option<String>>(0),
-        )
-        .unwrap_or(None)
+        match org {
+            None => conn
+                .query_row(
+                    "SELECT MAX(substr(org_date,1,4)) FROM docs
+                     WHERE org_date GLOB '[0-9][0-9][0-9][0-9]*'",
+                    [],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .unwrap_or(None),
+            Some(o) => conn
+                .query_row(
+                    &format!(
+                        "SELECT MAX(substr(org_date,1,4)) FROM docs
+                         WHERE org_num = ?1 AND org_date GLOB '{eight}'"
+                    ),
+                    [o],
+                    |r| r.get::<_, Option<String>>(0),
+                )
+                .unwrap_or(None),
+        }
         .and_then(|y| y.parse::<u32>().ok())
         .unwrap_or(0)
     } else {
         to
     };
     check_year_range(from, to)?;
-    let total: i64 = conn
-        .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
-        .unwrap_or(0);
     let mut rows: Vec<YearRow> = Vec::new();
-    let mut stmt = conn
-        .prepare(
-            "SELECT substr(org_date,1,4) AS y, COUNT(*) FROM docs
+    // with `--org` the `org_num` filter is bound as a parameter (never
+    // interpolated), exactly the `docs` statement idiom; the unfiltered
+    // statement is the historical query kept verbatim
+    let sql = match org {
+        None => "SELECT substr(org_date,1,4) AS y, COUNT(*) FROM docs
              WHERE org_date GLOB '[0-9][0-9][0-9][0-9]*'
-             GROUP BY y ORDER BY y",
-        )
+             GROUP BY y ORDER BY y"
+            .to_string(),
+        Some(_) => format!(
+            "SELECT substr(org_date,1,4) AS y, COUNT(*) FROM docs
+             WHERE org_num = ?1 AND org_date GLOB '{eight}'
+             GROUP BY y ORDER BY y"
+        ),
+    };
+    let mut stmt = conn
+        .prepare(&sql)
         .context("prepare years histogram")?;
-    let mut mapped = stmt
-        .query_map([], |r| {
-            Ok(YearRow {
-                year: r.get(0)?,
-                count: r.get(1)?,
-            })
-        })
-        .context("run years histogram")?;
-    while let Some(row) = mapped.next().transpose()? {
-        rows.push(row);
+    match org {
+        Some(o) => {
+            let mut mapped = stmt
+                .query_map([o], |r| {
+                    Ok(YearRow {
+                        year: r.get(0)?,
+                        count: r.get(1)?,
+                    })
+                })
+                .context("run years histogram")?;
+            while let Some(row) = mapped.next().transpose()? {
+                rows.push(row);
+            }
+        }
+        // the unfiltered histogram has no publisher parameter to bind
+        None => {
+            let mut mapped = stmt
+                .query_map([], |r| {
+                    Ok(YearRow {
+                        year: r.get(0)?,
+                        count: r.get(1)?,
+                    })
+                })
+                .context("run years histogram")?;
+            while let Some(row) = mapped.next().transpose()? {
+                rows.push(row);
+            }
+        }
     }
     // `undated` mirrors `dates` exactly: the whole-index count minus the
-    // FULL histogram sum (range-independent).
-    let dated: i64 = rows.iter().map(|r| r.count).sum();
-    let undated = total - dated;
+    // FULL histogram sum (range-independent) — but only unfiltered; the
+    // publisher-filtered report drops the line/key (undated rows carry no
+    // publisher to filter on), so the whole-index `COUNT(*)` is not run.
+    let undated = match org {
+        Some(_) => 0,
+        None => {
+            let total: i64 = conn
+                .query_row("SELECT COUNT(*) FROM docs", [], |r| r.get(0))
+                .unwrap_or(0);
+            let dated: i64 = rows.iter().map(|r| r.count).sum();
+            total - dated
+        }
+    };
     if json {
-        let body = years_json(from, to, &rows, undated);
+        let body = years_json(from, to, &rows, undated, org, header_org.as_deref());
         match out {
             Some(p) => {
                 // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
@@ -5586,7 +5753,7 @@ fn cmd_years(
         }
         return Ok(());
     }
-    let lines = years_lines(from, to, &rows, undated);
+    let lines = years_lines(from, to, &rows, undated, header_org.as_deref());
     match out {
         Some(p) => {
             // UTF-8 BOM prefix: the same Excel-friendly convention as
@@ -8875,7 +9042,7 @@ mod tests {
             YearRow { year: "abcd".into(), count: 1 },
         ];
         assert_eq!(
-            years_lines(2020, 2026, &rows, 14669),
+            years_lines(2020, 2026, &rows, 14669, None),
             vec![
                 "Документи за роками:".to_string(),
                 "2024: 7283".to_string(),
@@ -8887,7 +9054,7 @@ mod tests {
         // empty range: header + «немає документів за цей період» +
         // «разом: 0» + the undated line (the `recent` zero rule, exit 0)
         assert_eq!(
-            years_lines(1900, 1950, &rows, 3),
+            years_lines(1900, 1950, &rows, 3, None),
             vec![
                 "Документи за роками:".to_string(),
                 "немає документів за цей період".to_string(),
@@ -8898,7 +9065,7 @@ mod tests {
         // the `dates` rule: a fully dated index (undated == 0) prints no
         // «без дати» line at all
         assert_eq!(
-            years_lines(2026, 2026, &rows, 0),
+            years_lines(2026, 2026, &rows, 0, None),
             vec![
                 "Документи за роками:".to_string(),
                 "2026: 5492".to_string(),
@@ -8920,7 +9087,7 @@ mod tests {
             YearRow { year: "2024".into(), count: 4 },
             YearRow { year: "2026".into(), count: 2 },
         ];
-        let body = years_json(2020, 2026, &rows, 9);
+        let body = years_json(2020, 2026, &rows, 9, None, None);
         let entries: Vec<String> = [("2024", 4), ("2026", 2)]
             .iter()
             .map(|(year, count)| {
@@ -8934,7 +9101,7 @@ mod tests {
         assert_eq!(body, expected);
         assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
         // empty range: a well-formed zero report with no rows
-        let body = years_json(1900, 1950, &rows, 3);
+        let body = years_json(1900, 1950, &rows, 3, None, None);
         assert!(body.contains("\"count_total\": 0"));
         assert!(body.contains("\"rows\": []"));
         assert!(body.contains("\"from\": \"1900\""));
@@ -8961,6 +9128,97 @@ mod tests {
             years_out_note(0, 0, file),
             format!("[years] записано період 0000–0000 → {}", file.display())
         );
+    }
+
+    #[test]
+    fn years_lines_org_filter_renders_publisher_header_and_omits_undated() {
+        // `--org` report: the header names the publisher through the
+        // caller-resolved display string (the `organs` label, or the raw
+        // key on a miss — the `docs` header rule), the in-range rows and
+        // the «разом» verdict over the SHOWN rows keep the unfiltered
+        // wording, and the «без дати» line is OMITTED even when the
+        // caller passes a positive whole-index count (an undated
+        // document carries no publisher to filter on)
+        let rows = vec![
+            YearRow { year: "2019".into(), count: 3 },
+            YearRow { year: "2024".into(), count: 41 },
+            YearRow { year: "2026".into(), count: 7 },
+        ];
+        assert_eq!(
+            years_lines(2020, 2026, &rows, 14669, Some("Верховна Рада")),
+            vec![
+                "Документи видавця Верховна Рада за роками:".to_string(),
+                "2024: 41".to_string(),
+                "2026: 7".to_string(),
+                "разом: 48".to_string(),
+            ]
+        );
+        // the filtered zero report (unknown publisher / empty window):
+        // header + «немає документів за цей період» + «разом: 0», still
+        // NO «без дати» line (informational — the command still exits 0);
+        // the raw-key header flavor (dict miss) renders the key verbatim
+        assert_eq!(
+            years_lines(1900, 1950, &rows, 3, Some("99")),
+            vec![
+                "Документи видавця 99 за роками:".to_string(),
+                "немає документів за цей період".to_string(),
+                "разом: 0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn years_json_org_filter_adds_org_keys_and_drops_undated() {
+        // filtered body: the unfiltered keys plus «org»/«org_label»
+        // (map keys sort, so they land between «from» and «rows»), and
+        // NO «undated» key (the `years_lines` deviation: undated rows
+        // carry no publisher to filter on)
+        let rows = vec![
+            YearRow { year: "2024".into(), count: 4 },
+            YearRow { year: "2026".into(), count: 2 },
+        ];
+        let body = years_json(2020, 2026, &rows, 9, Some("1"), Some("Верховна Рада"));
+        let entries: Vec<String> = [("2024", 4), ("2026", 2)]
+            .iter()
+            .map(|(year, count)| {
+                format!("    {{\n      \"count\": {count},\n      \"year\": \"{year}\"\n    }}")
+            })
+            .collect();
+        let expected = format!(
+            "{{\n  \"count_total\": 6,\n  \"from\": \"2020\",\n  \"org\": \"1\",\n  \"org_label\": \"Верховна Рада\",\n  \"rows\": [\n{}\n  ],\n  \"to\": \"2026\"\n}}",
+            entries.join(",\n")
+        );
+        assert_eq!(body, expected);
+        assert!(!body.contains("undated"), "the filtered body drops the undated key");
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // dict-miss fallback: `org_label` equals the raw key (the
+        // `docs_list_json` `unwrap_or` rule) — here a caller passing the
+        // unresolved key as the display string
+        let body = years_json(2020, 2026, &rows, 9, Some("424242"), Some("424242"));
+        assert!(body.contains("\"org\": \"424242\""));
+        assert!(body.contains("\"org_label\": \"424242\""));
+    }
+
+    #[test]
+    fn years_unfiltered_report_unchanged_by_org_option() {
+        // the regression guard for the new trailing params: with
+        // `None`/`None` the unfiltered report stays byte-identical to the
+        // pre-`--org` report — «Документи за роками:» header, rows,
+        // «разом» verdict, «без дати» line, and the JSON keeps
+        // «undated» without gaining any org keys
+        let rows = vec![YearRow { year: "2024".into(), count: 2 }];
+        assert_eq!(
+            years_lines(2020, 2026, &rows, 1, None),
+            vec![
+                "Документи за роками:".to_string(),
+                "2024: 2".to_string(),
+                "разом: 2".to_string(),
+                "без дати: 1".to_string(),
+            ]
+        );
+        let body = years_json(2020, 2026, &rows, 1, None, None);
+        assert!(body.contains("\"undated\": 1"));
+        assert!(!body.contains("org"), "the unfiltered body gains no org keys");
     }
 
     #[test]

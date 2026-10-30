@@ -113,7 +113,22 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 ui.end_row();
 
                                 ui.label("останній імпорт/синк");
-                                ui.label(st.last_import.clone().unwrap_or_else(|| "—".into()));
+                                // «23.10.2026 14:02:59 (2 дні тому)» — the UTC
+                                // stamp the db stored, plus a relative suffix
+                                // on the same epoch clock (rada-db writes it
+                                // with `now_stamp`, UTC).
+                                match st.last_import.as_deref() {
+                                    Some(s) => {
+                                        let label = match rel_ago(s, crate::app::now_secs()) {
+                                            Some(rel) => format!("{s}  ({rel})"),
+                                            None => s.to_string(),
+                                        };
+                                        ui.label(label);
+                                    }
+                                    None => {
+                                        ui.label("—");
+                                    }
+                                }
                                 ui.end_row();
 
                                 for (kind, count) in &st.dicts {
@@ -816,10 +831,93 @@ pub fn year_docs_csv(rows: &[(String, String, String)]) -> String {
     out
 }
 
+/// Parse a UTC `YYYY-MM-DD HH:MM:SS` stamp (the `rada_db::build::now_stamp`
+/// family that writes `meta.last_import`) into epoch seconds; `None` on any
+/// malformed field. Inverse of `now_stamp`'s civil-from-days, so both sides
+/// of the home «останній імпорт/синк» comparison share one clock.
+fn secs_from_stamp(stamp: &str) -> Option<u64> {
+    let b = stamp.as_bytes();
+    if b.len() != 19
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || b[10] != b' '
+        || b[13] != b':'
+        || b[16] != b':'
+    {
+        return None;
+    }
+    let dig = |r: std::ops::Range<usize>| -> Option<i64> {
+        let s = stamp.get(r)?;
+        if !s.bytes().all(|c| c.is_ascii_digit()) {
+            return None;
+        }
+        Some(s.bytes().fold(0i64, |a, c| a * 10 + (c - b'0') as i64))
+    };
+    let (y, mo, d) = (dig(0..4)?, dig(5..7)?, dig(8..10)?);
+    let (h, mi, s) = (dig(11..13)?, dig(14..16)?, dig(17..19)?);
+    if !(1..=12).contains(&mo) || !(1..=31).contains(&d) || h > 23 || mi > 59 || s > 59 {
+        return None;
+    }
+    // days-from-civil (Howard Hinnant), the exact inverse of the algorithm
+    // `now_stamp` uses to render the stamp in the first place.
+    let y = if mo <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (mo + if mo > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    if days < 0 {
+        return None;
+    }
+    Some(days as u64 * 86_400 + h as u64 * 3_600 + mi as u64 * 60 + s as u64)
+}
+
+/// Slavic plural picker: `one` for 1, 21, 31…; `few` for 2-4, 22-24…;
+/// `many` otherwise (0, 5-20, 25-30, 11-14 always).
+fn plural_uk<'a>(n: u64, one: &'a str, few: &'a str, many: &'a str) -> &'a str {
+    let m100 = n % 100;
+    let m10 = n % 10;
+    if (11..=14).contains(&m100) {
+        many
+    } else if m10 == 1 {
+        one
+    } else if (2..=4).contains(&m10) {
+        few
+    } else {
+        many
+    }
+}
+
+/// «щойно / N хвилин тому / N годин тому / N днів тому» for the home
+/// «останній імпорт/синк» row: same-stamp re-reads read as «щойно», clock
+/// skew into the future (or an unparseable stamp) yields `None` so the row
+/// falls back to the plain timestamp.
+pub fn rel_ago(stamp: &str, now: u64) -> Option<String> {
+    let then = secs_from_stamp(stamp)?;
+    if then > now {
+        return None;
+    }
+    let d = now - then;
+    let txt = if d < 60 {
+        "щойно".to_string()
+    } else if d < 3_600 {
+        let n = d / 60;
+        format!("{n} {} тому", plural_uk(n, "хвилина", "хвилини", "хвилин"))
+    } else if d < 86_400 {
+        let n = d / 3_600;
+        format!("{n} {} тому", plural_uk(n, "година", "години", "годин"))
+    } else {
+        let n = d / 86_400;
+        format!("{n} {} тому", plural_uk(n, "день", "дні", "днів"))
+    };
+    Some(txt)
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
-        dict_field, dict_hits, fresh_row_label, year_docs_csv, years_card_rows, DictField,
+        dict_field, dict_hits, fresh_row_label, plural_uk, rel_ago, secs_from_stamp,
+        year_docs_csv, years_card_rows, DictField,
     };
 
     fn d(id: i64, label: &str) -> (i64, String) {
@@ -932,5 +1030,63 @@ mod tests {
         assert!(csv.contains("20240101,1/24-рг,\"А, \"\"цитата\"\"\"\n"));
         // empty list still yields the BOM'd header (never an empty file)
         assert_eq!(year_docs_csv(&[]), "\u{FEFF}date,nreg,nazva\n");
+    }
+
+    #[test]
+    fn secs_from_stamp_inverts_now_stamp_on_the_epoch_clock() {
+        assert_eq!(secs_from_stamp("1970-01-01 00:00:00"), Some(0));
+        // the same leap-day constant the app.rs clock tests pin
+        assert_eq!(secs_from_stamp("2000-02-29 12:34:56"), Some(951_827_696));
+        assert_eq!(secs_from_stamp("2026-10-23 14:02:59"), Some(1_792_764_179));
+        // malformed shapes and impossible fields are rejected, not guessed
+        assert_eq!(secs_from_stamp(""), None);
+        assert_eq!(secs_from_stamp("2026-10-23"), None);
+        assert_eq!(secs_from_stamp("2026/10/23 14:02:59"), None);
+        assert_eq!(secs_from_stamp("2026-10-23 14:02:5"), None);
+        assert_eq!(secs_from_stamp("2026-13-23 14:02:59"), None, "month 13");
+        assert_eq!(secs_from_stamp("2026-10-00 14:02:59"), None, "day 0");
+        assert_eq!(secs_from_stamp("2026-10-23 24:02:59"), None, "hour 24");
+        assert_eq!(secs_from_stamp("2026-1o-23 14:02:59"), None, "letter o");
+    }
+
+    #[test]
+    fn rel_ago_reads_recent_stamps_in_words() {
+        let then = secs_from_stamp("2026-10-23 14:02:59").unwrap();
+        let at = |d: u64| rel_ago("2026-10-23 14:02:59", then + d);
+        assert_eq!(at(0).as_deref(), Some("щойно"));
+        assert_eq!(at(59).as_deref(), Some("щойно"));
+        assert_eq!(at(60).as_deref(), Some("1 хвилина тому"));
+        assert_eq!(at(120).as_deref(), Some("2 хвилини тому"));
+        assert_eq!(at(5 * 60).as_deref(), Some("5 хвилин тому"));
+        assert_eq!(at(11 * 60).as_deref(), Some("11 хвилин тому"), "11-14 many");
+        assert_eq!(at(3_600).as_deref(), Some("1 година тому"));
+        assert_eq!(at(2 * 3_600).as_deref(), Some("2 години тому"));
+        assert_eq!(at(5 * 3_600).as_deref(), Some("5 годин тому"));
+        assert_eq!(at(86_400 - 1).as_deref(), Some("23 години тому"));
+        assert_eq!(at(86_400).as_deref(), Some("1 день тому"));
+        assert_eq!(at(2 * 86_400).as_deref(), Some("2 дні тому"));
+        assert_eq!(at(5 * 86_400).as_deref(), Some("5 днів тому"));
+        assert_eq!(at(21 * 86_400).as_deref(), Some("21 день тому"));
+        // the future (clock skew) and garbage get no suffix at all
+        assert_eq!(rel_ago("2026-10-23 14:02:59", then - 1), None);
+        assert_eq!(rel_ago("not a stamp", then), None);
+    }
+
+    #[test]
+    fn plural_uk_picks_the_slavic_form() {
+        let f = |n| plural_uk(n, "день", "дні", "днів");
+        assert_eq!(f(1), "день");
+        assert_eq!(f(2), "дні");
+        assert_eq!(f(4), "дні");
+        assert_eq!(f(5), "днів");
+        assert_eq!(f(11), "днів");
+        assert_eq!(f(14), "днів");
+        assert_eq!(f(20), "днів");
+        assert_eq!(f(21), "день");
+        assert_eq!(f(22), "дні");
+        assert_eq!(f(24), "дні");
+        assert_eq!(f(25), "днів");
+        assert_eq!(f(101), "день");
+        assert_eq!(f(111), "днів");
     }
 }

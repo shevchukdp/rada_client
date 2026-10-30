@@ -534,6 +534,19 @@
   #yeardocs-list li:hover { background: rgba(128, 128, 128, 0.12); }
   #yeardocs-list li .date { color: var(--muted); font-size: 12px; margin-right: 8px; }
   #yeardocs-list li .nreg { color: var(--muted); font-size: 12px; margin-right: 8px; }
+  /* Landing dictionary quick-search («Пошук у словниках», the CLI `dicts`
+     twin): a label + text input + three tiny kind chips; result rows are
+     «id · label» and clickable (the #fresh-list affordance: cursor + hover) —
+     a click applies the label as the matching filter and runs a search. */
+  #dicts-home { margin: 6px 0; }
+  #dicts-list { list-style: none; padding: 0; margin: 6px 0 10px; }
+  #dicts-list li {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 13px;
+  }
+  #dicts-list li:hover { background: rgba(128, 128, 128, 0.12); }
   #annotations li {
     display: flex; gap: 8px; align-items: center; padding: 6px 10px;
     border: 1px solid var(--border); border-radius: 7px; margin: 5px 0;
@@ -721,6 +734,19 @@
     </div>
     <div id="fresh-home" hidden></div>
     <div id="years-home" hidden></div>
+    <div id="dicts-home" hidden>
+      <div class="row">
+        <span class="hint"><strong>Пошук у словниках:</strong></span>
+        <input id="dicts-q" placeholder="назва словника…" size="24" autocomplete="off">
+        <button class="chip" type="button" data-kind="stan" aria-pressed="false"
+          title="словник станів">стани</button>
+        <button class="chip" type="button" data-kind="typs" aria-pressed="false"
+          title="словник типів">типи</button>
+        <button class="chip active" type="button" data-kind="organs" aria-pressed="true"
+          title="словник органів">органи</button>
+      </div>
+      <div id="dicts-rows"></div>
+    </div>
     <div id="results-meta"></div>
     <div class="row" id="sort-bar" hidden>
       <button class="chip" type="button" id="sort-nazva" data-col="nazva" title="Сортувати за назвою">Назва</button>
@@ -976,6 +1002,18 @@ let yearsHomeDismissed = false;
 // counter so a late fetch never double-paints or paints a left-behind year.
 let yearsDocsYear = "";
 let yearsDocsSeq = 0;
+// Landing dictionary quick-search («Пошук у словниках», the web twin of the
+// CLI `dicts` / the desktop home panel): same lifetime as the fresh card and
+// the histogram — the startup search leaves it alone, every later manual
+// search retires it for good; `dictsHomeShown` remembers that the card has
+// already revealed itself (it appears only on the first non-empty answer).
+// The kind chips choose the searched dictionary; the default is «organs»:
+// at 799 publisher labels (vs 10 statuses and 138 types in the test index)
+// it is the dictionary where a free-text needle pays off the most.
+let dictsHomeStarted = false;
+let dictsHomeDismissed = false;
+let dictsHomeShown = false;
+let dictsHomeKind = "organs";
 
 function api(path, opts) {
   return fetch(path, opts).then(async (r) => {
@@ -1118,6 +1156,7 @@ async function init() {
   renderRecentQ();
   renderFreshHome();
   renderYearsHome();
+  renderDictsHome();
   const dl = readDeepLink();
   if (dl.doc) { openDoc(dl.doc); } else { doSearch(0); }
   // Re-attach to jobs that are still running after a page reload.
@@ -1424,6 +1463,95 @@ async function renderYearDocs(year) {
       yearsDocsYear = "";
     }
   }
+}
+
+/// Pure: the dictionary quick-search rows markup — one «id · label» row per
+/// entry, carrying data-i so the painter can re-bind the click handlers
+/// without putting raw labels into HTML attributes. Empty input (or a
+/// non-array) returns "" so the painter can skip silently.
+function dictHomeHtml(rows) {
+  if (!Array.isArray(rows) || !rows.length) return "";
+  let html = '<ul id="dicts-list">';
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    html += '<li data-i="' + i + '">' +
+      escHtml(String(r.id) + " · " + String(r.label)) + "</li>";
+  }
+  return html + "</ul>";
+}
+
+/// Paint the dictionary quick-search rows: ask the offline endpoint for the
+/// current kind filtered by the input text, render through the pure builder
+/// and bind every row to the filter-apply flow (applyDictRow). The card
+/// reveals itself only on the first non-empty answer (the fresh-card rule:
+/// no index, no card); later empty answers simply blank the rows, a failed
+/// fetch skips silently, and a search the user has already run keeps the
+/// block retired (dictsHomeDismissed).
+async function renderDictsHome() {
+  if (dictsHomeDismissed) return;
+  const term = $("dicts-q").value.trim();
+  try {
+    const d = await api("/api/dicts?kind=" + encodeURIComponent(dictsHomeKind) +
+      "&q=" + encodeURIComponent(term) + "&limit=20");
+    const rows = (d && d.rows) || [];
+    if (!rows.length) {
+      // Before the first answer the whole card stays under the fresh-card
+      // rule (hidden); once shown, an empty answer only blanks the rows —
+      // the input the user is typing into must not vanish mid-phrase.
+      if (!dictsHomeShown) $("dicts-home").hidden = true;
+      $("dicts-rows").innerHTML = "";
+      return;
+    }
+    $("dicts-home").hidden = false;
+    dictsHomeShown = true;
+    const box = $("dicts-rows");
+    box.innerHTML = dictHomeHtml(rows);
+    for (const row of box.querySelectorAll("li[data-i]")) {
+      const r = rows[Number(row.dataset.i)];
+      row.onclick = () => applyDictRow(dictsHomeKind, r);
+    }
+  } catch (_) { /* no index, no rows: the landing simply skips them */ }
+}
+
+/// Apply a clicked dictionary row as a filter and run the search: the kind
+/// decides the select (stan→#f-status, typs→#f-typ, organs→#f-org — the
+/// same three fillDict targets), and the row label is matched against the
+/// clean option labels cached in fillDict (the « (N)» facet suffix stripped,
+/// the option shape is «{id} — {label}») to find the option value; then the
+/// search runs from the first page — the status-chip idiom. When no option
+/// carries that label (e.g. that dictionary select never loaded), fall back
+/// to a plain search of the label text in the query box: the click still
+/// gets results instead of doing nothing.
+function applyDictRow(kind, row) {
+  const selectId = kind === "stan" ? "f-status" : kind === "typs" ? "f-typ" : "f-org";
+  const sel = $(selectId);
+  const cache = optionLabels[selectId] || {};
+  const want = String(row.id) + " — " + String(row.label);
+  let hit = "";
+  for (const o of sel.options) {
+    if (!o.value) continue; // the «усі» entry never matches a dict label
+    const clean = (cache[o.value] === undefined ? o.textContent : cache[o.value])
+      .replace(/ \([0-9]+\)$/, "");
+    if (clean === want) { hit = o.value; break; }
+  }
+  if (hit) {
+    sel.value = hit;
+  } else {
+    $("q").value = String(row.label);
+  }
+  doSearch(0);
+}
+
+/// Switch the searched dictionary: repaint the chips from the chosen kind
+/// (the syncStatusChips accent idiom) and refetch the rows.
+function selectDictKind(kind) {
+  dictsHomeKind = kind;
+  for (const b of document.querySelectorAll("#dicts-home .chip[data-kind]")) {
+    const on = b.dataset.kind === kind;
+    b.classList.toggle("active", on);
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+  }
+  renderDictsHome();
 }
 
 // Original option labels per select + option value, captured once when the
@@ -1808,6 +1936,14 @@ async function doSearch(offset) {
     $("years-home").hidden = true;
   }
   yearsHomeStarted = true;
+  // The dictionary quick-search row answers to the initial view only,
+  // exactly like the fresh card and the histogram above: the startup
+  // search leaves it alone, every later search retires it (renderDictsHome).
+  if (dictsHomeStarted) {
+    dictsHomeDismissed = true;
+    $("dicts-home").hidden = true;
+  }
+  dictsHomeStarted = true;
   resetFacetLabels(); // never show counts from the previous result set
   renderActiveFilters(); // the chips mirror exactly the filters this query goes out with
   syncStatusChips(); // the quick status chips mirror the select the query goes out with
@@ -4228,6 +4364,16 @@ $("btn-jobs-init").onclick = () => {
   startDataJob("init");
 };
 $("recent-clear").onclick = clearRecent;
+
+// «Пошук у словниках»: Enter in the dictionary box fetches (the resolve
+// input's Enter idiom — a fetch per keystroke would hammer the local index),
+// the three kind chips switch the searched dictionary.
+$("dicts-q").addEventListener("keydown", (ev) => {
+  if (ev.key === "Enter") { ev.preventDefault(); renderDictsHome(); }
+});
+for (const b of document.querySelectorAll("#dicts-home .chip[data-kind]")) {
+  b.onclick = () => selectDictKind(b.dataset.kind);
+}
 
 // ---- theme picker (the head script applied the saved theme before paint) ---
 $("theme-select").value = window.radaThemeId || "classical";
