@@ -220,6 +220,32 @@ pub fn favorites_txt_report(rows: &[FavRow], total: usize, needle: &str, kind: u
     out
 }
 
+/// The CURRENTLY filtered/sorted Favorites as CSV (UTF-8 with BOM so Excel
+/// opens Cyrillic correctly) — the web `favoritesCsv` twin: columns
+/// `nreg,title,kind,created_at,text`, the same [`row_matches`] filter, so
+/// what you see is what downloads. The arrivals/year exports' own quoting
+/// family via [`csv_esc`].
+pub fn favorites_csv(rows: &[FavRow], needle: &str, kind: usize) -> String {
+    let esc = crate::views::arrivals::csv_esc;
+    let mut out = String::from("\u{FEFF}nreg,title,kind,created_at,text\n");
+    for (a, title) in rows {
+        if !row_matches(a, title, needle, kind) {
+            continue;
+        }
+        out.push_str(&esc(&a.nreg));
+        out.push(',');
+        out.push_str(&esc(title));
+        out.push(',');
+        out.push_str(&esc(&a.kind));
+        out.push(',');
+        out.push_str(&esc(&a.created_at));
+        out.push(',');
+        out.push_str(&esc(&a.text));
+        out.push('\n');
+    }
+    out
+}
+
 /// Validate an annotations JSON exactly the way the real importer
 /// (`rada_db::annotations::import_json`) accepts rows, *before* anything is
 /// written: the same top-level shape rules (array or `{"annotations": [...]}`),
@@ -320,6 +346,16 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     let total = app.fav.items.len();
                     let (needle, kind) = (app.fav.filter.clone(), app.fav.kind_sel);
                     app.export_favorites_txt(rows, total, needle, kind);
+                }
+                if ui
+                    .button(egui::RichText::new("експорт .csv").small())
+                    .on_hover_text("зберегти показані анотації у файл .csv")
+                    .clicked()
+                {
+                    let mut rows = app.fav.items.clone();
+                    sort_rows(&mut rows, app.fav.sort_sel);
+                    let (needle, kind) = (app.fav.filter.clone(), app.fav.kind_sel);
+                    app.export_favorites_csv(rows, needle, kind);
                 }
                 if ui
                     .button(egui::RichText::new("⬆ Імпорт .json").small())
@@ -746,6 +782,35 @@ mod tests {
         // Zero matches: header only, no trailing row blocks.
         let none = favorites_txt_report(&all, all.len(), "нема-такого-слова", 0);
         assert_eq!(none, "Обрані анотації — 0 з 5\n");
+    }
+
+    #[test]
+    fn favorites_csv_is_wysiwyg_with_bom_and_escaping() {
+        let all = rows();
+        let csv = favorites_csv(&all, "", 0);
+        assert!(csv.starts_with('\u{FEFF}'), "BOM first (Excel Cyrillic)");
+        assert!(csv.starts_with("\u{FEFF}nreg,title,kind,created_at,text\n"));
+        // full list: input order kept, every column present
+        assert!(csv.contains("2961-20,Про освіту,comment,2026-10-28 10:00:00,треба перечитати\n"));
+        assert!(csv.contains("1556-18,Про запобігання корупції,bookmark,2026-10-28 10:00:00,\n"));
+        assert_eq!(csv.matches('\n').count(), 1 + all.len());
+        // same row_matches filter as the .txt export: kind=comment + needle
+        let only = favorites_csv(&all, "підсумок", 1);
+        assert!(only.contains("1556-18,Про запобігання корупції,comment,2026-10-28 10:00:00,підсумок\n"));
+        assert!(!only.contains("треба перечитати"));
+        assert_eq!(only.matches('\n').count(), 2, "header + one row");
+        // zero matches: header only, never an empty file
+        assert_eq!(
+            favorites_csv(&all, "нема-такого-слова", 0),
+            "\u{FEFF}nreg,title,kind,created_at,text\n"
+        );
+        // quoting family: comma + quotes force doubled quotes
+        let tricky = vec![(
+            ann(9, "1-1", "comment", "А, \"цитата\""),
+            "Назва, з комою".to_string(),
+        )];
+        let csv = favorites_csv(&tricky, "", 0);
+        assert!(csv.contains("1-1,\"Назва, з комою\",comment,2026-10-28 10:00:00,\"А, \"\"цитата\"\"\"\n"));
     }
 
     #[test]

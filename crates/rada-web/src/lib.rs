@@ -6018,4 +6018,148 @@ mod tests {
         assert!(x.contains("a.remove();"));
         assert!(x.contains("URL.revokeObjectURL(url);"));
     }
+
+    #[test]
+    fn ui_page_has_search_pager_controls() {
+        // «попередня»/«наступна» quick-nav beside «сторінка N» in the results
+        // pager row (the reader ed-prev/ed-next idiom): plain hidden+disabled
+        // buttons that only a rendered page unhides, clicks that page through
+        // the ONE results entry point doSearch, and disabled gates that come
+        // from a pure source-embedded truth table.
+        assert!(
+            ui::INDEX_HTML.contains(
+                "<button id=\"page-prev\" type=\"button\" hidden disabled title=\"попередня сторінка результатів\">попередня</button>"
+            ),
+            "page-prev starts hidden and disabled (the ed-prev idiom)"
+        );
+        assert!(
+            ui::INDEX_HTML.contains(
+                "<button id=\"page-next\" type=\"button\" hidden disabled title=\"наступна сторінка результатів\">наступна</button>"
+            ),
+            "page-next starts hidden and disabled (the ed-next idiom)"
+        );
+        // Beside #page-info: one row, prev → «сторінка N» → next.
+        let pr = ui::INDEX_HTML
+            .find("<div class=\"pager\">")
+            .expect("pager row");
+        let row = &ui::INDEX_HTML[pr..ui::INDEX_HTML[pr..]
+            .find("</div>")
+            .map(|e| pr + e)
+            .expect("pager row end")];
+        for id in ["page-prev", "page-info", "page-next"] {
+            assert!(row.contains(&format!("id=\"{id}\"")), "{id}: lives in the pager row");
+        }
+        let prev = row.find("id=\"page-prev\"").expect("page-prev");
+        let info = row.find("id=\"page-info\"").expect("page-info");
+        let next = row.find("id=\"page-next\"").expect("page-next");
+        assert!(prev < info && info < next, "the buttons flank «сторінка N»");
+        // Click handlers page through doSearch at ±state.limit, floored at 0.
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"page-prev\").onclick = () => doSearch(Math.max(0, state.offset - state.limit));"
+        ), "prev steps back one page, never below 0");
+        assert!(ui::INDEX_HTML.contains(
+            "$(\"page-next\").onclick = () => doSearch(state.offset + state.limit);"
+        ), "next steps forward one page");
+        // The pure gating truth table, mirrored in Rust from the EXACT
+        // expressions the source declares (asserted below), so the JS table
+        // and its truth table cannot drift apart.
+        let mirror = |offset: i64, count: i64, total: i64| -> (bool, bool) {
+            (offset <= 0 || count <= 0, count <= 0 || offset + count >= total)
+        };
+        let g = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function pagerGating(offset, count, total, limit) {")
+            .expect("pagerGating")..];
+        let g = &g[..g.find("\n}").expect("pagerGating end")];
+        assert!(g.contains("offset <= 0 || count <= 0"), "prev dies on page 1 and on empty");
+        assert!(g.contains("count <= 0 || offset + count >= total"), "next dies on empty and on the last page");
+        for (args, prev, next) in [
+            ([0, 50, 100], true, false),   // first page, more to come
+            ([50, 50, 100], false, true),  // last full page: next dies
+            ([0, 49, 49], true, true),     // short single page: both dead
+            ([50, 49, 99], false, true),   // short last page: prev lives
+            ([0, 0, 0], true, true),       // zero results: both dead
+            ([50, 50, 120], false, false), // middle full page: both live
+        ] {
+            let (p, n) = mirror(args[0], args[1], args[2]);
+            assert_eq!((p, n), (prev, next), "pagerGating({}, {}, …) = ({prev}, {next})", args[0], args[1]);
+        }
+        // The fetch gates: doSearch kills the buttons before the request and
+        // paints them only after a page arrived.
+        let d = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function doSearch(offset) {")
+            .expect("doSearch")..];
+        let d = &d[..d.find("\n}").expect("doSearch end")];
+        let hide = d.find(r##"$("page-prev").hidden = true;"##).expect("pager hidden pre-flight");
+        let fetch = d.find("await api(").expect("search fetch");
+        assert!(hide < fetch, "mid-flight: the pager is dead while the fetch runs");
+        assert!(d.contains("updatePager(d.hits.length, d.total);"), "gates painted from the response");
+        assert!(d.contains("state.lastCount = d.hits.length;"), "the last page size lives on state");
+        let up = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function updatePager(count, total) {")
+            .expect("updatePager")..];
+        let up = &up[..up.find("\n}").expect("updatePager end")];
+        assert!(up.contains("count <= 0"), "a zero-hit search keeps the pager hidden");
+        // The cache list is one flat run: its renderer never paints the pager.
+        let c = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function doCacheSearch() {")
+            .expect("doCacheSearch")..];
+        let c = &c[..c.find("\n}").expect("doCacheSearch end")];
+        assert!(!c.contains("updatePager("), "cache mode never pages through doSearch's pager");
+    }
+
+    #[test]
+    fn ui_page_search_deep_link_offset() {
+        // The shareable hash grows optional offset=: parseHash reads it as an
+        // integer >= 0 (anything malformed reads as page 1), the startup
+        // search applies it inside the existing q/from/to chain, and
+        // writeDeepLink emits it only when the user actually paged past page 1
+        // (so legacy links and first-page searches are byte-for-byte unchanged).
+        assert!(ui::INDEX_HTML.contains("key !== \"offset\""), "offset joins the known hash keys");
+        assert!(ui::INDEX_HTML.contains("out.offset = parsePagerOffset(val);"), "the hash offset goes through the pure reader");
+        let p = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function parsePagerOffset(v) {")
+            .expect("parsePagerOffset")..];
+        let p = &p[..p.find("\n}").expect("parsePagerOffset end")];
+        assert!(p.contains("/^[0-9]+$/"), "digits only: negatives and fractions die");
+        assert!(p.contains("Number.isSafeInteger(n) && n >= 0 ? n : 0"), "unsafe values read as page 1");
+        // The pure reader's truth table, mirrored in Rust from the exact
+        // source contract asserted above: /^digits$/ ∧ safe integer → value,
+        // everything else → 0.
+        let mirror = |s: &str| -> u64 {
+            if !s.chars().all(|c| c.is_ascii_digit()) || s.is_empty() {
+                return 0;
+            }
+            s.parse::<u64>().ok().filter(|n| *n <= (1u64 << 53)).unwrap_or(0)
+        };
+        for (s, want) in [
+            ("50", 50), ("0", 0), ("450", 450), ("abc", 0), ("-5", 0),
+            ("5.5", 0), ("", 0), ("+5", 0), ("0050", 50),
+        ] {
+            assert_eq!(mirror(s), want, "parsePagerOffset(\"{s}\") = {want}");
+        }
+        // Startup application: the offset folds into the q/from/to chain
+        // (each branch searches at hOffset) and an offset-only link gets its
+        // own branch; doSearch(0) stays the no-offset path.
+        let i = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function init() {")
+            .expect("init")..];
+        let i = &i[..i.find("\n}").expect("init end")];
+        assert!(i.contains("parseHash(window.location.hash || location.hash)"), "hash read once on load");
+        assert!(i.contains("const hOffset = h.offset > 0 ? h.offset : 0;"), "malformed or absent offset runs page 1");
+        assert!(i.contains("doSearch(hOffset);"), "the startup search runs on the linked page");
+        assert!(i.contains("} else if (hOffset > 0) {"), "an offset-only link still jumps straight to that page");
+        // writeDeepLink: the page travels only when > 0.
+        let w = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function writeDeepLink() {")
+            .expect("writeDeepLink")..];
+        let w = &w[..w.find("\n}").expect("writeDeepLink end")];
+        assert!(w.contains("if (state.offset > 0) { p.set(\"offset\", String(state.offset)); }"), "offset is written only past page 1");
+        assert!(!w.contains("p.set(\"offset\", \"0\")"), "the first page never pollutes the link");
+        // The first-page fragment writer stays untouched by paging.
+        let d = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("async function doSearch(offset) {")
+            .expect("doSearch")..];
+        let d = &d[..d.find("\n}").expect("doSearch end")];
+        assert!(d.contains("if (offset === 0) {"), "the shareable fragment is still written from page 1 only");
+    }
 }

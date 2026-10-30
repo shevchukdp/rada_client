@@ -91,7 +91,9 @@ official open-data API:
     filter box, kind chips **with live counts** («усі (9) · коментарі (2) …»),
     a «групувати» toggle, sort chips
     («новіші / старіші / за назвою») and **collapsible groups** (click a
-    header to hide its rows; «розгорнути всі» restores them).
+    header to hide its rows; «розгорнути всі» restores them); an
+    **«експорт .csv»** button saves the shown (filtered + sorted) list as
+    `nreg,title,kind,created_at,text`, UTF-8 with BOM — the web twin.
   - **Keyboard shortcuts** — Ctrl+F focuses find/query; Alt+←/→ **or**
     Alt+PageUp/PageDown step through the results list inside the reader;
     **Ctrl+Plus / Ctrl+Minus / Ctrl+0** zoom the reader text (±10%, reset).
@@ -307,6 +309,9 @@ official open-data API:
   in display order — `nreg,org_date,poddat,status,org_num,nazva`, status
   already label-resolved; the third export beside arrivals and favorites,
   dimmed when there is nothing to show),
+  **search page controls** («попередня» / «наступна» beside «сторінка N»,
+  disabled at the first/last page and while a search is in flight; shareable
+  links carry `offset=`),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -405,7 +410,7 @@ Launch arguments:
 .\rada-client.exe dates                  # offline year histogram of adoption dates («без дати» + «найновіший рік»); --json / --out too
 .\rada-client.exe orgs                   # offline top publishers by document count + «всього документів»; --year РРРР filters to one adoption year, --limit ≤200, --json / --out too
 .\rada-client.exe statuses               # offline status distribution (dict labels) + «всього документів»; --json / --out too
-.\rada-client.exe months                 # offline month histogram of one year (--year РРРР, always 12 rows + «разом»); --json / --out too
+.\rada-client.exe months                 # offline month histogram of one year (--year РРРР, always 12 rows + «разом»); --org <ID> scopes to one publisher («Документи видавця …: РРРР за місяцями:»); --json / --out too
 .\rada-client.exe years                  # offline per-year histogram of a closed range (--from РРРР --to РРРР, zero years omitted + «разом» + «без дати»); --org <ID> gives one publisher's activity timeline («Документи видавця … за роками:», no «без дати»); --json / --out too
 .\rada-client.exe docs --org 1           # offline documents, newest first: one publisher («Документи видавця …:»), one year (--year РРРР alone or combined); --limit ≤500, --json / --out too
 .\rada-client.exe doc 2755-17            # offline one-document card: title + «НРЕГ/Статус/Орган/Дата прийняття/Дата оприлюднення/Текст»; --json / --out too

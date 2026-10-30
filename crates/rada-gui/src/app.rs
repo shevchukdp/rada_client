@@ -1510,6 +1510,31 @@ impl App {
         });
     }
 
+    /// Export the CURRENTLY shown Favorites rows (filter + sort applied,
+    /// the web `favoritesCsv` twin) as a CSV file (`nreg,title,kind,
+    /// created_at,text`, UTF-8 with BOM — the arrivals export's own format).
+    pub fn export_favorites_csv(
+        &mut self,
+        rows: Vec<views::favorites::FavRow>,
+        needle: String,
+        kind: usize,
+    ) {
+        let body = views::favorites::favorites_csv(&rows, &needle, kind);
+        if body.ends_with('\n') && body.lines().count() == 1 {
+            self.toast("має бути хоча б одна анотація", err());
+            return;
+        }
+        let Some(path) = self.dlg_save("favorites.csv".to_string()) else {
+            return;
+        };
+        self.spawn(move |tx| {
+            let res = std::fs::write(&path, body.as_bytes())
+                .map(|_| path)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Exported(res));
+        });
+    }
+
     /// Import annotations from a JSON file (array or `{"annotations":[...]}`)
     /// picked through a file dialog. Existing rows are kept; valid entries are appended.
     pub fn import_annotations(&mut self) {

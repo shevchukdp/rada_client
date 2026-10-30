@@ -7,6 +7,11 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-30
 
+### 0.10.61: `months --org` у CLI, сторінки пошуку у вебі та CSV обраного у програмі / CLI `months --org`, web search pager & favorites CSV in the app
+
+- **UKR:** 1) **`months --year РРРР --org <ID>` у CLI**: сезонність одного видавця — «Документи видавця {label}: РРРР за місяцями:» з тими самими 12 рядками й «разом»; без фільтра вивід не змінився ані байтом. 2) **«попередня / наступна» у веб-пошуку**: кнопки біля «сторінка N» гаснуть на першій/останній сторінці та під час завантаження; посилання-глибинка тепер носить і `offset=`. 3) **«експорт .csv» на сторінці «Обране»** у програмі: показаний список (фільтр + сортування) виїжджає файлом `nreg,title,kind,created_at,text` з BOM — двійник веб-експорта обраного. 4) Тести: 427/427.
+- **ENG:** 1) **`months --year YYYY --org <ID>` in the CLI**: one publisher's seasonality — «Документи видавця {label}: YYYY за місяцями:» with the same 12 rows + «разом»; the unfiltered output did not change by a single byte. 2) **«попередня / наступна» in the web search**: buttons beside «сторінка N» that dim on the first/last page and during a fetch; shareable links now carry `offset=` too. 3) **An «експорт .csv» on the app's Favorites page**: the shown (filtered + sorted) list ships as `nreg,title,kind,created_at,text` with BOM — the web favorites export's twin. 4) Tests: 427/427.
+
 ### 0.10.60: `doc` у CLI та «експорт .csv» результатів пошуку — у програмі й вебі / CLI `doc` offline card & search-results CSV in app and web
 
 - **UKR:** 1) **`doc <НРЕГ>` у CLI**: картка одного документа просто з індексу — заголовок + «НРЕГ / Статус / Орган / Дата прийняття / Дата оприлюднення / Текст (кешований чи ні)» зі словниковими мітками; `--json` з алфавітними ключами й `--out` за загальним стандартом; «документ не знайдено» — окремий вихід 1. 2) **«Експорт .csv» на сторінці пошуку** у програмі: третій експорт списку (.md/.txt/.csv) — показана сторінка результатів, з BOM, зі словниковою міткою статусу. 3) **Те саме у веб-клієнті**: кнопка «експорт .csv» на панелі результатів вивантажує показану сторінку (`nreg,org_date,poddat,status,org_num,nazva`) — третій експорт поряд з оновленнями та обраним. 4) Тести: 421/421.

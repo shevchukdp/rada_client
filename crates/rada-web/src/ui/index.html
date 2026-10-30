@@ -354,6 +354,13 @@
     border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
   }
   #search-export-csv:hover { color: var(--text); border-color: var(--accent); }
+  /* Pager quick-nav beside «сторінка N»: the reader ed-prev/ed-next language
+     (muted pill, accent hover); button:disabled dims them while gated off. */
+  #page-prev, #page-next {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #page-prev:hover, #page-next:hover { color: var(--text); border-color: var(--accent); }
   #rada-recent .chip {
     background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
     border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
@@ -767,9 +774,9 @@
     </div>
     <div id="results"></div>
     <div class="pager">
-      <button id="prev" type="button">← Раніше</button>
-      <button id="next" type="button">Далі →</button>
+      <button id="page-prev" type="button" hidden disabled title="попередня сторінка результатів">попередня</button>
       <span id="page-info" class="hint"></span>
+      <button id="page-next" type="button" hidden disabled title="наступна сторінка результатів">наступна</button>
     </div>
     <div class="row">
       <span class="hint">Експорт сторінки:</span>
@@ -976,6 +983,7 @@
 const $ = (id) => document.getElementById(id);
 const state = {
   limit: 50, offset: 0,
+  lastCount: 0,       // hit count of the last successful search page (pager gating)
   sort: "date_desc",  // current result ordering (see SORT_CHIPS below)
   nregs: [],          // nregs of the current results page (bulk export)
   hits: [],           // full hit rows of the current results page (the csv export)
@@ -1182,6 +1190,10 @@ async function init() {
   // is read once on load — no fragment-change listener is registered,
   // openDoc/doSearch are the only writers, so no feedback loop is possible.
   const h = parseHash(window.location.hash || location.hash);
+  // Shareable "#offset=N" picks the page the startup search runs on: folded
+  // into the q/from/to chain below (an absent or malformed offset runs page 1,
+  // so legacy links behave exactly as before).
+  const hOffset = h.offset > 0 ? h.offset : 0;
   if (h.doc) {
     switchTab("search"); // the reader pane lives under the «Пошук» tab
     openDoc(h.doc);
@@ -1190,14 +1202,19 @@ async function init() {
     $("q").value = h.q;
     if (h.from) { $("date-from").value = fmtYmd8(h.from); }
     if (h.to) { $("date-to").value = fmtYmd8(h.to); }
-    doSearch(0);
+    doSearch(hOffset);
   } else if (h.from || h.to) {
     // Date-only shareable links: pre-fill the bounds in the fields' own
     // «дд.мм.рррр» notation and let the startup search run with them.
     switchTab("search");
     if (h.from) { $("date-from").value = fmtYmd8(h.from); }
     if (h.to) { $("date-to").value = fmtYmd8(h.to); }
-    doSearch(0);
+    doSearch(hOffset);
+  } else if (hOffset > 0) {
+    // Offset-only shareable links: the startup search jumps straight to that
+    // page of the unfiltered listing.
+    switchTab("search");
+    doSearch(hOffset);
   }
 }
 
@@ -1243,6 +1260,9 @@ function writeDeepLink() {
   }
   const n = $("f-number").value.trim();
   if (n) { p.set("number", n); }
+  // The page the user is on travels with the link (first page stays clean:
+  // a missing offset means 0, so old links and normal searches are unchanged).
+  if (state.offset > 0) { p.set("offset", String(state.offset)); }
   const url = p.toString() ? "?" + p.toString() : location.pathname;
   history.replaceState(null, "", url);
 }
@@ -1261,19 +1281,23 @@ function parseHash(h) {
   const out = { doc: null, q: null };
   out.from = null;
   out.to = null;
+  out.offset = 0;
   let s = h ? String(h) : "";
   if (s.charAt(0) === "#") s = s.slice(1);
   for (const part of s.split("&")) {
     const eq = part.indexOf("=");
     if (eq < 0) continue;
     const key = part.slice(0, eq);
-    if (key !== "doc" && key !== "q" && key !== "from" && key !== "to") continue; // unknown keys are ignored
+    if (key !== "doc" && key !== "q" && key !== "from" && key !== "to" && key !== "offset") continue; // unknown keys are ignored
     let val = null;
     try { val = decodeURIComponent(part.slice(eq + 1)); } catch (_) { continue; }
     if (!val) continue;
     // Date bounds travel as full 8-digit РРРРММДД; anything else is dropped.
     if (key === "from" || key === "to") {
       if (/^[0-9]{8}$/.test(val)) out[key] = val;
+    } else if (key === "offset") {
+      // The page to open on: an integer >= 0, anything else reads as page 1.
+      out.offset = parsePagerOffset(val);
     } else {
       out[key] = val;
     }
@@ -1935,6 +1959,13 @@ async function doSearch(offset) {
   $("sort-bar").hidden = true;
   state.hits = []; // the csv export ships only what is on screen: nothing yet
   $("search-export-csv").disabled = true;
+  // The pager retires with the page it belonged to: hidden and dead while
+  // the fetch is in flight (the loadText/ed-prev idiom), unhidden below
+  // only when a real page rendered.
+  $("page-prev").hidden = true;
+  $("page-next").hidden = true;
+  $("page-prev").disabled = true;
+  $("page-next").disabled = true;
   // The landing home card answers to the initial view only: the startup
   // search leaves it alone, every later search retires it (renderFreshHome).
   if (freshHomeStarted) {
@@ -1979,6 +2010,7 @@ async function doSearch(offset) {
     renderSortBar(q, d.hits.length > 0);
     state.hits = d.hits; // the csv export mirrors exactly this rendered page
     $("search-export-csv").disabled = !d.hits.length;
+    state.lastCount = d.hits.length; // the pager gate reads the last page size
     const list = $("results");
     // Query words to paint in the titles (browser-find style): #q split on
     // whitespace, lowercased, filler (<3 chars) dropped; computed once per
@@ -2028,9 +2060,45 @@ async function doSearch(offset) {
       renderEmptyResults();
     }
     $("page-info").textContent = "сторінка " + (Math.floor(offset / state.limit) + 1);
+    updatePager(d.hits.length, d.total);
   } catch (e) {
     meta.textContent = "Помилка: " + e.message;
   }
+}
+
+/// Pager offset reader for the shareable hash: an integer >= 0 comes through,
+/// everything else (malformed, negative, fractional, huge) reads as the first
+/// page (0), so a broken link still opens the search. Pure: no DOM, no throw.
+function parsePagerOffset(v) {
+  if (v === null || v === undefined) return 0;
+  const s = String(v);
+  if (!/^[0-9]+$/.test(s)) return 0;
+  const n = Number(s);
+  return Number.isSafeInteger(n) && n >= 0 ? n : 0;
+}
+
+/// Pager gating truth table (pure, no DOM): with `count` hits returned at
+/// `offset` out of `total` under `state.limit` per page, «попередня» is dead
+/// on the first page (offset 0) and on an empty page; «наступна» is dead on
+/// a zero-hit search and once the last page is reached — a short page
+/// (fewer than `limit` hits) always is, and a full page only when the
+/// offset plus that page already covers the total.
+function pagerGating(offset, count, total, limit) {
+  return {
+    prevDisabled: offset <= 0 || count <= 0,
+    nextDisabled: count <= 0 || offset + count >= total,
+  };
+}
+
+/// Paint the pager quick-nav after a successful page render: the buttons
+/// live beside «сторінка N», stay hidden until a real page shows, and take
+/// their disabled gates from the pure pagerGating table above.
+function updatePager(count, total) {
+  const g = pagerGating(state.offset, count, total, state.limit);
+  $("page-prev").hidden = count <= 0;
+  $("page-next").hidden = count <= 0;
+  $("page-prev").disabled = g.prevDisabled;
+  $("page-next").disabled = g.nextDisabled;
 }
 
 /// Offline-cache badge on a result row's meta line (the desktop
@@ -2102,6 +2170,12 @@ async function doCacheSearch() {
   $("cache-mode").hidden = true; // repainted below only on success
   state.hits = []; // the cache list carries other columns: csv export stays off
   $("search-export-csv").disabled = true;
+  // The pager belongs to the regular search: a cache list is one flat run,
+  // so its quick-nav never pages the cache view and retires with the page.
+  $("page-prev").hidden = true;
+  $("page-next").hidden = true;
+  $("page-prev").disabled = true;
+  $("page-next").disabled = true;
   try {
     const d = await api("/api/cache/search?q=" + encodeURIComponent(q));
     const list = $("results");
@@ -4058,8 +4132,10 @@ $("search-form").addEventListener("submit", (ev) => {
 // Dropdown edits repaint the quick status chips too (chip clicks and the
 // «Активні фільтри» clears re-search, and doSearch repaints them itself).
 $("f-status").addEventListener("change", () => syncStatusChips());
-$("prev").onclick = () => doSearch(Math.max(0, state.offset - state.limit));
-$("next").onclick = () => doSearch(state.offset + state.limit);
+// Pager quick-nav: page steps go through doSearch (the single results
+// entry point); the Math.max floor keeps the offset from ever going below 0.
+$("page-prev").onclick = () => doSearch(Math.max(0, state.offset - state.limit));
+$("page-next").onclick = () => doSearch(state.offset + state.limit);
 document.querySelectorAll("#sort-bar .chip").forEach(b =>
   b.addEventListener("click", () => clickSort(b.dataset.col)));
 
