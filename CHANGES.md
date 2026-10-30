@@ -7,6 +7,11 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-30
 
+### 0.10.58: `dicts` у CLI, діапазон дат у веб-пошуку та CSV з вікна року / CLI `dicts`, web search date range & year-window CSV
+
+- **UKR:** 1) **`dicts <КIND>` у CLI**: офлайн-перегляд словників — «Словник organs:» з рядками id/label, `--query міністер` (регістру не важливо), `--limit ≤1000`, `--json` і `--out` за загальним стандартом. 2) **Діапазон дат у веб-пошуку**: поля «з від:» / «до:» (дд.мм.рррр; підказка при помилці), межі йдуть у `date_from`/`date_to` — двійники CLI `--date-from/--date-to`; у посилання-глибинки додалися `from=`/`to=`. 3) **«експорт .csv» у вікні року** на головній: показаний список виїжджає файлом у форматі експорту оновлень (з BOM). 4) Тести: 406/406.
+- **ENG:** 1) **`dicts <KIND>` in the CLI**: offline dictionary browsing — «Словник organs:» with id/label rows, `--query міністер` (case-insensitive), `--limit ≤1000`, `--json`/`--out` to the common standard. 2) **A date range in the web search**: «з від:» / «до:» inputs (dd.mm.yyyy, hint on typos) whose validated bounds feed `date_from`/`date_to` — the CLI `--date-from/--date-to` twins; deep links gain `from=`/`to=` params. 3) **An «експорт .csv» in the home year window**: the shown list exports in the arrivals export's own format (with BOM). 4) Tests: 406/406.
+
 ### 0.10.57: роки стають клікабельними всюди — вікно року на головній, смужки у вебі, `docs --year` у CLI / clickable years everywhere: home year window, web bars & CLI `docs --year`
 
 - **UKR:** 1) **Головна сторінка**: чипи «Документи за роками» тепер кнопки — клік відкриває вікно «Документи {yyyy} року» з найновішими 200 актами того року (офлайн, з індексу); рядок відкриває читалку. 2) **Веб-клієнт**: смужки річної гістограми клікабельні — під ними розгортається список актів року (`/api/yeardocs`), повторний клік згортає. 3) **`docs` у CLI** більше не вимагає `--org`: `docs --year РРРР` перелічує акти року («Документи 2024 року:»), org+разом дає спільний заголовок «…: 2024 року:»; без обох прапорів — «вкажіть --org або --year». 4) Тести: 399/399.

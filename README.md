@@ -104,7 +104,8 @@ official open-data API:
     CLI `recent` command), each row opening the reader with one click — plus a
     **«Документи за роками»** chip row (the last 15 years from the index,
     «2026 · 5 492»…): a chip opens a window with the newest 200 acts of that
-    year, each row opening the reader.
+    year, each row opening the reader, with an «експорт .csv» of the shown list
+    (UTF-8 with BOM, the arrivals export's own format).
   - **Reader tabs** — every document you open becomes a tab («Вкладки:» above
     the title): tabs keep their text, find query and edition when you switch
     between them; **Ctrl+Tab / Ctrl+Shift+Tab** cycle them, **Ctrl+W** (or **×**)
@@ -282,6 +283,11 @@ official open-data API:
   accent bars with thousands-spaced counts, the last 15 years present;
   a bar opens that year's newest acts via `GET /api/yeardocs`, each row
   opening the reader, click again to collapse; same lifetime as the fresh card),
+  **search date range** («з від:» / «до:» inputs, dd.mm.yyyy with a
+  «дата у форматі дд.мм.рррр» hint on typos; validated bounds go to
+  `/api/search` `date_from`/`date_to` — the CLI `--date-from/--date-to`
+  twins; shareable deep links gain `from=`/`to=` params, legacy 8-digit
+  `date_from=` links keep working),
   and a **Favorites page with desktop parity** (sort chips «новіші / старіші /
   за назвою», a text/title/nreg filter with «показано X з Y», collapsible
   per-document groups, choices in localStorage, and an **«експорт .csv»** of the
@@ -380,6 +386,7 @@ Launch arguments:
 .\rada-client.exe dict --kind stan --out stan.txt  # dictionary table to file (BOM); --json → BOM-less JSON
 .\rada-client.exe dict --from-file stan.txt --kind stan   # seed a dictionary from a local dump (id\tlabel, cp1251)
 .\rada-client.exe dict-stats             # offline population report: стани / типи / органи + total; --json / --out too
+.\rada-client.exe dicts organs           # offline dictionary browse: «Словник organs:» + id/label rows; --query міністер, --limit ≤1000, --json / --out too
 .\rada-client.exe dates                  # offline year histogram of adoption dates («без дати» + «найновіший рік»); --json / --out too
 .\rada-client.exe orgs                   # offline top publishers by document count + «всього документів»; --year РРРР filters to one adoption year, --limit ≤200, --json / --out too
 .\rada-client.exe statuses               # offline status distribution (dict labels) + «всього документів»; --json / --out too

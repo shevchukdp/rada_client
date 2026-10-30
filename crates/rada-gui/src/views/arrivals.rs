@@ -73,8 +73,8 @@ pub fn visible_arrivals(
 }
 
 /// CSV-quote one field (doubled quotes; quoted when it contains a comma,
-/// quote or line break).
-fn csv_esc(s: &str) -> String {
+/// quote or line break). Shared with the home year-window export.
+pub(crate) fn csv_esc(s: &str) -> String {
     if s.contains(['"', ',', '\n', '\r']) {
         format!("\"{}\"", s.replace('"', "\"\""))
     } else {

@@ -19,6 +19,13 @@
 //!               reference dictionary is, one line per kind
 //!               (`--json` for machine-readable output, `--out` to write
 //!               the report; informational — never exits nonzero);
+//! - `dicts`     offline browse/search of ONE reference dictionary
+//!               (stan / typs / organs) straight from the local `dict`
+//!               table -- the CLI twin of the desktop home dictionary
+//!               search panel (`--query` keeps labels containing a
+//!               case-insensitive substring, `--json` for machine-readable
+//!               output, `--out` to write the report; never touches the
+//!               network -- the live loaders stay `dict` / `sync`);
 //! - `arrivals`  live updated-documents feed with a diff against the saved snapshot;
 //! - `snapshot`  create / restore gzip snapshots;
 //! - `status`    index statistics;
@@ -391,6 +398,38 @@ enum Cmd {
         /// instead of stdout (parent dirs created). Plain report gets a
         /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
         /// BOM-less.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Offline browse/search of ONE reference dictionary from the local
+    /// `dict` table: the CLI twin of the desktop home dictionary-search
+    /// panel. KIND is `stan`, `typs` or `organs` (case-insensitive; an
+    /// unknown kind exits 1). `--query TEXT` keeps only labels containing
+    /// TEXT as a case-insensitive substring (Ukrainian letters folded too).
+    /// Rows print as `{id}  {label}` ordered by id, capped by `--limit`
+    /// (default 100, clamped to 1..=1000). Pure offline: the command never
+    /// touches the network (the live loaders stay `dict` / `sync`); zero
+    /// matches is not an error (the empty report exits 0); only a missing
+    /// index or an unknown KIND exits 1.
+    Dicts {
+        /// Dictionary kind: stan | typs | organs (required).
+        kind: String,
+        /// Keep only labels containing this text (case-insensitive).
+        #[arg(long)]
+        query: Option<String>,
+        /// Max rows to print (default 100, clamped to 1..=1000).
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        /// Emit the JSON body
+        /// (`{"count":N,"kind":...,"query":...,"rows":[{id,label},...]}`
+        /// -- pretty, keys alphabetical, `count` counts the listed rows)
+        /// instead of the report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less; the `[dicts] записано ...` note goes to stderr.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -973,6 +1012,20 @@ fn run() -> Result<()> {
             out.as_deref(),
         ),
         Cmd::DictStats { json, out } => cmd_dict_stats(&cli.db, json, out.as_deref()),
+        Cmd::Dicts {
+            kind,
+            query,
+            limit,
+            json,
+            out,
+        } => cmd_dicts(
+            &cli.db,
+            &kind,
+            query.as_deref(),
+            limit,
+            json,
+            out.as_deref(),
+        ),
         Cmd::Resolve { text, limit, json, out } => {
             cmd_resolve(&cli.db, &text.join(" "), limit, json, out.as_deref(), cli.pace)
         }
@@ -1485,6 +1538,206 @@ fn cmd_dict_stats(db: &PathBuf, json: bool, out: Option<&Path>) -> Result<()> {
             // BOM-alone).
             write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
             eprintln!("{}", dict_stats_out_note(total, p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Cap the `dicts --limit` option at the dictionary-row budget: `0`
+/// renders one row and anything above `1000` is truncated to `1000`
+/// (`usize::clamp`, the same house idiom as the [`docs_limit`] 1..=500
+/// budget, raised to cover the largest dictionary); 1..=1000 passes
+/// through untouched (no hard error).
+fn dicts_limit(limit: usize) -> usize {
+    limit.clamp(1, 1000)
+}
+
+/// Canonicalise the `dicts` KIND positional to the stored portal token:
+/// the three kinds the shared `dict` table speaks (`stan`, `typs`,
+/// `organs`), case-insensitive and trimmed. The GUI home dictionary
+/// panel shows стани/типи/органи only as display hints next to the
+/// canonical tokens, so no Ukrainian input aliases exist to accept. An
+/// unknown kind is a clear error listing the accepted values (the
+/// `normalize_annots_kind` kind-error family shape, exit 1 through
+/// `main`).
+fn normalize_dicts_kind(kind: &str) -> Result<&'static str> {
+    match kind.trim().to_ascii_lowercase().as_str() {
+        "stan" => Ok("stan"),
+        "typs" => Ok("typs"),
+        "organs" => Ok("organs"),
+        _ => Err(anyhow::anyhow!(
+            "невідомий словник {kind} (stan|typs|organs)"
+        )),
+    }
+}
+
+/// The report body of `dicts` (shared by stdout and `--out` so the two
+/// cannot drift): «Словник {kind}:» header, or «Словник {kind}:
+/// {query}» when `--query` filtered, then one `{id}  {label}` row per
+/// entry in input order (the SQL orders `id ASC`), then the verdict
+/// «разом: {shown}» over the RENDERED rows (post-`--limit`, the
+/// `annots` rule). Informational: an empty dictionary or zero query
+/// matches render the empty triple (header + «нічого не знайдено» +
+/// «разом: 0») and the run still exits 0 (the `docs` zero-rows rule —
+/// the header always renders, so the `--out` file is never BOM-alone).
+fn dicts_lines(kind: &str, query: Option<&str>, rows: &[(i64, String)]) -> Vec<String> {
+    let mut lines = vec![match query {
+        Some(q) => format!("Словник {kind}: {q}"),
+        None => format!("Словник {kind}:"),
+    }];
+    if rows.is_empty() {
+        lines.push("нічого не знайдено".to_string());
+    }
+    for (id, label) in rows {
+        lines.push(format!("{id}  {label}"));
+    }
+    lines.push(format!("разом: {}", rows.len()));
+    lines
+}
+
+/// The `--json` body of `dicts` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty
+/// `{"count":N,"kind":kind,"query":q-or-null,"rows":[{"id":N,"label":…}]}`
+/// object over the rendered rows (the `docs`/`favorites` envelope
+/// idiom); `query` is the verbatim filter or `null` when unfiltered.
+/// Map keys sort, so «count» < «kind» < «query» < «rows» and the row
+/// keys keep their alphabetical order inside every entry; `count`
+/// counts the LISTED rows (the «разом» rule, post-`--limit`). stdout
+/// prints exactly this string plus a trailing newline; the `--out` file
+/// receives the same bytes BOM-less (machine data, the house JSON rule).
+fn dicts_json(kind: &str, query: Option<&str>, rows: &[(i64, String)]) -> String {
+    let items: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(id, label)| serde_json::json!({ "id": id, "label": label }))
+        .collect();
+    let value = serde_json::json!({
+        "count": rows.len(),
+        "kind": kind,
+        "query": query,
+        "rows": items,
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `dicts --out` has written `file`
+/// (`n` rendered rows, the same wording in both modes, the
+/// [`docs_list_out_note`] style): `[dicts] записано {n} записів →
+/// {file}`. The `[dicts]` tag is deliberately distinct from the live
+/// `dict` command's per-kind `[dict] {kind}: записано …` notes.
+fn dicts_out_note(n: usize, file: &Path) -> String {
+    format!("[dicts] записано {n} записів → {}", file.display())
+}
+
+/// Offline browse/search of ONE reference dictionary (`dicts`): the CLI
+/// twin of the desktop home «Пошук у словниках» panel. Never builds a
+/// client, never touches the network (the live loaders stay `dict` /
+/// `sync`; this command only reads what they stored). A missing index
+/// file is a hard error («індекс не знайдено: …», the `stats`/`verify`
+/// rule); `KIND` passes [`normalize_dicts_kind`] (an unknown kind exits
+/// 1 with the house validation message) and `--limit` [`dicts_limit`]
+/// (clamped to 1..=1000, never an error). The rows come straight from
+/// the shared `dict(kind, id, label)` table through the connection
+/// `rada_db::open` returns (the `verify` / `dict-stats` direct-SQL
+/// idiom): the canonical kind token is bound as a parameter (never
+/// interpolated) and the rows are ordered `id ASC`. The optional
+/// `--query` filter runs on the Rust side through the shared
+/// [`dict_matches`] helper instead of a SQL `LIKE`: SQLite folds only
+/// ASCII case in `LOWER()`/`LIKE` (`NOCASE` included), so a Cyrillic
+/// needle like «міністер» would silently miss every «Міністерство …»
+/// label, while `to_lowercase` folds Ukrainian letters (the
+/// `dict --search` precedent, which shares this exact helper); skipping
+/// SQL `LIKE` also sidesteps the `%`/`_` wildcard-escaping caveat
+/// entirely. `LIMIT` is interpolated from the clamped `usize` in the
+/// unfiltered statement (ASCII digits only — the `docs`
+/// interpolation-safety reasoning) and applied after the filter in the
+/// query pass (a SQL LIMIT before the filter would drop matches sorted
+/// past the cutoff; the dictionaries hold a few hundred rows, so the
+/// full-kind read is cheap). Informational: zero matches exits 0 with
+/// the empty triple. With `--out` the exact stdout body goes to the
+/// file (parent dirs created) and nothing prints to stdout: the plain
+/// report is written UTF-8 with a BOM (Excel-friendly, like the
+/// `dict-stats`/`verify` reports), the `--json` body BOM-less; one
+/// `[dicts] записано {n} записів → {file}` note goes to stderr. The
+/// header always renders, so the file is never BOM-alone.
+fn cmd_dicts(
+    db: &PathBuf,
+    kind: &str,
+    query: Option<&str>,
+    limit: usize,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    let kind = normalize_dicts_kind(kind)?;
+    let limit = dicts_limit(limit);
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    let mut items: Vec<(i64, String)> = Vec::new();
+    match query {
+        None => {
+            // unfiltered: the clamped cap goes straight into the SQL
+            // (the `docs`/`annots` limit-interpolation idiom)
+            let sql = format!(
+                "SELECT id, label FROM dict WHERE kind = ?1 ORDER BY id ASC LIMIT {limit}"
+            );
+            let mut stmt = conn
+                .prepare(&sql)
+                .context("prepare dicts listing")?;
+            let rows = stmt
+                .query_map([kind], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .context("run dicts listing")?;
+            for row in rows {
+                items.push(row?);
+            }
+        }
+        Some(q) => {
+            // filtered: read the whole kind (a few hundred rows), keep
+            // the Unicode-folded substring matches through the shared
+            // `dict --search` helper, stop once the cap is reached
+            let mut stmt = conn
+                .prepare("SELECT id, label FROM dict WHERE kind = ?1 ORDER BY id ASC")
+                .context("prepare dicts search")?;
+            let rows = stmt
+                .query_map([kind], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+                .context("run dicts search")?;
+            for row in rows {
+                let (id, label) = row?;
+                if items.len() >= limit {
+                    break;
+                }
+                if dict_matches(&label, q) {
+                    items.push((id, label));
+                }
+            }
+        }
+    }
+    if json {
+        let body = dicts_json(kind, query, &items);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", dicts_out_note(items.len(), p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = dicts_lines(kind, query, &items);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout report (the header always renders, so never
+            // BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", dicts_out_note(items.len(), p));
         }
         None => {
             for line in lines {
@@ -6455,6 +6708,7 @@ mod tests {
         dict_fresh_json, dict_fresh_lines, dict_json_body,
         dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, dict_stats_json,
         dict_stats_lines, dict_stats_out_note, dates_json, dates_lines, dates_out_note,
+        dicts_json, dicts_limit, dicts_lines, dicts_out_note, normalize_dicts_kind,
         check_docs_filters, docs_limit, docs_list_json, docs_list_lines, docs_list_out_note,
         export_html,
         grep_body, grep_render,
@@ -7821,6 +8075,123 @@ mod tests {
             dict_stats_out_note(0, file),
             format!("[dict-stats] записано 0 значень → {}", file.display())
         );
+    }
+
+    #[test]
+    fn dicts_lines_renders_headers_rows_verdict_and_empty() {
+        // unfiltered: «Словник {kind}:» header + one «{id}  {label}» row
+        // per entry in input order (the SQL orders id ASC) + the «разом»
+        // verdict over the RENDERED rows (post-`--limit`, the `annots`
+        // rule)
+        let rows = vec![
+            (1i64, "Чинний".to_string()),
+            (5i64, "Втратив чинність".to_string()),
+        ];
+        assert_eq!(
+            dicts_lines("stan", None, &rows),
+            vec![
+                "Словник stan:".to_string(),
+                "1  Чинний".to_string(),
+                "5  Втратив чинність".to_string(),
+                "разом: 2".to_string(),
+            ]
+        );
+        // filtered: the query echoes into the header
+        assert_eq!(
+            dicts_lines("organs", Some("міністер"), &rows[..1]),
+            vec![
+                "Словник organs: міністер".to_string(),
+                "1  Чинний".to_string(),
+                "разом: 1".to_string(),
+            ]
+        );
+        // empty dictionary / zero matches: the informational empty triple
+        // (header + «нічого не знайдено» + «разом: 0», exit 0) — the
+        // header always renders, so the `--out` file is never BOM-alone
+        assert_eq!(
+            dicts_lines("typs", Some("гадя"), &[]),
+            vec![
+                "Словник typs: гадя".to_string(),
+                "нічого не знайдено".to_string(),
+                "разом: 0".to_string(),
+            ]
+        );
+        assert_eq!(
+            dicts_lines("stan", None, &[]),
+            vec![
+                "Словник stan:".to_string(),
+                "нічого не знайдено".to_string(),
+                "разом: 0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn dicts_json_renders_alphabetical_keys_and_null_query() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «count» precedes «kind» precedes «query» precedes
+        // «rows», and the row keys keep alphabetical order inside every
+        // entry; `count` counts the LISTED rows (post-`--limit`)
+        let rows = vec![
+            (1i64, "Чинний".to_string()),
+            (5i64, "Втратив чинність".to_string()),
+        ];
+        let body = dicts_json("stan", Some("чинн"), &rows);
+        assert_eq!(
+            body,
+            "{\n  \"count\": 2,\n  \"kind\": \"stan\",\n  \"query\": \"чинн\",\n  \"rows\": [\n    {\n      \"id\": 1,\n      \"label\": \"Чинний\"\n    },\n    {\n      \"id\": 5,\n      \"label\": \"Втратив чинність\"\n    }\n  ]\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // unfiltered + no rows: the query renders as JSON null (the
+        // `card`/`dates` null-field style) and the rows array is empty
+        assert_eq!(
+            dicts_json("typs", None, &[]),
+            "{\n  \"count\": 0,\n  \"kind\": \"typs\",\n  \"query\": null,\n  \"rows\": []\n}"
+        );
+    }
+
+    #[test]
+    fn dicts_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//d.txt");
+        let line = dicts_out_note(947, file);
+        assert_eq!(
+            line,
+            format!("[dicts] записано 947 записів → {}", file.display())
+        );
+        assert!(line.starts_with("[dicts] "));
+        assert!(line.contains("947"));
+        assert!(line.contains("записів"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the informational zero rule: the note still formats with 0 rows
+        assert_eq!(
+            dicts_out_note(0, file),
+            format!("[dicts] записано 0 записів → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn dicts_kind_and_limit_validation() {
+        // `dicts KIND` folds the three canonical portal tokens
+        // case-insensitively and trims surrounding spaces (the GUI home
+        // panel shows стани/типи/органи only as display hints, so no
+        // Ukrainian input aliases exist); garbage fails with the house
+        // kind-error message (exit 1 through `main`); `--limit` clamps to
+        // 1..=1000 (never a hard error, the `docs_limit` budget idiom)
+        assert_eq!(normalize_dicts_kind("stan").unwrap(), "stan");
+        assert_eq!(normalize_dicts_kind("TYPs").unwrap(), "typs");
+        assert_eq!(normalize_dicts_kind(" Organs ").unwrap(), "organs");
+        assert_eq!(normalize_dicts_kind("ORGANS").unwrap(), "organs");
+        let err = normalize_dicts_kind("garbage").unwrap_err().to_string();
+        assert_eq!(err, "невідомий словник garbage (stan|typs|organs)");
+        assert_eq!(dicts_limit(100), 100);
+        assert_eq!(dicts_limit(1), 1);
+        assert_eq!(dicts_limit(1000), 1000);
+        assert_eq!(dicts_limit(0), 1);
+        assert_eq!(dicts_limit(1001), 1000);
+        assert_eq!(dicts_limit(usize::MAX), 1000);
     }
 
     #[test]

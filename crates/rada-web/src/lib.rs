@@ -5588,4 +5588,77 @@ mod tests {
         assert!(body.contains("holder.remove()"), "a failed fetch leaves no placeholder");
         assert!(body.contains("yearsHomeDismissed"), "a searched-away card stays retired");
     }
+
+    // ---- date-range bounds (`date_from`/`date_to`, CLI --date-from/--date-to
+    // parity on the «Пошук» page) --------------------------------------------
+
+    #[test]
+    fn search_endpoint_date_range_bounds() {
+        // `/api/search` honors the CLI's inclusive date bounds through the
+        // same rada_db::search `org_date >= / <=` conditions: bounds equal
+        // to the seeded adoption dates still match (inclusive endpoints),
+        // rows outside the window drop out, single-sided bounds work, and
+        // an out-of-format value stays a lenient 200 (search_get asserts
+        // the status) — validation is the UI's job: parseYmd8 skips the
+        // bad bound and paints the muted hint, so the page never sends
+        // anything the endpoint would have to reject.
+        let st = sorted_state("date-range");
+        // Inclusive endpoints: the bounds ARE the oldest/newest seeded dates.
+        let v = search_get(&st, "date_from=20010101&date_to=20030303");
+        assert_eq!(v["total"], 3, "{v}");
+        // Window around the middle doc only: both other rows are excluded.
+        let v = search_get(&st, "date_from=20010102&date_to=20030302");
+        assert_eq!(hit_nregs(&v), vec!["2000-02"]);
+        // Lower bound only (date_desc: newest first).
+        let v = search_get(&st, "date_from=20020101");
+        assert_eq!(hit_nregs(&v), vec!["3000-03", "2000-02"]);
+        // Upper bound only, inclusive on the boundary date itself.
+        let v = search_get(&st, "date_to=20020202");
+        assert_eq!(hit_nregs(&v), vec!["2000-02", "1000-01"]);
+        // Garbage bound: no crash and no 4xx (200 asserted by search_get);
+        // the raw string comparison finds nothing, and the UI never lets a
+        // value like this out (doSearch sends only toYmd8-validated bounds).
+        let v = search_get(&st, "date_from=31.12.2001");
+        assert_eq!(v["total"], 0, "{v}");
+    }
+
+    #[test]
+    fn ui_page_date_range_inputs_deep_link() {
+        // The date bounds are «дд.мм.рррр» text inputs with «з від:»/«до:»
+        // labels; the pure parseYmd8 (the inverse direction of fmtYmd8)
+        // folds them into 8-digit bounds, doSearch sends only validated
+        // values (an invalid bound is skipped, never blocks the search,
+        // and reveals the muted hint), resetAllFilters zeroes both fields,
+        // and the shareable hash grows optional from=/to= keys.
+        assert!(ui::INDEX_HTML.contains(">з від:<"));
+        assert!(ui::INDEX_HTML.contains(">до:<"));
+        assert!(ui::INDEX_HTML.contains("id=\"date-from\" placeholder=\"дд.мм.рррр\""));
+        assert!(ui::INDEX_HTML.contains("id=\"date-to\" placeholder=\"дд.мм.рррр\""));
+        // Pure parser: digit-guarded dd.mm.yyyy with month/day ranges,
+        // reordering to РРРРММДД, plus the canonicalizer that also lets an
+        // already-8-digit value through (legacy shareable links).
+        assert!(ui::INDEX_HTML.contains("function parseYmd8(s)"));
+        assert!(ui::INDEX_HTML.contains(r##"/^([0-9]{2})\.([0-9]{2})\.([0-9]{4})$/"##));
+        assert!(ui::INDEX_HTML.contains("if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;"));
+        assert!(ui::INDEX_HTML.contains("return m[3] + m[2] + m[1];"));
+        assert!(ui::INDEX_HTML.contains("function toYmd8(s)"));
+        assert!(ui::INDEX_HTML.contains("if (/^[0-9]{8}$/.test(t)) return t;"));
+        // doSearch: the validated bound goes out as the CLI's parameter and
+        // a malformed one only flips the hint (skip-with-hint design).
+        assert!(ui::INDEX_HTML.contains(
+            "const y = toYmd8(v);\n    if (y) p.set(param, y);\n    else badDate = true;"
+        ));
+        assert!(ui::INDEX_HTML.contains("$(\"date-hint\").hidden = !badDate;"));
+        // «скинути фільтри» / «скинути все» zero both date fields too.
+        assert!(ui::INDEX_HTML.contains(
+            "\"date-from\", \"date-to\"]) {\n    $(id).value = \"\";"
+        ));
+        // Hash pre-fill: optional from=/to= (8-digit only) land in the
+        // fields through fmtYmd8, and doSearch writes them back for sharing.
+        assert!(ui::INDEX_HTML.contains("key !== \"from\" && key !== \"to\""));
+        assert!(ui::INDEX_HTML.contains("$(\"date-from\").value = fmtYmd8(h.from);"));
+        assert!(ui::INDEX_HTML.contains("$(\"date-to\").value = fmtYmd8(h.to);"));
+        assert!(ui::INDEX_HTML.contains("+ \"from=\" + hf;"));
+        assert!(ui::INDEX_HTML.contains("+ \"to=\" + ht;"));
+    }
 }

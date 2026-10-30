@@ -607,6 +607,7 @@ fn init_controls(app: &mut App, ui: &mut egui::Ui) {
 
     // ---- «Документи за роками» drill-down window (offline index query) ----
     let mut open_nreg: Option<(String, String, String)> = None;
+    let mut export_csv = false;
     if let Some(y) = app.home.year_docs.as_mut() {
         let title = format!("Документи {} року", y.yyyy);
         let mut open = y.open;
@@ -624,14 +625,23 @@ fn init_controls(app: &mut App, ui: &mut egui::Ui) {
                 } else if rows.is_empty() {
                     ui.label("немає документів за цей рік");
                 } else {
-                    ui.label(
-                        egui::RichText::new(format!(
-                            "показано найновіших: {}",
-                            crate::views::reader::group_thousands(rows.len())
-                        ))
-                        .small()
-                        .weak(),
-                    );
+                    ui.horizontal(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!(
+                                "показано найновіших: {}",
+                                crate::views::reader::group_thousands(rows.len())
+                            ))
+                            .small()
+                            .weak(),
+                        );
+                        if ui
+                            .button(egui::RichText::new("експорт .csv").small())
+                            .on_hover_text("зберегти показаний список у файл .csv")
+                            .clicked()
+                        {
+                            export_csv = true;
+                        }
+                    });
                     egui::ScrollArea::vertical()
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
@@ -649,6 +659,9 @@ fn init_controls(app: &mut App, ui: &mut egui::Ui) {
                 }
             });
         y.open = open && open_nreg.is_none();
+    }
+    if export_csv {
+        app.export_year_docs_csv();
     }
     if let Some((n, t, d)) = open_nreg {
         app.open_reader_by_nreg(&n, &t, 0, &d, "", "");
@@ -786,9 +799,28 @@ pub fn years_card_rows(rows: &[(String, i64)]) -> Vec<(String, i64)> {
     good.into_iter().rev().take(15).rev().collect()
 }
 
+/// The year drill-down window list rendered as CSV (UTF-8 with BOM so Excel
+/// opens Cyrillic correctly): `date,nreg,nazva`, the `arrivals_csv` column
+/// family for `(org_date, nreg, nazva)` rows; dates stay raw 8-digit machine
+/// data like the CLI/JSON exports.
+pub fn year_docs_csv(rows: &[(String, String, String)]) -> String {
+    let mut out = String::from("\u{FEFF}date,nreg,nazva\n");
+    for (d, n, t) in rows {
+        out.push_str(&crate::views::arrivals::csv_esc(d));
+        out.push(',');
+        out.push_str(&crate::views::arrivals::csv_esc(n));
+        out.push(',');
+        out.push_str(&crate::views::arrivals::csv_esc(t));
+        out.push('\n');
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{dict_field, dict_hits, fresh_row_label, years_card_rows, DictField};
+    use super::{
+        dict_field, dict_hits, fresh_row_label, year_docs_csv, years_card_rows, DictField,
+    };
 
     fn d(id: i64, label: &str) -> (i64, String) {
         (id, label.to_string())
@@ -884,5 +916,21 @@ mod tests {
             years_card_rows(&rows),
             vec![("2024".to_string(), 5i64), ("2026".to_string(), 2i64)]
         );
+    }
+
+    #[test]
+    fn year_docs_csv_boms_headers_and_escapes() {
+        let rows = vec![
+            ("20241231".to_string(), "1334-2024-р".to_string(), "Про звільнення".to_string()),
+            ("20240101".to_string(), "1/24-рг".to_string(), "А, \"цитата\"".to_string()),
+        ];
+        let csv = year_docs_csv(&rows);
+        assert!(csv.starts_with('\u{FEFF}'), "BOM first (Excel Cyrillic)");
+        assert!(csv.starts_with("\u{FEFF}date,nreg,nazva\n"));
+        assert!(csv.contains("20241231,1334-2024-р,Про звільнення\n"));
+        // comma + quotes force quoting with doubled quotes
+        assert!(csv.contains("20240101,1/24-рг,\"А, \"\"цитата\"\"\"\n"));
+        // empty list still yields the BOM'd header (never an empty file)
+        assert_eq!(year_docs_csv(&[]), "\u{FEFF}date,nreg,nazva\n");
     }
 }

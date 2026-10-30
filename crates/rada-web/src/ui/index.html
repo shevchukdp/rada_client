@@ -696,10 +696,11 @@
       <select id="f-typ"><option value="">Тип (усі)</option></select>
       <select id="f-org"><option value="">Видавник (усі)</option></select>
       <input id="f-number" placeholder="№ (частина)" size="12">
-      <span class="hint">Дата:</span>
-      <input id="date-from" placeholder="від РРРРММДД" size="10" autocomplete="off">
-      <input id="date-to" placeholder="до РРРРММДД" size="10" autocomplete="off">
-      <span id="date-hint" class="hint" hidden>дату вказано невірно</span>
+      <span class="hint">з від:</span>
+      <input id="date-from" placeholder="дд.мм.рррр" size="10" autocomplete="off" title="від РРРРММДД або дд.мм.рррр">
+      <span class="hint">до:</span>
+      <input id="date-to" placeholder="дд.мм.рррр" size="10" autocomplete="off" title="до РРРРММДД або дд.мм.рррр">
+      <span id="date-hint" class="hint" hidden>дата у форматі дд.мм.рррр — дату вказано невірно</span>
       <button class="primary" type="submit">Пошук</button>
       <button id="btn-cache-search" type="button" title="Повнотекстовий пошук у кешованих тілах документів (офлайн, без мережі)">Пошук у тексті</button>
     </form>
@@ -1124,7 +1125,9 @@ async function init() {
   if (jobsAnyRunning) pollJobs();
   // Hash deep links apply only after the normal startup above has run:
   // "#doc=<nreg>" opens the reader on the «Пошук» tab, "#q=<term>" fills
-  // the query box and searches (doc wins when both are present). The hash
+  // the query box and searches (doc wins when both are present), and the
+  // optional "#from=РРРРММДД"/"#to=РРРРММДД" bounds pre-fill the date
+  // fields (their own notation) before the startup search runs. The hash
   // is read once on load — no fragment-change listener is registered,
   // openDoc/doSearch are the only writers, so no feedback loop is possible.
   const h = parseHash(window.location.hash || location.hash);
@@ -1134,6 +1137,15 @@ async function init() {
   } else if (h.q) {
     switchTab("search");
     $("q").value = h.q;
+    if (h.from) { $("date-from").value = fmtYmd8(h.from); }
+    if (h.to) { $("date-to").value = fmtYmd8(h.to); }
+    doSearch(0);
+  } else if (h.from || h.to) {
+    // Date-only shareable links: pre-fill the bounds in the fields' own
+    // «дд.мм.рррр» notation and let the startup search run with them.
+    switchTab("search");
+    if (h.from) { $("date-from").value = fmtYmd8(h.from); }
+    if (h.to) { $("date-to").value = fmtYmd8(h.to); }
     doSearch(0);
   }
 }
@@ -1155,7 +1167,13 @@ function readDeepLink() {
     ["number", "f-number"],
   ]) {
     const v = p.get(param);
-    if (v !== null && v !== "") { $(id).value = v; any = true; }
+    if (v !== null && v !== "") {
+      // The two date fields show «дд.мм.рррр»: an 8-digit shareable value
+      // is re-displayed in the field's own notation (fmtYmd8 passes
+      // anything else through for the input to judge at search time).
+      $(id).value = id === "date-from" || id === "date-to" ? fmtYmd8(v) : v;
+      any = true;
+    }
   }
   return { any, doc: p.get("doc") };
 }
@@ -1165,10 +1183,10 @@ function writeDeepLink() {
   const q = $("q").value.trim();
   if (q) { p.set("q", q); }
   if (state.sort && state.sort !== "date_desc") { p.set("sort", state.sort); }
-  const df = $("date-from").value.trim();
-  if (/^[0-9]{8}$/.test(df)) { p.set("date_from", df); }
-  const dt = $("date-to").value.trim();
-  if (/^[0-9]{8}$/.test(dt)) { p.set("date_to", dt); }
+  const df = toYmd8($("date-from").value);
+  if (df) { p.set("date_from", df); }
+  const dt = toYmd8($("date-to").value);
+  if (dt) { p.set("date_to", dt); }
   for (const [param, id] of [["status", "f-status"], ["typ", "f-typ"], ["org", "f-org"]]) {
     if ($(id).value) { p.set(param, $(id).value); }
   }
@@ -1179,7 +1197,10 @@ function writeDeepLink() {
 }
 
 // Shareable hash form of the deep links above: "#doc=<nreg>" opens the reader,
-// "#q=<term>" runs a search (doc wins when both are present). Pure parser: the
+// "#q=<term>" runs a search (doc wins when both are present), and the optional
+// "#from=РРРРММДД"/"#to=РРРРММДД" bounds pre-fill the date fields (8-digit
+// only — a malformed bound reads like no bound at all).
+// Pure parser: the
 // leading '#' is optional, parameters are separated by '&' and split on the
 // FIRST '=' each (values may contain '='), unknown keys are ignored,
 // decodeURIComponent failures never throw (the parameter is simply dropped),
@@ -1187,16 +1208,24 @@ function writeDeepLink() {
 // from no hash at all (normal startup).
 function parseHash(h) {
   const out = { doc: null, q: null };
+  out.from = null;
+  out.to = null;
   let s = h ? String(h) : "";
   if (s.charAt(0) === "#") s = s.slice(1);
   for (const part of s.split("&")) {
     const eq = part.indexOf("=");
     if (eq < 0) continue;
     const key = part.slice(0, eq);
-    if (key !== "doc" && key !== "q") continue; // unknown keys are ignored
+    if (key !== "doc" && key !== "q" && key !== "from" && key !== "to") continue; // unknown keys are ignored
     let val = null;
     try { val = decodeURIComponent(part.slice(eq + 1)); } catch (_) { continue; }
-    if (val) out[key] = val;
+    if (!val) continue;
+    // Date bounds travel as full 8-digit РРРРММДД; anything else is dropped.
+    if (key === "from" || key === "to") {
+      if (/^[0-9]{8}$/.test(val)) out[key] = val;
+    } else {
+      out[key] = val;
+    }
   }
   return out;
 }
@@ -1214,6 +1243,30 @@ function fmtYmd8(d) {
   const s = String(d || "");
   if (!/^[0-9]{8}$/.test(s)) return s;
   return s.slice(6, 8) + "." + s.slice(4, 6) + "." + s.slice(0, 4);
+}
+
+/// «дд.мм.рррр» → 8-digit «РРРРММДД» (pure, the inverse direction of
+/// fmtYmd8, which goes the other way): every position must be an ASCII
+/// digit and the month must land in 01..12 and the day in 01..31; anything
+/// else answers null so the caller skips the bound and paints the muted
+/// format hint (a bad date never blocks the search itself).
+function parseYmd8(s) {
+  const m = /^([0-9]{2})\.([0-9]{2})\.([0-9]{4})$/.exec(String(s || "").trim());
+  if (!m) return null;
+  const dd = Number(m[1]);
+  const mm = Number(m[2]);
+  if (mm < 1 || mm > 12 || dd < 1 || dd > 31) return null;
+  return m[3] + m[2] + m[1];
+}
+
+/// Canonical 8-digit date bound for a date input: an already-8-digit value
+/// passes through untouched (legacy shareable links keep working), the
+/// «дд.мм.рррр» field notation folds through parseYmd8, anything else
+/// (empty included) answers null.
+function toYmd8(s) {
+  const t = String(s || "").trim();
+  if (/^[0-9]{8}$/.test(t)) return t;
+  return parseYmd8(t);
 }
 
 /// Pure: the home block's markup — the heading plus one row per doc
@@ -1461,10 +1514,10 @@ function activeChips() {
   if ($("f-status").value) chips.push({ id: "f-status", text: chipLabel("Статус", dictLabel("f-status")) });
   if ($("f-typ").value) chips.push({ id: "f-typ", text: chipLabel("Тип", dictLabel("f-typ")) });
   if ($("f-org").value) chips.push({ id: "f-org", text: chipLabel("Видавник", dictLabel("f-org")) });
-  const df = $("date-from").value.trim();
-  if (/^[0-9]{8}$/.test(df)) chips.push({ id: "date-from", text: chipLabel("Дата від", chipDate(df)) });
-  const dt = $("date-to").value.trim();
-  if (/^[0-9]{8}$/.test(dt)) chips.push({ id: "date-to", text: chipLabel("Дата до", chipDate(dt)) });
+  const df = toYmd8($("date-from").value);
+  if (df) chips.push({ id: "date-from", text: chipLabel("Дата від", chipDate(df)) });
+  const dt = toYmd8($("date-to").value);
+  if (dt) chips.push({ id: "date-to", text: chipLabel("Дата до", chipDate(dt)) });
   const n = $("f-number").value.trim();
   if (n) chips.push({ id: "f-number", text: "№ " + n + " ×" });
   return chips;
@@ -1709,23 +1762,31 @@ async function doSearch(offset) {
   if ($("f-typ").value) p.set("typ", $("f-typ").value);
   if ($("f-org").value) p.set("org", $("f-org").value);
   if ($("f-number").value.trim()) p.set("number", $("f-number").value.trim());
-  // Optional date range: only exact 8-digit YYYYMMDD values are sent; invalid
-  // input is ignored (never blocks the search) and flagged with a muted hint.
+  // Optional date range: «дд.мм.рррр» input (or a legacy 8-digit value) is
+  // folded to РРРРММДД through toYmd8 and sent only when it validates; an
+  // invalid input is skipped — it never blocks the search — and flagged
+  // with a muted format hint.
   let badDate = false;
   for (const [id, param] of [["date-from", "date_from"], ["date-to", "date_to"]]) {
     const v = $(id).value.trim();
     if (!v) continue;
-    if (/^[0-9]{8}$/.test(v)) p.set(param, v);
+    const y = toYmd8(v);
+    if (y) p.set(param, y);
     else badDate = true;
   }
   $("date-hint").hidden = !badDate;
   writeDeepLink();
   if (offset === 0) {
-    // Keep the shareable "#q=<term>" fragment in sync with the first search
+    // Keep the shareable "#q=<term>" fragment (plus the "#from=РРРРММДД"/
+    // "#to=РРРРММДД" bounds) in sync with the first search
     // page (replaceState: no history entry, no anchor jump); an empty term
     // drops the fragment. Later pages leave the page-1 URL untouched.
-    history.replaceState(null, "", location.pathname + location.search +
-      (q ? "#q=" + encodeURIComponent(q) : ""));
+    let frag = q ? "#q=" + encodeURIComponent(q) : "";
+    const hf = toYmd8($("date-from").value);
+    if (hf) frag += (frag ? "&" : "#") + "from=" + hf;
+    const ht = toYmd8($("date-to").value);
+    if (ht) frag += (frag ? "&" : "#") + "to=" + ht;
+    history.replaceState(null, "", location.pathname + location.search + frag);
   }
   const meta = $("results-meta");
   meta.textContent = "Завантаження…";

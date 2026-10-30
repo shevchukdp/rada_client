@@ -1633,6 +1633,29 @@ impl App {
         });
     }
 
+    /// Export the open year drill-down window's rows as a CSV file
+    /// (`date,nreg,nazva`, the arrivals CSV family).
+    pub fn export_year_docs_csv(&mut self) {
+        let Some(y) = self.home.year_docs.as_ref() else {
+            return;
+        };
+        if y.rows.is_empty() {
+            self.toast("має бути хоча б один документ", err());
+            return;
+        }
+        let body = views::home::year_docs_csv(&y.rows);
+        let name = format!("docs-{}.csv", y.yyyy);
+        let Some(path) = self.dlg_save(name) else {
+            return;
+        };
+        self.spawn(move |tx| {
+            let res = std::fs::write(&path, &body)
+                .map(|_| path)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Exported(res));
+        });
+    }
+
     /// Export the arrivals page (current filter applied) as a CSV file.
     pub fn export_arrivals_csv(&mut self, docs: Vec<rada_core::models::UpdatedDoc>) {
         if docs.is_empty() {
