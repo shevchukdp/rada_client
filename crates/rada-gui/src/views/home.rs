@@ -145,6 +145,7 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 ui.end_row();
                             }
                         });
+                    let year_rows = years_card_rows(&st.years);
                     if st.docs > 0 && !st.fresh.is_empty() {
                         // Offline «fresh by adoption date» card: the same rows
                         // the CLI `recent` command renders, straight from the
@@ -165,6 +166,25 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                                 app.open_reader_by_nreg(&n, &t, 0, &d, "", "");
                             }
                         }
+                    }
+                    if !year_rows.is_empty() {
+                        // Offline per-year mini histogram: the CLI `years` /
+                        // web landing twin — «yyyy · count» rows, the last 15
+                        // years present, newest last (index-only, no network).
+                        ui.add_space(8.0);
+                        ui.label(egui::RichText::new("Документи за роками:").strong());
+                        ui.horizontal_wrapped(|ui| {
+                            for (i, (y, c)) in year_rows.into_iter().enumerate() {
+                                if i > 0 {
+                                    ui.label(egui::RichText::new("·").weak());
+                                }
+                                ui.label(
+                                    egui::RichText::new(format!("{y} · {c}"))
+                                        .small()
+                                        .weak(),
+                                );
+                            }
+                        });
                     }
                 }
             }
@@ -677,9 +697,23 @@ pub fn fresh_row_label(date: &str, nreg: &str, title: &str) -> String {
     }
 }
 
+/// Rows for the home «Документи за роками» mini histogram: keeps only
+/// full 4-digit ASCII years with a positive count (the web `years_rows`
+/// normalizer's rules) and shows the LAST 15 years present, still ascending
+/// (the whole index usually spans over a century — the recent tail is the
+/// interesting one).
+pub fn years_card_rows(rows: &[(String, i64)]) -> Vec<(String, i64)> {
+    let good: Vec<(String, i64)> = rows
+        .iter()
+        .filter(|(y, c)| *c > 0 && y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()))
+        .cloned()
+        .collect();
+    good.into_iter().rev().take(15).rev().collect()
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{dict_field, dict_hits, fresh_row_label, DictField};
+    use super::{dict_field, dict_hits, fresh_row_label, years_card_rows, DictField};
 
     fn d(id: i64, label: &str) -> (i64, String) {
         (id, label.to_string())
@@ -746,5 +780,34 @@ mod tests {
         assert_eq!(fresh_row_label("2026102a", "N1", "Титл"), "N1  Титл");
         assert_eq!(fresh_row_label("", "N1", "  "), "N1");
         assert_eq!(fresh_row_label("20261023", "N1", ""), "23.10.2026  N1");
+    }
+
+    #[test]
+    fn years_card_rows_keeps_last_fifteen_ascending() {
+        let all: Vec<(String, i64)> =
+            (1900..=2026).map(|y| (y.to_string(), 10)).collect();
+        let kept = years_card_rows(&all);
+        assert_eq!(kept.len(), 15);
+        assert_eq!(kept[0].0, "2012");
+        assert_eq!(kept[14].0, "2026");
+        // short inputs pass through untouched, ascending order is kept
+        let few = vec![("2024".to_string(), 3i64), ("2026".to_string(), 1i64)];
+        assert_eq!(years_card_rows(&few), few);
+        assert!(years_card_rows(&[]).is_empty());
+    }
+
+    #[test]
+    fn years_card_rows_drops_zero_counts_and_bad_year_keys() {
+        let rows = vec![
+            ("2024".to_string(), 5i64),
+            ("2025".to_string(), 0i64),
+            ("26".to_string(), 7i64),
+            ("20xx".to_string(), 9i64),
+            ("2026".to_string(), 2i64),
+        ];
+        assert_eq!(
+            years_card_rows(&rows),
+            vec![("2024".to_string(), 5i64), ("2026".to_string(), 2i64)]
+        );
     }
 }

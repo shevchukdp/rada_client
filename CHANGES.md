@@ -7,6 +7,11 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-30
 
+### 0.10.56: `annots` у CLI, «експорт .csv» обраного у вебі та «Документи за роками» на головній / CLI `annots`, web favorites CSV & home years histogram
+
+- **UKR:** 1) **`annots <НРЕГ>` у CLI**: анотації одного документа просто з індексу — той самий формат рядків, що у `recent-annots`; `--kind коментар|закладка|виділення` (ще й без регістру), `--limit ≤500`, `--json` і `--out` за загальним стандартом. 2) **«експорт .csv» на сторінці «Обране» у веб-клієнті**: показаний список (фільтр + сортування) виїжджає файлом у форматі CSV самої програми — з BOM; кнопка гасне, коли показувати нічого. 3) **«Документи за роками» на головній сторінці програми**: останні 15 років з індексу («2026 · 5492»…) — третій двійник `years` поряд із CLI та вебом. 4) Тести: 394/394.
+- **ENG:** 1) **`annots <NREG>` in the CLI**: one document's annotations straight from the index — the same row format as `recent-annots`; `--kind коментар|закладка|виділення` (case-insensitive too), `--limit ≤500`, `--json`/`--out` to the common standard. 2) **An «експорт .csv» on the web client's Favorites page**: the visible list (filter + sort) exports in the desktop app's own CSV format with BOM; the button dims when there is nothing to show. 3) **A «Документи за роками» card on the desktop home page**: the last 15 years from the index («2026 · 5492»…) — the third `years` twin beside the CLI and the web. 4) Tests: 394/394.
+
 ### 0.10.55: `docs --org` у CLI, «Документи за роками» у веб-клієнті та Ctrl+Shift+T для вкладок / CLI `docs --org`, web years bar chart & Ctrl+Shift+T tabs
 
 - **UKR:** 1) **`docs --org <ORG>` у CLI**: список документів одного видавця з індексу, найновіші попереду — продовження `orgs`: той самий ключ видавця та та сама цифра в «разом» (перевірено на org 1: 308 = 308); `--year РРРР`, `--limit ≤500`, `--json` і `--out` за загальним стандартом. 2) **«Документи за роками» на сторінці веб-клієнта**: міні-гістограма з пропорційними смужками — веб-двійник CLI `years` (`/api/years`), останні 15 років; зникає після першого пошуку, як і картка свіжих документів. 3) **Ctrl+Shift+T повертає щойно закриту вкладку читалки** (стек до 10 записів, як у браузерів). 4) Тести: 386/386.

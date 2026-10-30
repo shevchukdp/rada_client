@@ -279,8 +279,9 @@ official open-data API:
   accent bars with thousands-spaced counts, the last 15 years present;
   same lifetime as the fresh card),
   and a **Favorites page with desktop parity** (sort chips «новіші / старіші /
-  за назвою», a text/title/nreg filter with «показано X з Y», and collapsible
-  per-document groups, choices in localStorage),
+  за назвою», a text/title/nreg filter with «показано X з Y», collapsible
+  per-document groups, choices in localStorage, and an **«експорт .csv»** of the
+  visible list — UTF-8 with BOM, the desktop app's own CSV format),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -381,6 +382,7 @@ Launch arguments:
 .\rada-client.exe months                 # offline month histogram of one year (--year РРРР, always 12 rows + «разом»); --json / --out too
 .\rada-client.exe years                  # offline per-year histogram of a closed range (--from РРРР --to РРРР, zero years omitted + «разом» + «без дати»); --json / --out too
 .\rada-client.exe docs --org 1           # offline documents of one publisher, newest first («Документи видавця …:» + «разом»); --year РРРР, --limit ≤500, --json / --out too
+.\rada-client.exe annots 2341-14         # offline annotations of one document («Анотації документа …:» + «разом»); --kind коментар|закладка|виділення, --limit ≤500, --json / --out too
 
 # 4) Keep the index current.
 .\rada-client.exe sync                   # dictionaries + updated-documents feed

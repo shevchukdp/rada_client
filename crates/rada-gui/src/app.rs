@@ -133,6 +133,10 @@ pub struct IndexStatus {
     /// Freshest cards by adoption date (offline, index-only):
     /// `(org_date YYYYMMDD, nreg, nazva)`, newest first, capped at 14.
     pub fresh: Vec<(String, String, String)>,
+    /// Whole-index per-year document counts (offline, index-only):
+    /// `(yyyy, count)`, ascending, only full 8-digit dates; the home page
+    /// renders the last 15 present years (CLI `years` / web landing twin).
+    pub years: Vec<(String, i64)>,
 }
 
 /// One open document in the reader's tab strip. Only the ACTIVE tab keeps
@@ -2505,6 +2509,7 @@ fn read_index_status(db: &PathBuf) -> IndexStatus {
                 size_bytes: 0,
                 dicts: Vec::new(),
                 fresh: Vec::new(),
+                years: Vec::new(),
             }
         }
         Ok(m) => m,
@@ -2516,6 +2521,7 @@ fn read_index_status(db: &PathBuf) -> IndexStatus {
         size_bytes: meta.len(),
         dicts: Vec::new(),
         fresh: Vec::new(),
+        years: Vec::new(),
     };
     if let Ok(conn) = rada_db::open(db) {
         st.docs = rada_db::doc_count(&conn).unwrap_or(0);
@@ -2543,6 +2549,21 @@ fn read_index_status(db: &PathBuf) -> IndexStatus {
                         r.get::<_, String>(1)?,
                         r.get::<_, String>(2)?,
                     ))
+                })?;
+                rows.collect::<Result<Vec<_>, _>>()
+            })
+            .unwrap_or_default();
+        // Offline per-year counts for the home mini histogram (same GLOB
+        // anchor as the CLI `years`; the 15-row cap lives in the view).
+        st.years = conn
+            .prepare(
+                "SELECT substr(org_date,1,4) AS y, COUNT(*) FROM docs \
+                 WHERE org_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' \
+                 GROUP BY y ORDER BY y ASC",
+            )
+            .and_then(|mut ps| {
+                let rows = ps.query_map([], |r| {
+                    Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))
                 })?;
                 rows.collect::<Result<Vec<_>, _>>()
             })

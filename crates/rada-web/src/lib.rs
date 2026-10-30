@@ -5267,4 +5267,129 @@ mod tests {
             "the block hides on the first real search"
         );
     }
+
+    #[test]
+    fn ui_page_has_favorites_csv_builder() {
+        // ONE pure favoritesCsv(rows) builder mirroring the arrivals
+        // arrivalsCsv format family: UTF-8 BOM up front (Excel opens
+        // Cyrillic correctly), the «nreg,title,kind,created_at,text» header
+        // (what a favorites row carries on screen: document number + title,
+        // annotation kind, the created_at save stamp and the text), comma
+        // separator, and rows appended in the given order — the file always
+        // mirrors the on-screen order.
+        assert!(ui::INDEX_HTML.contains("function favoritesCsv(rows)"));
+        let b = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function favoritesCsv(rows) {")
+            .expect("favoritesCsv")..];
+        let b = &b[..b.find("\n}").expect("favoritesCsv end")];
+        // BOM + header row, the same columns in the same row order.
+        assert!(
+            b.contains(r#""\uFEFFnreg,title,kind,created_at,text\n""#),
+            "BOM + the favorites header row"
+        );
+        // Every field ships through the arrivals escaper (shared quoting)
+        // separated by commas: titles with quotes, commas or newlines are
+        // wrapped and their quotes doubled (GUI csv_esc parity).
+        assert!(
+            b.contains("arrCsvEsc(r.nreg) + \",\" + arrCsvEsc(r.title)"),
+            "nreg + title columns"
+        );
+        assert!(
+            b.contains("arrCsvEsc(r.kind) + \",\" + arrCsvEsc(r.created_at)"),
+            "kind + created_at columns"
+        );
+        assert!(b.contains("arrCsvEsc(r.text)"), "text column");
+        // Row order: the builder iterates the given rows verbatim — no
+        // sort, no filter in here.
+        assert!(b.contains("for (const r of rows)"), "rows appended in the given order");
+        assert!(!b.contains(".sort("), "the builder never sorts");
+        let e = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function arrCsvEsc(s) {")
+            .expect("arrCsvEsc")..];
+        let e = &e[..e.find("\n}").expect("arrCsvEsc end")];
+        assert!(e.contains(r#"/["\n\r,]/.test(v)"#), "quote, comma and line breaks trigger quoting");
+        assert!(e.contains(r#".replace(/"/g, "\"\"")"#), "quotes are doubled inside the field");
+        // The download path hands the builder's BOM'd text to the arrivals
+        // Blob / object-URL idiom under the fixed favorites.csv name (the
+        // novy-dokumenty.csv pattern).
+        let x = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function exportFavCsv() {")
+            .expect("exportFavCsv")..];
+        let x = &x[..x.find("\n}").expect("exportFavCsv end")];
+        assert!(x.contains("favoritesCsv(visibleFavorites());"), "the builder feeds the download");
+        assert!(
+            x.contains("new Blob([csv], { type: \"text/csv;charset=utf-8\" });"),
+            "the BOM'd text ships as the Blob content"
+        );
+        assert!(x.contains("URL.createObjectURL(blob)"));
+        assert!(x.contains("a.download = \"favorites.csv\";"), "fixed file name in the arrivals idiom");
+        assert!(x.contains("a.click();"));
+        assert!(x.contains("a.remove();"));
+        assert!(x.contains("URL.revokeObjectURL(url);"));
+    }
+
+    #[test]
+    fn ui_page_has_favorites_csv_button() {
+        // «експорт .csv» chip on the favorites controls row right after
+        // «експорт .txt» (the arrivals chip CSS language, plain label, no
+        // emoji): the click runs the shared exportFavCsv entry point over
+        // the VISIBLE list, and the chip stays disabled while nothing is
+        // on screen.
+        assert!(
+            ui::INDEX_HTML.contains("<button id=\"fav-export-csv\" type=\"button\" disabled"),
+            "the button starts disabled (the page loads empty)"
+        );
+        assert!(ui::INDEX_HTML.contains(">експорт .csv</button>"));
+        // Same toolbar row as the favorites header controls: everything
+        // between #fav-refresh and the kind-chip row.
+        let row = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("id=\"fav-refresh\"")
+            .expect("fav-refresh")..ui::INDEX_HTML
+            .find("<div class=\"row\" id=\"fav-filters\">")
+            .expect("fav filters row")];
+        for id in ["fav-export", "btn-fav-export-txt", "fav-export-csv", "fav-import"] {
+            assert!(row.contains(&format!("id=\"{id}\"")), "{id}: lives on the favorites controls row");
+        }
+        let txt = row.find("id=\"btn-fav-export-txt\"").expect("txt chip");
+        let csv = row.find("id=\"fav-export-csv\"").expect("csv chip");
+        assert!(txt < csv, "the csv chip trails «експорт .txt»");
+        // Chip CSS reuses the arrivals export chip language, hover included.
+        assert!(ui::INDEX_HTML.contains("#fav-export-csv {"), "chip CSS reuses the arrivals chip language");
+        assert!(ui::INDEX_HTML.contains("#fav-export-csv:hover {"), "accent hover like the arrivals chip");
+        assert!(
+            ui::INDEX_HTML.contains("$(\"fav-export-csv\").onclick = () => exportFavCsv();"),
+            "click goes through the shared export entry point"
+        );
+        // The VISIBLE list, not the raw one: the exporter runs the exact
+        // «показано X з Y» pipeline — favSorted + the active kind chip +
+        // favRowMatches over the #fav-filter box — and never touches the
+        // raw favItems array itself.
+        assert!(ui::INDEX_HTML.contains("function visibleFavorites()"));
+        let v = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function visibleFavorites() {")
+            .expect("visibleFavorites")..];
+        let v = &v[..v.find("\n}").expect("visibleFavorites end")];
+        assert!(v.contains("favSorted(favItems, favSort)"), "the shared sort");
+        assert!(v.contains(".filter(a => !favKind || a.kind === favKind)"), "the active kind chip");
+        assert!(v.contains(".filter(a => favRowMatches(a, needle))"), "the shared text filter");
+        assert!(v.contains("$(\"fav-filter\").value"), "reads the #fav-filter box");
+        let x = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function exportFavCsv() {")
+            .expect("exportFavCsv")..];
+        let x = &x[..x.find("\n}").expect("exportFavCsv end")];
+        assert!(x.contains("favoritesCsv(visibleFavorites());"), "exports the filtered list");
+        assert!(!x.contains("favItems"), "the exporter never reads the raw list");
+        // Empty-case gate: renderFavorites re-gates the chip on the very
+        // array the «показано X з Y» count uses (nothing visible ⇒ the
+        // chip dims and cannot fire a download).
+        let r = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function renderFavorites() {")
+            .expect("renderFavorites")..];
+        let r = &r[..r.find("\n}").expect("renderFavorites end")];
+        let gate = r
+            .find("$(\"fav-export-csv\").disabled = !items.length;")
+            .expect("renderFavorites gates on the visible list");
+        let items = r.find("const items = sorted").expect("visible items");
+        assert!(items < gate, "the gate reads the filtered items");
+    }
 }

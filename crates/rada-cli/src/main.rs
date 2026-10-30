@@ -58,6 +58,13 @@
 //!               `--json` for machine-readable output, `--out` to write
 //!               the report; informational — exits 1 only on a missing
 //!               index or a malformed `--year`);
+//! - `annots`  offline per-document annotation list — the drill-down
+//!               companion of `recent-annots`: the annotations of one
+//!               document, newest first (`NREG` required, `--kind` keeps
+//!               one kind — коментар | виділення | закладка, `--json` for
+//!               machine-readable output, `--out` to write the report;
+//!               informational — exits 1 only on a missing index or an
+//!               unknown `--kind`);
 //! - `statuses`  offline document-status histogram on `status` — how many
 //!               documents are чинний / не чинний / …, labels from the
 //!               offline `stan` dictionary
@@ -462,6 +469,40 @@ enum Cmd {
         /// BOM-less. Zero annotations write the BOM alone; the «Останніх
         /// анотацій немає» line stays on stdout (the house `search --out`
         /// zero-hit rule); the note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
+    /// Offline «what did I annotate in this document»: the per-document
+    /// annotation list — the drill-down companion of `recent-annots`
+    /// (which streams the newest annotations across all documents). Rows
+    /// share the `recent-annots` rendering and order (`created_at`
+    /// descending, `id` descending as tie-break). Pure offline: the
+    /// command never touches the network; informational — a document
+    /// without annotations (or an unknown nreg) exits 0 with the empty
+    /// report (header + «немає анотацій» + «разом: 0»); only a missing
+    /// index or an unknown `--kind` exit 1.
+    Annots {
+        /// Document nreg to list (required).
+        nreg: String,
+        /// Keep only one kind: коментар | виділення | закладка (the
+        /// English `comment` / `highlight` / `bookmark` and the plural
+        /// Ukrainian forms are accepted too, case-insensitive). Omit to
+        /// keep every kind.
+        #[arg(long)]
+        kind: Option<String>,
+        /// Max annotations to print (default 100, clamped to 1..=500).
+        #[arg(long, default_value_t = 100)]
+        limit: usize,
+        /// Emit the JSON body
+        /// (`{"annots":[{created_at,kind,nreg,text,title},…],"doc":…,"total":N}`
+        /// — pretty, keys alphabetical, `total` counts the listed rows)
+        /// instead of the report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less; the `[annots] записано …` note goes to stderr.
         #[arg(long)]
         out: Option<PathBuf>,
     },
@@ -934,6 +975,20 @@ fn run() -> Result<()> {
         Cmd::Status { out } => cmd_status(&cli.db, out.as_deref()),
         Cmd::Annot { what } => cmd_annot(&cli.db, what),
         Cmd::RecentAnnots { limit, json, out } => cmd_recent(&cli.db, limit, json, out.as_deref()),
+        Cmd::Annots {
+            nreg,
+            kind,
+            limit,
+            json,
+            out,
+        } => cmd_annots(
+            &cli.db,
+            &nreg,
+            kind.as_deref(),
+            limit,
+            json,
+            out.as_deref(),
+        ),
         Cmd::Favorites { kind, sort, json, out } => {
             cmd_favorites(&cli.db, kind.as_deref(), &sort, json, out.as_deref())
         }
@@ -4028,12 +4083,51 @@ struct RecentRow {
     title: String,
 }
 
+/// Render one [`RecentRow`] as its compact two-line block: the
+/// `[{kind}] {title||nreg} · {created_at}` line (the trimmed title when
+/// the doc is indexed, otherwise the nreg itself) and the indented text
+/// (trimmed, newlines folded to spaces, truncated to 60 chars like
+/// [`annot_table_lines`]; an empty text — bookmarks — renders no text
+/// line). Shared by [`recent_lines`] and [`annots_doc_lines`] so the
+/// cross-document and per-document reports render rows identically.
+fn recent_row_lines(r: &RecentRow) -> Vec<String> {
+    let label = if r.title.trim().is_empty() {
+        r.nreg.as_str()
+    } else {
+        r.title.trim()
+    };
+    let mut lines = vec![format!("[{}] {label} · {}", r.kind, r.created_at)];
+    let t: String = r
+        .text
+        .trim()
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .take(60)
+        .collect();
+    if !t.is_empty() {
+        lines.push(format!("  {t}"));
+    }
+    lines
+}
+
+/// Render one [`RecentRow`] as its `--json` object
+/// (`{created_at,kind,nreg,text,title}` — map keys sort, so the shape is
+/// alphabetical). Shared by [`recent_json_body`] and [`annots_doc_json`]
+/// so the two JSON bodies carry identical row objects.
+fn recent_row_json(r: &RecentRow) -> serde_json::Value {
+    serde_json::json!({
+        "nreg": r.nreg,
+        "kind": r.kind,
+        "created_at": r.created_at,
+        "text": r.text,
+        "title": r.title,
+    })
+}
+
 /// The plain-table body of `recent` (shared by stdout and `--out` so the
 /// two cannot drift): «Останні анотації ({n}):» header, then a compact
-/// two-line block per row — `[{kind}] {title||nreg} · {created_at}` and
-/// the indented text (trimmed, newlines folded to spaces, truncated to 60
-/// chars like [`annot_table_lines`]; an empty text — bookmarks — renders no
-/// text line). Zero rows render the single stdout-only «Останніх анотацій
+/// two-line block per row through the shared [`recent_row_lines`]
+/// renderer. Zero rows render the single stdout-only «Останніх анотацій
 /// немає» line (the house `search --out` rule): the `--out` file carries
 /// the BOM alone, the message never enters it.
 fn recent_lines(rows: &[RecentRow]) -> Vec<String> {
@@ -4043,45 +4137,20 @@ fn recent_lines(rows: &[RecentRow]) -> Vec<String> {
     let mut lines = Vec::with_capacity(1 + 2 * rows.len());
     lines.push(format!("Останні анотації ({}):", rows.len()));
     for r in rows {
-        let label = if r.title.trim().is_empty() {
-            r.nreg.as_str()
-        } else {
-            r.title.trim()
-        };
-        lines.push(format!("[{}] {label} · {}", r.kind, r.created_at));
-        let t: String = r
-            .text
-            .trim()
-            .chars()
-            .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
-            .take(60)
-            .collect();
-        if !t.is_empty() {
-            lines.push(format!("  {t}"));
-        }
+        lines.extend(recent_row_lines(r));
     }
     lines
 }
 
 /// The `--json` body of `recent` (shared by stdout and `--out` so the two
 /// cannot drift): the pretty `[{nreg,kind,created_at,text,title},…]` array
-/// built as hand-rolled `serde_json::Value`s like the other commands' JSON
-/// bodies (map keys sort). stdout prints exactly this string plus a
-/// trailing newline; the `--out` file receives the same bytes BOM-less
-/// (machine data, the house JSON rule). Empty: a plain `[]`.
+/// of the shared [`recent_row_json`] row objects, built as hand-rolled
+/// `serde_json::Value`s like the other commands' JSON bodies (map keys
+/// sort). stdout prints exactly this string plus a trailing newline; the
+/// `--out` file receives the same bytes BOM-less (machine data, the house
+/// JSON rule). Empty: a plain `[]`.
 fn recent_json_body(rows: &[RecentRow]) -> String {
-    let items: Vec<serde_json::Value> = rows
-        .iter()
-        .map(|r| {
-            serde_json::json!({
-                "nreg": r.nreg,
-                "kind": r.kind,
-                "created_at": r.created_at,
-                "text": r.text,
-                "title": r.title,
-            })
-        })
-        .collect();
+    let items: Vec<serde_json::Value> = rows.iter().map(recent_row_json).collect();
     serde_json::to_string_pretty(&serde_json::Value::Array(items))
         .unwrap_or_else(|_| "[]".to_string())
 }
@@ -4179,6 +4248,192 @@ fn cmd_recent(db: &PathBuf, limit: usize, json: bool, out: Option<&Path>) -> Res
             };
             write_out_file(p, text.as_bytes())?;
             eprintln!("{}", recent_out_note(items.len(), p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Cap the `annots --limit` option at the `docs`/`recent` row budget:
+/// `0` renders one row and anything above `500` is truncated to `500`
+/// (`usize::clamp`, mirroring [`docs_limit`]); 1..=500 passes through
+/// untouched (no hard error).
+fn annots_limit(limit: usize) -> usize {
+    limit.clamp(1, 500)
+}
+
+/// Canonicalise `annots --kind` through the shared [`normalize_fav_kind`]
+/// mapping: the three Ukrainian labels the CLI's annotation filters speak
+/// («коментар»→comment, «виділення»→highlight, «закладка»→bookmark, the
+/// plural forms included) and the English tokens the rows print, all
+/// case-insensitive. An unknown kind is a clear error (exit 1 through
+/// `main`, the `normalize_fmt` rule).
+fn normalize_annots_kind(kind: &str) -> Result<&'static str> {
+    normalize_fav_kind(kind)
+}
+
+/// The report body of `annots` (shared by stdout and `--out` so the two
+/// cannot drift): «Анотації документа {nreg}:» header, then one
+/// `recent`-style two-line block per row through the shared
+/// [`recent_row_lines`] renderer (input order — the SQL orders
+/// `created_at DESC, id DESC`, the exact `recent-annots` row order), then
+/// the verdict «разом: {count}» over the RENDERED rows (post-`--limit`,
+/// the `recent` rule). Informational: a document without annotations (or
+/// an unknown nreg) renders header + «немає анотацій» + «разом: 0» and
+/// the run still exits 0 (the `docs` zero-rows rule — the header always
+/// renders, so the `--out` file is never BOM-alone).
+fn annots_doc_lines(nreg: &str, rows: &[RecentRow]) -> Vec<String> {
+    let mut lines = vec![format!("Анотації документа {nreg}:")];
+    if rows.is_empty() {
+        lines.push("немає анотацій".to_string());
+    }
+    for r in rows {
+        lines.extend(recent_row_lines(r));
+    }
+    lines.push(format!("разом: {}", rows.len()));
+    lines
+}
+
+/// The `--json` body of `annots` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty
+/// `{"annots":[{created_at,kind,nreg,text,title},…],"doc":nreg,"total":N}`
+/// object over the rendered rows (the `docs`/`favorites` envelope idiom);
+/// the row objects come from the shared [`recent_row_json`], so they
+/// match `recent-annots` exactly. Map keys sort, so «annots» < «doc» <
+/// «total» and the row keys keep their alphabetical order inside every
+/// entry; `total` counts the LISTED rows (the «разом» rule,
+/// post-`--limit`). stdout prints exactly this string plus a trailing
+/// newline; the `--out` file receives the same bytes BOM-less (machine
+/// data, the house JSON rule).
+fn annots_doc_json(nreg: &str, rows: &[RecentRow]) -> String {
+    let items: Vec<serde_json::Value> = rows.iter().map(recent_row_json).collect();
+    let value = serde_json::json!({
+        "annots": items,
+        "doc": nreg,
+        "total": rows.len(),
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `annots --out` has written `file`
+/// (`n` rendered annotation rows, the same wording in both modes, the
+/// [`docs_list_out_note`] style): `[annots] записано {n} анотацій → {file}`.
+fn annots_doc_out_note(n: usize, file: &Path) -> String {
+    format!("[annots] записано {n} анотацій → {}", file.display())
+}
+
+/// Offline «what did I annotate in this document» (`annots`): the
+/// per-document annotation list — the drill-down companion of
+/// [`cmd_recent`] (the `docs`-to-`orgs` relationship, onto annotations).
+/// Never builds a client, never touches the network. A missing index
+/// file is a hard error («індекс не знайдено: …», the `stats`/`verify`
+/// rule); `--kind` passes the shared [`normalize_annots_kind`] (an
+/// unknown kind exits 1 with the house validation message) and
+/// `--limit` [`annots_limit`] (clamped to 1..=500, never an error). The
+/// rows come straight from the `annotations` table through the
+/// connection `rada_db::open` returns (the `recent` direct-SQL idiom):
+/// `nreg` and the canonical kind token bound as parameters, one
+/// statement serving both modes — `(?2 = '' OR kind = ?2)` with the
+/// empty string as the no-filter sentinel (the table's `CHECK` pins kind
+/// to the three nonempty tokens, so it can never match a row); `LIMIT`
+/// interpolated from the clamped `usize` (ASCII digits only — the same
+/// interpolation-safety reasoning as the `docs` limit). Rows are ordered
+/// exactly like `recent-annots`: `created_at DESC` with an `id DESC`
+/// tie-break. The title is resolved once per run (every row shares the
+/// nreg; `title_by_nreg`, the `export` / `cache --search` style — a miss
+/// keeps the empty title and the rows render their own nreg, the
+/// `title||nreg` rule). Informational: a document without annotations
+/// (or an unknown nreg) exits 0 with the zero-rows report. With `--out`
+/// the exact stdout body goes to the file (parent dirs created) and
+/// nothing prints to stdout: the plain report is written UTF-8 with a
+/// BOM (Excel-friendly, like search/arrivals/stats/verify), the `--json`
+/// body BOM-less; one `[annots] записано {n} анотацій → {file}` note
+/// goes to stderr. The header always renders, so the file is never
+/// BOM-alone.
+fn cmd_annots(
+    db: &PathBuf,
+    nreg: &str,
+    kind: Option<&str>,
+    limit: usize,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    // the shared `favorites --kind` validator: absent keeps every kind,
+    // present must fold to one of the three canonical tokens
+    let kind = match kind {
+        Some(k) => Some(normalize_annots_kind(k)?),
+        None => None,
+    };
+    let limit = annots_limit(limit);
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    // one statement for both modes: `nreg` and the canonical kind token
+    // are bound as parameters (never interpolated); the empty `kind`
+    // disables the kind test (the CHECK constraint keeps stored kinds
+    // nonempty); `limit` is interpolated only after `annots_limit` — a
+    // clamped usize renders as plain ASCII digits, no SQL metacharacters
+    // possible
+    let sql = format!(
+        "SELECT nreg, kind, text, created_at FROM annotations
+         WHERE nreg = ?1 AND (?2 = '' OR kind = ?2)
+         ORDER BY created_at DESC, id DESC LIMIT {limit}"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .context("prepare annots list")?;
+    // one offline title lookup for the whole run: every row belongs to
+    // the same nreg (the `recent` per-row lookup degenerates here); an
+    // nreg missing from `docs` keeps the empty title and the rows then
+    // render their own nreg (the `title||nreg` rule)
+    let title = rada_db::title_by_nreg(&conn, nreg).unwrap_or_default();
+    let kind_tok = kind.unwrap_or("");
+    let mut rows = stmt
+        .query_map([nreg, kind_tok], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, String>(3)?,
+            ))
+        })
+        .context("run annots list")?;
+    let mut items: Vec<RecentRow> = Vec::new();
+    while let Some((row_nreg, row_kind, text, created_at)) = rows.next().transpose()? {
+        items.push(RecentRow {
+            nreg: row_nreg,
+            kind: row_kind,
+            created_at,
+            text,
+            title: title.clone(),
+        });
+    }
+    if json {
+        let body = annots_doc_json(nreg, &items);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", annots_doc_out_note(items.len(), p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = annots_doc_lines(nreg, &items);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout report (the header always renders, so never
+            // BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", annots_doc_out_note(items.len(), p));
         }
         None => {
             for line in lines {
@@ -6104,7 +6359,9 @@ mod tests {
         days_to_ymd, recent_days_from_civil, ymd_to_days,
         annot_json_body, annot_json_out_note, annot_list_out_note, annot_out_note,
         annot_search_lines, annot_search_match, annot_search_out_note, annot_table_lines,
-        annot_text_file_note, arrivals_date_key, arrivals_json_body, arrivals_json_out_note,
+        annot_text_file_note,
+        annots_doc_json, annots_doc_lines, annots_doc_out_note, annots_limit,
+        arrivals_date_key, arrivals_json_body, arrivals_json_out_note,
         arrivals_lines,
         arrivals_out_note, backfill_out_note, backfill_summary, backfill_summary_lines,
         cache_dump_filename, cache_dump_lines,
@@ -6119,7 +6376,7 @@ mod tests {
         grep_body, grep_render,
         export_markdown, export_out_note, export_plain, favorites_json_body,
         favorites_json_out_note, favorites_lines, favorites_out_note, facet_lines, filter_since,
-        new_nregs, normalize_fav_kind, normalize_hits_format, normalize_month_year,
+        new_nregs, normalize_annots_kind, normalize_fav_kind, normalize_hits_format, normalize_month_year,
         normalize_recent_days, normalize_recent_limit, normalize_year_arg, check_year_range,
         hits_lines, hits_md_lines, hits_out_note,
         months_json, months_lines, months_out_note,
@@ -8560,6 +8817,148 @@ mod tests {
         assert_eq!(docs_limit(0), 1);
         assert_eq!(docs_limit(501), 500);
         assert_eq!(docs_limit(usize::MAX), 500);
+    }
+
+    #[test]
+    fn annots_doc_lines_renders_header_rows_verdict_and_empty() {
+        // header «Анотації документа {nreg}:» + one `recent`-style
+        // two-line block per row through the shared `recent_row_lines`
+        // renderer («[{kind}] {title||nreg} · {created_at}» + the
+        // indented 60-char folded text; a bookmark with empty text
+        // renders no text line) + «разом: N» over the RENDERED rows
+        // (post-`--limit`, the `recent` rule)
+        let rows = vec![
+            RecentRow {
+                nreg: "1556-18".into(),
+                kind: "highlight".into(),
+                created_at: "2026-10-29 09:00:00".into(),
+                text: "Стаття 3 — Вища освіта".into(),
+                title: "Про вищу освіту".into(),
+            },
+            RecentRow {
+                nreg: "1556-18".into(),
+                kind: "bookmark".into(),
+                created_at: "2026-10-28 07:30:00".into(),
+                text: "  ".into(),
+                title: "Про вищу освіту".into(),
+            },
+        ];
+        assert_eq!(
+            annots_doc_lines("1556-18", &rows),
+            vec![
+                "Анотації документа 1556-18:".to_string(),
+                "[highlight] Про вищу освіту · 2026-10-29 09:00:00".to_string(),
+                "  Стаття 3 — Вища освіта".to_string(),
+                "[bookmark] Про вищу освіту · 2026-10-28 07:30:00".to_string(),
+                "разом: 2".to_string(),
+            ]
+        );
+        // an unindexed nreg (empty title): the row renders its own nreg
+        // (the shared `title||nreg` rule)
+        let anon = RecentRow {
+            nreg: "9-9".into(),
+            kind: "comment".into(),
+            created_at: "2026-10-30 10:00:00".into(),
+            text: "нотатка".into(),
+            title: String::new(),
+        };
+        assert_eq!(
+            annots_doc_lines("9-9", &[anon]),
+            vec![
+                "Анотації документа 9-9:".to_string(),
+                "[comment] 9-9 · 2026-10-30 10:00:00".to_string(),
+                "  нотатка".to_string(),
+                "разом: 1".to_string(),
+            ]
+        );
+        // doc without annotations / unknown nreg: the informational
+        // empty triple (header + «немає анотацій» + «разом: 0», exit 0),
+        // the `docs` zero-rows rule — the header always renders
+        assert_eq!(
+            annots_doc_lines("999999", &[]),
+            vec![
+                "Анотації документа 999999:".to_string(),
+                "немає анотацій".to_string(),
+                "разом: 0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn annots_doc_json_renders_alphabetical_keys_and_total() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «annots» < «doc» < «total» and the shared
+        // `recent-annots` row keys «created_at»/«kind»/«nreg»/«text»/
+        // «title» keep their alphabetical order inside every entry;
+        // `total` counts the listed rows (the «разом» rule, post-limit)
+        let rows = vec![RecentRow {
+            nreg: "1556-18".into(),
+            kind: "comment".into(),
+            created_at: "2026-10-29 09:00:00".into(),
+            text: "корисний".into(),
+            title: "Про вищу освіту".into(),
+        }];
+        let body = annots_doc_json("1556-18", &rows);
+        assert_eq!(
+            body,
+            "{\n  \"annots\": [\n    {\n      \"created_at\": \"2026-10-29 09:00:00\",\n      \"kind\": \"comment\",\n      \"nreg\": \"1556-18\",\n      \"text\": \"корисний\",\n      \"title\": \"Про вищу освіту\"\n    }\n  ],\n  \"doc\": \"1556-18\",\n  \"total\": 1\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // doc without annotations / unknown nreg: a well-formed empty
+        // body with total 0
+        assert_eq!(
+            annots_doc_json("999999", &[]),
+            "{\n  \"annots\": [],\n  \"doc\": \"999999\",\n  \"total\": 0\n}"
+        );
+    }
+
+    #[test]
+    fn annots_doc_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//a.txt");
+        let line = annots_doc_out_note(30, file);
+        assert_eq!(
+            line,
+            format!("[annots] записано 30 анотацій → {}", file.display())
+        );
+        assert!(line.starts_with("[annots] "));
+        assert!(line.contains("30"));
+        assert!(line.contains("анотацій"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the informational zero rule: the note still formats with 0 rows
+        assert_eq!(
+            annots_doc_out_note(0, file),
+            format!("[annots] записано 0 анотацій → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn annots_kind_and_limit_validation() {
+        // `annots --kind` folds through the shared `favorites --kind`
+        // mapping: the three Ukrainian labels (plus their plural and the
+        // English canonical forms, like the GUI chips) are accepted
+        // case-insensitively and trimmed; garbage fails with the house
+        // validation message (exit 1 through `main`); `--limit` clamps
+        // to 1..=500 (never a hard error, the `docs_limit` budget idiom)
+        assert_eq!(normalize_annots_kind("коментар").unwrap(), "comment");
+        assert_eq!(normalize_annots_kind("ВИДІЛЕННЯ").unwrap(), "highlight");
+        assert_eq!(normalize_annots_kind(" Закладка ").unwrap(), "bookmark");
+        assert_eq!(normalize_annots_kind("коментарі").unwrap(), "comment");
+        assert_eq!(normalize_annots_kind("закладки").unwrap(), "bookmark");
+        assert_eq!(normalize_annots_kind("Comment").unwrap(), "comment");
+        let err = normalize_annots_kind("garbage").unwrap_err().to_string();
+        assert_eq!(
+            err,
+            "невідомий тип анотації garbage (comment|highlight|bookmark)"
+        );
+        assert_eq!(annots_limit(100), 100);
+        assert_eq!(annots_limit(1), 1);
+        assert_eq!(annots_limit(500), 500);
+        assert_eq!(annots_limit(0), 1);
+        assert_eq!(annots_limit(501), 500);
+        assert_eq!(annots_limit(usize::MAX), 500);
     }
 
     #[test]

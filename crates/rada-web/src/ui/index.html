@@ -547,6 +547,15 @@
     flex: 1; min-width: 200px; background: var(--panel2); color: var(--text);
     border: 1px solid var(--border); border-radius: 6px; padding: 4px 8px; font-size: 14px;
   }
+  /* «експорт .csv» chip on the favorites controls row: the arrivals
+     #arr-export-csv chip language (muted pill, accent hover); while the
+     visible list is empty the button is disabled and the global
+     button:disabled rule dims it. */
+  #fav-export-csv {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #fav-export-csv:hover { color: var(--text); border-color: var(--accent); }
   /* «Обране» page: kind filter chips + annotation cards (same tag colors as
      the reader's annotation list, driven only by theme variables). */
   #fav-filters .chip {
@@ -750,6 +759,8 @@
       <span id="fav-count" class="hint"></span>
       <button id="fav-export" type="button" title="Резервна копія всіх анотацій у файл JSON">⬇ Експорт .json</button>
       <button id="btn-fav-export-txt" type="button" title="Вивантажити показані анотації у текстовий файл">експорт .txt</button>
+      <button id="fav-export-csv" type="button" disabled
+        title="зберегти показані анотації у файл .csv">експорт .csv</button>
       <button id="fav-import" type="button" title="Додати анотації з резервної копії JSON">⬆ Імпорт .json</button>
       <input id="fav-import-file" type="file" accept=".json,application/json" hidden>
       <span id="fav-status" class="hint"></span>
@@ -3348,6 +3359,7 @@ async function loadFavorites() {
   } catch (e) {
     favItems = [];
     $("fav-count").textContent = "";
+    $("fav-export-csv").disabled = true; // failed load: nothing on screen to export
     box.textContent = "Помилка: " + e.message;
   }
 }
@@ -3463,6 +3475,10 @@ function renderFavorites() {
   const items = sorted
     .filter(a => !favKind || a.kind === favKind)
     .filter(a => favRowMatches(a, needle));
+  // The «експорт .csv» gate: nothing on screen means nothing to export
+  // (the global button:disabled rule dims the chip; the markup starts it
+  // disabled until the first render shows rows).
+  $("fav-export-csv").disabled = !items.length;
   $("fav-count").textContent = favItems.length
     ? "Збережено: " + favItems.length + " " +
       plural(favItems.length, "анотація", "анотації", "анотацій")
@@ -3571,6 +3587,52 @@ function exportFavTxt() {
   URL.revokeObjectURL(url);
 }
 $("btn-fav-export-txt").onclick = () => exportFavTxt();
+// «експорт .csv»: the same visible pipeline renderFavorites runs for the
+// «показано X з Y» count (favSorted + the active kind chip + favRowMatches
+// over the #fav-filter box) serialized through the arrivals CSV format
+// family — UTF-8 BOM up front (Excel opens Cyrillic correctly), the shared
+// arrCsvEsc quoting, rows in the on-screen order — and handed over through
+// the same Blob / object-URL download idiom under the fixed favorites.csv
+// name (the novy-dokumenty.csv pattern). No network, silent on failure.
+function visibleFavorites() {
+  const sorted = favSorted(favItems, favSort);
+  const needle = $("fav-filter").value;
+  return sorted
+    .filter(a => !favKind || a.kind === favKind)
+    .filter(a => favRowMatches(a, needle));
+}
+
+// One pure builder: visible rows → CSV text, the arrivals arrivalsCsv
+// format family (BOM + header row + arrCsvEsc per field, rows appended in
+// the given order, no sort or filter in here). Columns mirror what a
+// favorites row carries on screen: the document nreg, its title, the
+// annotation kind, the created_at save timestamp and the annotation text.
+function favoritesCsv(rows) {
+  let out = "\uFEFFnreg,title,kind,created_at,text\n";
+  for (const r of rows) {
+    out += arrCsvEsc(r.nreg) + "," + arrCsvEsc(r.title) + "," +
+      arrCsvEsc(r.kind) + "," + arrCsvEsc(r.created_at) + "," +
+      arrCsvEsc(r.text) + "\n";
+  }
+  return out;
+}
+
+// The exporter feeds the builder the visible list only (never the raw
+// favItems); the renderFavorites gate keeps the button disabled while that
+// list is empty, so every click ships real rows.
+function exportFavCsv() {
+  const csv = favoritesCsv(visibleFavorites());
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "favorites.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+$("fav-export-csv").onclick = () => exportFavCsv();
 $("fav-import").onclick = () => $("fav-import-file").click();
 $("fav-import-file").addEventListener("change", async (ev) => {
   const f = ev.target.files && ev.target.files[0];
