@@ -66,6 +66,15 @@
 //!               to write the report; informational — exits 1 only on a
 //!               missing index, neither filter given or a malformed
 //!               `--year`);
+//! - `doc`       offline one-document summary straight from the local
+//!               index — the offline twin of the LIVE `card` command
+//!               (which stays the network path, untouched): the `docs`
+//!               row of one document as labeled field lines, status and
+//!               publisher labels from the offline `stan` / `organs`
+//!               dictionaries, text-cache verdict from `docs_text`
+//!               (`--json` for machine-readable output, `--out` to write
+//!               the card; exits 1 on a missing index or an unknown
+//!               nreg);
 //! - `annots`  offline per-document annotation list — the drill-down
 //!               companion of `recent-annots`: the annotations of one
 //!               document, newest first (`NREG` required, `--kind` keeps
@@ -788,6 +797,39 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Offline one-document summary straight from the local index: the
+    /// offline twin of the LIVE `card` command (which stays the network
+    /// path — this command never touches it). The `docs` row of one
+    /// document renders as labeled field lines: the title alone first,
+    /// then НРЕГ / Статус / Орган / Дата прийняття / Дата оприлюднення /
+    /// Текст. The status label resolves from the offline `stan`
+    /// dictionary (a missing row prints the raw number), the publisher
+    /// label from the offline `organs` dictionary via the TEXT `org_num`
+    /// key exactly like the `docs` header (a non-numeric key or a dict
+    /// miss keeps the raw key; an empty key renders «—»); dates go
+    /// through the `recent` `dd.mm.yyyy` idiom and a value that is not a
+    /// full 8-digit date renders «—»; the «Текст: кешований / не
+    /// кешований» verdict reads `docs_text` (any cached body for the
+    /// nreg, the `cache --nreg` COUNT idiom). Pure offline: only a
+    /// missing index («індекс не знайдено: …») or an unknown nreg
+    /// («документ не знайдено: …») exit 1.
+    Doc {
+        /// Document nreg to summarise (required).
+        nreg: String,
+        /// Emit the JSON body
+        /// (`{"cached":…,"nazva":…,"nreg":…,"org_date":…,"org_label":…,
+        /// "org_num":…,"poddat":…,"status":…,"status_label":…}` — pretty,
+        /// keys alphabetical, raw 8-digit dates or `null`, the house
+        /// machine-data rule) instead of the report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less; the `[doc] записано картку …` note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Offline «what condition is my index in»: document-status
     /// distribution on the `status` column of `docs` — how many documents
     /// are чинний / не чинний / …, with labels resolved from the offline
@@ -1106,6 +1148,7 @@ fn run() -> Result<()> {
             json,
             out,
         } => cmd_docs(&cli.db, org.as_deref(), year.as_deref(), limit, json, out.as_deref()),
+        Cmd::Doc { nreg, json, out } => cmd_doc(&cli.db, &nreg, json, out.as_deref()),
         Cmd::Statuses { json, out } => {
             cmd_statuses(&cli.db, json, out.as_deref())
         }
@@ -6574,6 +6617,271 @@ fn cmd_docs(
     Ok(())
 }
 
+/// One `doc` card: the raw `docs` row of a single document plus the
+/// offline-resolved labels and the text-cache verdict — the data the pure
+/// [`doc_card_lines`] / [`doc_card_json`] renderers share (stdout and
+/// `--out` render the same value, so the two cannot drift). `nreg` is the
+/// key as queried, `nazva`/`org_num`/`org_date`/`poddat` the raw column
+/// values, `status` the INTEGER `status` id, `status_label` the `stan`
+/// dictionary label (a missing row keeps the raw number as a string),
+/// `org_label` the `organs` label resolved from the TEXT `org_num` key
+/// (the `docs` header rule: a non-numeric key or a dict miss keeps the
+/// raw key), `cached` whether `docs_text` holds any body for the nreg.
+struct DocCard {
+    nreg: String,
+    nazva: String,
+    status: i64,
+    status_label: String,
+    org_num: String,
+    org_label: String,
+    org_date: String,
+    poddat: String,
+    cached: bool,
+}
+
+/// The `doc` card's date rule: a full 8-digit ASCII string is a real
+/// `YYYYMMDD` date (the same digit test [`fmt_date`] applies before
+/// reformatting); an empty or partial value is «no date» — the plain
+/// report renders «—», the JSON body `null`.
+fn doc_card_has_date(d: &str) -> bool {
+    d.len() == 8 && d.chars().all(|c| c.is_ascii_digit())
+}
+
+/// The stderr text `doc` fails with for an nreg missing from `docs`
+/// (`документ не знайдено: {nreg}` — the «індекс не знайдено» error
+/// family, exit 1 through `main`); factored out so the wording is one
+/// pure string both the command and the tests check.
+fn doc_not_found_msg(nreg: &str) -> String {
+    format!("документ не знайдено: {nreg}")
+}
+
+/// The plain report of `doc` (shared by stdout and `--out` so the two
+/// cannot drift): the title alone as the first line, then one labeled
+/// field per line — «НРЕГ: {nreg}», «Статус: {status_label}»,
+/// «Орган: {org_label}» (an empty/whitespace-only `org_num` renders «—»,
+/// whatever the label field holds), «Дата прийняття: {dd.mm.yyyy}» and
+/// «Дата оприлюднення: {dd.mm.yyyy}» through the `recent` [`fmt_date`]
+/// idiom ([`doc_card_has_date`] decides; anything else renders «—») and
+/// the «Текст: кешований» / «Текст: не кешований» cache verdict. The
+/// title trims like the live `card` summary; the other fields render as
+/// resolved.
+fn doc_card_lines(card: &DocCard) -> Vec<String> {
+    let date_or_dash = |d: &str| -> String {
+        if doc_card_has_date(d) {
+            fmt_date(d)
+        } else {
+            "—".to_string()
+        }
+    };
+    vec![
+        card.nazva.trim().to_string(),
+        format!("НРЕГ: {}", card.nreg),
+        format!("Статус: {}", card.status_label),
+        format!(
+            "Орган: {}",
+            if card.org_num.trim().is_empty() {
+                "—".to_string()
+            } else {
+                card.org_label.clone()
+            }
+        ),
+        format!("Дата прийняття: {}", date_or_dash(&card.org_date)),
+        format!("Дата оприлюднення: {}", date_or_dash(&card.poddat)),
+        format!(
+            "Текст: {}",
+            if card.cached { "кешований" } else { "не кешований" }
+        ),
+    ]
+}
+
+/// The `--json` body of `doc` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty
+/// `{"cached":bool,"nazva":…,"nreg":…,"org_date":…,"org_label":…,
+/// "org_num":…,"poddat":…,"status":N,"status_label":…}` object built as
+/// a hand-rolled `serde_json::Value` like the other commands' JSON bodies
+/// (map keys sort byte-wise, so the nine keys keep their alphabetical
+/// order — inside `nreg`/`nazva` the second byte decides, «a» < «r»).
+/// `nreg`/`nazva`/`org_num`/`org_label` are the raw machine strings (no
+/// dash placeholders in JSON: the empty `org_num` stays `""` and the
+/// unlabelled publisher keeps the raw key), `status` the raw INTEGER id
+/// and `status_label` the resolved label (the raw number as a string on
+/// a dict miss); `org_date`/`poddat` carry the raw 8-digit machine date
+/// like the other JSON exports, or `null` when the column is not a full
+/// 8-digit date (the [`doc_card_has_date`] rule — the JSON twin of the
+/// plain report's «—»). stdout prints exactly this string plus a
+/// trailing newline; the `--out` file receives the same bytes BOM-less
+/// (machine data, the house JSON rule).
+fn doc_card_json(card: &DocCard) -> String {
+    let date_or_null = |d: &str| -> serde_json::Value {
+        if doc_card_has_date(d) {
+            serde_json::Value::from(d)
+        } else {
+            serde_json::Value::Null
+        }
+    };
+    let value = serde_json::json!({
+        "cached": card.cached,
+        "nreg": card.nreg,
+        "nazva": card.nazva,
+        "org_date": date_or_null(&card.org_date),
+        "org_label": card.org_label,
+        "org_num": card.org_num,
+        "poddat": date_or_null(&card.poddat),
+        "status": card.status,
+        "status_label": card.status_label,
+    });
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `doc --out` has written `file` (both the
+/// plain card and the `--json` body, the same wording):
+/// `[doc] записано картку {nreg} → {file}` — the single-object label of
+/// the `[tag] записано …` note family, naming the document instead of a
+/// row count (like the live `card` note names its nreg).
+fn doc_card_out_note(nreg: &str, file: &Path) -> String {
+    format!("[doc] записано картку {nreg} → {}", file.display())
+}
+
+/// Offline one-document summary (`doc`): the offline twin of the LIVE
+/// [`cmd_card`] — the `docs` row of one document straight from the local
+/// index. Never builds a client, never touches the network. A missing
+/// index file is a hard error («індекс не знайдено: …», the
+/// `stats`/`verify` rule); an nreg absent from `docs` is the sibling
+/// hard error «документ не знайдено: {nreg}» ([`doc_not_found_msg`],
+/// exit 1 through `main`). The row comes straight from `docs` through
+/// the connection `rada_db::open` returns (the `verify` / `dict-stats`
+/// direct-SQL idiom, all values bound as parameters): an existence
+/// `COUNT(*)` first (the CLI crate has no rusqlite dep of its own, so
+/// the no-row case is detected before the row is fetched and a real SQL
+/// error stays in the `query doc card` context instead of masquerading
+/// as «документ не знайдено»), then the field SELECT. The status label
+/// reads the offline `stan` dictionary (the `statuses` `query_row`
+/// idiom) with the raw number as the fallback; the publisher label
+/// resolves the TEXT `org_num` key through the offline `organs`
+/// dictionary exactly like the [`cmd_docs`] header (nonzero-parse +
+/// dict `query_row`, a miss keeps the raw key, an empty key renders «—»
+/// in the plain report); the cache verdict counts the `docs_text` rows
+/// for the nreg (any edition, the `cache --nreg` COUNT idiom). With
+/// `--out` the exact stdout body goes to the file (parent dirs created)
+/// and nothing prints to stdout: the plain report is written UTF-8 with
+/// a BOM (Excel-friendly, like search/arrivals/stats/verify), the
+/// `--json` body BOM-less; one `[doc] записано картку {nreg} → {file}`
+/// note goes to stderr. The card always renders all seven lines, so the
+/// file is never BOM-alone.
+fn cmd_doc(db: &PathBuf, nreg: &str, json: bool, out: Option<&Path>) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    // existence first (the `stats` COUNT idiom, bound as a parameter):
+    // the unknown-nreg hard error must not swallow a real SQL error, and
+    // the CLI crate has no rusqlite dep to name the no-row variant with
+    let found: i64 = conn
+        .query_row("SELECT COUNT(*) FROM docs WHERE nreg = ?1", [nreg], |r| r.get(0))
+        .context("query doc card")?;
+    if found == 0 {
+        return Err(anyhow::anyhow!("{}", doc_not_found_msg(nreg)));
+    }
+    let (nazva, status, org_num, org_date, poddat) = conn
+        .query_row(
+            "SELECT nazva, status, org_num, org_date, poddat FROM docs WHERE nreg = ?1",
+            [nreg],
+            |r| {
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, i64>(1)?,
+                    r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
+                    r.get::<_, String>(4)?,
+                ))
+            },
+        )
+        .context("query doc card")?;
+    // the `statuses` stan-dictionary idiom with the raw-number fallback:
+    // the dict label wins where populated (the output then matches
+    // `dict --kind stan`), a missing row or an empty label prints the
+    // raw status number
+    let status_label = conn
+        .query_row(
+            "SELECT label FROM dict WHERE kind = 'stan' AND id = ?1",
+            [status],
+            |r| r.get::<_, String>(0),
+        )
+        .ok()
+        .filter(|l| !l.trim().is_empty())
+        .unwrap_or_else(|| status.to_string());
+    // the `docs` header label rule on the TEXT `org_num` key: a numeric
+    // nonzero key resolves through the `organs` dictionary, a
+    // non-numeric / zero / empty key or a dict miss keeps the raw key
+    let org_label = {
+        let label = match org_num.trim().parse::<i64>() {
+            Ok(id) if id != 0 => conn
+                .query_row(
+                    "SELECT label FROM dict WHERE kind = 'organs' AND id = ?1",
+                    [id],
+                    |r| r.get::<_, String>(0),
+                )
+                .unwrap_or_default(),
+            _ => String::new(),
+        };
+        if label.is_empty() {
+            org_num.clone()
+        } else {
+            label
+        }
+    };
+    // body-cached verdict (the `cache --nreg` COUNT idiom): any cached
+    // body row for this nreg — the current edition or a historical one
+    let cached: bool = conn
+        .query_row(
+            "SELECT COUNT(*) FROM docs_text WHERE nreg = ?1",
+            [nreg],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0)
+        > 0;
+    let card = DocCard {
+        nreg: nreg.to_string(),
+        nazva,
+        status,
+        status_label,
+        org_num,
+        org_label,
+        org_date,
+        poddat,
+        cached,
+    };
+    if json {
+        let body = doc_card_json(&card);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", doc_card_out_note(nreg, p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = doc_card_lines(&card);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout report (the card always renders all seven lines, so
+            // the file is never BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", doc_card_out_note(nreg, p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One `statuses` histogram row: the status id as stored in the INTEGER
 /// `status` column (0 is the «status unknown» default), its label resolved
 /// from the offline `stan` dictionary (fallback: the built-in
@@ -6877,6 +7185,8 @@ mod tests {
         dict_stats_lines, dict_stats_out_note, dates_json, dates_lines, dates_out_note,
         dicts_json, dicts_limit, dicts_lines, dicts_out_note, normalize_dicts_kind,
         check_docs_filters, docs_limit, docs_list_json, docs_list_lines, docs_list_out_note,
+        doc_card_has_date, doc_card_json, doc_card_lines, doc_card_out_note, doc_not_found_msg,
+        DocCard,
         export_html,
         grep_body, grep_render,
         export_markdown, export_out_note, export_plain, favorites_json_body,
@@ -9642,6 +9952,186 @@ mod tests {
             let err = normalize_year_arg(Some(bad)).unwrap_err().to_string();
             assert_eq!(err, "рік має бути РРРР (наприклад 2026)");
         }
+    }
+
+    #[test]
+    fn doc_card_lines_renders_labels_dates_and_dashes() {
+        // full card: title alone first, then one labeled field per line;
+        // 8-digit dates render through the `recent` dd.mm.yyyy idiom
+        let full = DocCard {
+            nreg: "2755-17".into(),
+            nazva: "Податковий кодекс України".into(),
+            status: 5,
+            status_label: "Чинний".into(),
+            org_num: "2755-VI".into(),
+            org_label: "Верховна Рада України".into(),
+            org_date: "20101202".into(),
+            poddat: "20260917".into(),
+            cached: true,
+        };
+        assert_eq!(
+            doc_card_lines(&full),
+            vec![
+                "Податковий кодекс України".to_string(),
+                "НРЕГ: 2755-17".to_string(),
+                "Статус: Чинний".to_string(),
+                "Орган: Верховна Рада України".to_string(),
+                "Дата прийняття: 02.12.2010".to_string(),
+                "Дата оприлюднення: 17.09.2026".to_string(),
+                "Текст: кешований".to_string(),
+            ]
+        );
+        // sparse card: the title trims like the live `card` summary, an
+        // empty org_num renders «Орган: —» whatever the label field
+        // holds, a partial and an empty date render «—», an uncached
+        // body the «не кешований» verdict
+        let sparse = DocCard {
+            nreg: "1714-98-п".into(),
+            nazva: "  Про порядок внесення  ".into(),
+            status: 1,
+            status_label: "Втратив чинність".into(),
+            org_num: String::new(),
+            org_label: String::new(),
+            org_date: "2003".into(),
+            poddat: String::new(),
+            cached: false,
+        };
+        assert_eq!(
+            doc_card_lines(&sparse),
+            vec![
+                "Про порядок внесення".to_string(),
+                "НРЕГ: 1714-98-п".to_string(),
+                "Статус: Втратив чинність".to_string(),
+                "Орган: —".to_string(),
+                "Дата прийняття: —".to_string(),
+                "Дата оприлюднення: —".to_string(),
+                "Текст: не кешований".to_string(),
+            ]
+        );
+        // a whitespace-only org_num is «no publisher» too, and a raw
+        // numeric-key fallback (dict miss keeps the raw key) renders it
+        let raw_key = DocCard {
+            nreg: "1736-98-п".into(),
+            nazva: "Про порядок".into(),
+            status: 0,
+            status_label: "0".into(),
+            org_num: "   ".into(),
+            org_label: "1736".into(),
+            org_date: "19981103".into(),
+            poddat: "199811039".into(),
+            cached: true,
+        };
+        let lines = doc_card_lines(&raw_key);
+        assert_eq!(lines[3], "Орган: —");
+        assert_eq!(lines[5], "Дата оприлюднення: —");
+        // a dict miss on a numeric key: the raw key renders as the label
+        // (the command keeps the key in org_label when the dict has nothing)
+        let fallback = DocCard {
+            org_num: "1736".into(),
+            org_label: "1736".into(),
+            ..plain_card()
+        };
+        assert_eq!(doc_card_lines(&fallback)[3], "Орган: 1736");
+    }
+
+    /// Shared full-value card the JSON / note tests reuse (and the
+    /// `..plain_card()` struct-update base inside the lines test).
+    fn plain_card() -> DocCard {
+        DocCard {
+            nreg: "1556-18".into(),
+            nazva: "Про вищу освіту".into(),
+            status: 5,
+            status_label: "Чинний".into(),
+            org_num: "1556-VII".into(),
+            org_label: "Верховна Рада України".into(),
+            org_date: "20140701".into(),
+            poddat: "20261008".into(),
+            cached: true,
+        }
+    }
+
+    #[test]
+    fn doc_card_json_renders_alphabetical_keys_and_null_dates() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort byte-wise, so the nine keys hold their alphabetical order
+        // cached < nazva < nreg < org_date < org_label < org_num <
+        // poddat < status < status_label (inside `nreg`/`nazva` the
+        // second byte decides: «a» < «r»); dates stay raw 8-digit
+        // machine strings, the status stays the raw INTEGER id
+        let body = doc_card_json(&plain_card());
+        assert_eq!(
+            body,
+            "{\n  \"cached\": true,\n  \"nazva\": \"Про вищу освіту\",\n  \"nreg\": \"1556-18\",\n  \"org_date\": \"20140701\",\n  \"org_label\": \"Верховна Рада України\",\n  \"org_num\": \"1556-VII\",\n  \"poddat\": \"20261008\",\n  \"status\": 5,\n  \"status_label\": \"Чинний\"\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        let pos = |k: &str| body.find(&format!("\"{k}\":")).unwrap();
+        assert!(
+            pos("cached") < pos("nazva")
+                && pos("nazva") < pos("nreg")
+                && pos("nreg") < pos("org_date")
+                && pos("org_date") < pos("org_label")
+                && pos("org_label") < pos("org_num")
+                && pos("org_num") < pos("poddat")
+                && pos("poddat") < pos("status")
+                && pos("status") < pos("status_label")
+        );
+        // cached=false flips the flag; partial / empty dates render
+        // null; the empty org fields stay machine-raw ("" not «—»)
+        let sparse = DocCard {
+            nreg: "1714-98-п".into(),
+            nazva: "Про порядок".into(),
+            status: 1,
+            status_label: "Втратив чинність".into(),
+            org_num: String::new(),
+            org_label: String::new(),
+            org_date: String::new(),
+            poddat: "2003".into(),
+            cached: false,
+        };
+        assert_eq!(
+            doc_card_json(&sparse),
+            "{\n  \"cached\": false,\n  \"nazva\": \"Про порядок\",\n  \"nreg\": \"1714-98-п\",\n  \"org_date\": null,\n  \"org_label\": \"\",\n  \"org_num\": \"\",\n  \"poddat\": null,\n  \"status\": 1,\n  \"status_label\": \"Втратив чинність\"\n}"
+        );
+    }
+
+    #[test]
+    fn doc_card_out_note_formats_nreg_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//d.txt");
+        let line = doc_card_out_note("2755-17", file);
+        assert_eq!(
+            line,
+            format!("[doc] записано картку 2755-17 → {}", file.display())
+        );
+        assert!(line.starts_with("[doc] "));
+        assert!(line.contains("картку"));
+        assert!(line.contains("2755-17"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+    }
+
+    #[test]
+    fn doc_not_found_msg_and_card_date_rule_matrix() {
+        // the «індекс не знайдено» sibling: the exact stderr text of the
+        // unknown-nreg hard error (exit 1 through `main`)
+        assert_eq!(
+            doc_not_found_msg("999999-хх"),
+            "документ не знайдено: 999999-хх"
+        );
+        assert_eq!(doc_not_found_msg(""), "документ не знайдено: ");
+        // the card date rule: ONLY a full 8-digit ASCII string is a date
+        // (the same digit test `fmt_date` applies); everything else
+        // renders «—» in the plain report and null in the JSON body
+        assert!(doc_card_has_date("20101202"));
+        assert!(doc_card_has_date("00000000"));
+        assert!(!doc_card_has_date(""));
+        assert!(!doc_card_has_date("2010"));
+        assert!(!doc_card_has_date("2010120"));
+        assert!(!doc_card_has_date("201012029"));
+        assert!(!doc_card_has_date("2010-12"));
+        assert!(!doc_card_has_date("2010120a"));
+        assert!(!doc_card_has_date("２０１０１２０２"));
     }
 
     #[test]

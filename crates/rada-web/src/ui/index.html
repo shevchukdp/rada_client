@@ -345,6 +345,15 @@
   #sort-bar .chip.active {
     background: var(--accent); color: var(--accent-text); border-color: var(--accent);
   }
+  /* «експорт .csv» chip trailing the sort chips on the results toolbar: the
+     arrivals #arr-export-csv chip language (muted pill, accent hover); while
+     the current page shows no hits the button is disabled and the global
+     button:disabled rule dims it (the favorites idiom). */
+  #search-export-csv {
+    background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
+    border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
+  }
+  #search-export-csv:hover { color: var(--text); border-color: var(--accent); }
   #rada-recent .chip {
     background: var(--panel2); color: var(--muted); border: 1px solid var(--border);
     border-radius: 12px; padding: 2px 10px; font-size: 13px; cursor: pointer;
@@ -753,6 +762,8 @@
       <button class="chip" type="button" id="sort-date" data-col="date" title="Сортувати за датою ухвалення">Дата</button>
       <button class="chip" type="button" id="sort-podd" data-col="podd" title="Сортувати за датою редакції">Редакція</button>
       <button class="chip" type="button" id="sort-relevance" data-col="relevance" title="Сортувати за релевантністю" hidden>Релевантність</button>
+      <button id="search-export-csv" type="button" disabled
+        title="зберегти показані результати у файл .csv">експорт .csv</button>
     </div>
     <div id="results"></div>
     <div class="pager">
@@ -967,6 +978,7 @@ const state = {
   limit: 50, offset: 0,
   sort: "date_desc",  // current result ordering (see SORT_CHIPS below)
   nregs: [],          // nregs of the current results page (bulk export)
+  hits: [],           // full hit rows of the current results page (the csv export)
   curNreg: null,
   curCard: null,
   curText: "",
@@ -1921,6 +1933,8 @@ async function doSearch(offset) {
   $("results").innerHTML = "";
   fillNavList([]); // stale hits must not keep navigating while the fetch runs
   $("sort-bar").hidden = true;
+  state.hits = []; // the csv export ships only what is on screen: nothing yet
+  $("search-export-csv").disabled = true;
   // The landing home card answers to the initial view only: the startup
   // search leaves it alone, every later search retires it (renderFreshHome).
   if (freshHomeStarted) {
@@ -1963,6 +1977,8 @@ async function doSearch(offset) {
     state.nregs = d.hits.map(h => h.nreg);
     meta.textContent = "Знайдено: " + d.total + " (показано " + d.hits.length + ")";
     renderSortBar(q, d.hits.length > 0);
+    state.hits = d.hits; // the csv export mirrors exactly this rendered page
+    $("search-export-csv").disabled = !d.hits.length;
     const list = $("results");
     // Query words to paint in the titles (browser-find style): #q split on
     // whitespace, lowercased, filler (<3 chars) dropped; computed once per
@@ -2084,6 +2100,8 @@ async function doCacheSearch() {
   fillNavList([]); // the cache run starts without a prev/next context
   $("sort-bar").hidden = true;
   $("cache-mode").hidden = true; // repainted below only on success
+  state.hits = []; // the cache list carries other columns: csv export stays off
+  $("search-export-csv").disabled = true;
   try {
     const d = await api("/api/cache/search?q=" + encodeURIComponent(q));
     const list = $("results");
@@ -2162,6 +2180,44 @@ function clickSort(col) {
   state.sort = state.sort === ids[0] ? ids[1] : ids[0];
   doSearch(0);
 }
+
+// ---- CSV export of the shown results («експорт .csv») -----------------------
+// One pure builder: the current results page → CSV text, the arrivals
+// arrivalsCsv / favorites favoritesCsv format family — UTF-8 BOM up front
+// (Excel opens Cyrillic correctly), one header row, the shared arrCsvEsc
+// quoting, rows appended in the given order (no sort or filter in here, so
+// the file always mirrors the on-screen order). An empty page still returns
+// the header-only file (no toast, no abort). Columns are what a result row
+// carries in the index (SearchHit): nreg first, the two dates as stored
+// (YYYYMMDD), the status label as shown on screen, the org number, the title.
+function searchCsv(hits) {
+  let out = "\uFEFFnreg,org_date,poddat,status,org_num,nazva\n";
+  for (const h of hits) {
+    out += arrCsvEsc(h.nreg) + "," + arrCsvEsc(h.org_date) + "," +
+      arrCsvEsc(h.poddat) + "," + arrCsvEsc(statusLabel(h.status)) + "," +
+      arrCsvEsc(h.org_num) + "," + arrCsvEsc(h.nazva) + "\n";
+  }
+  return out;
+}
+
+// The exporter feeds the builder state.hits — the very d.hits array the
+// renderer iterated for this page (never a refetch) — and hands the BOM'd
+// text over through the arrivals/favorites Blob / object-URL idiom under the
+// fixed search-results.csv name (the novy-dokumenty.csv pattern). The gate
+// in doSearch keeps the chip disabled while nothing is on screen.
+function exportSearchCsv() {
+  const csv = searchCsv(state.hits);
+  const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "search-results.csv";
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+$("search-export-csv").onclick = () => exportSearchCsv();
 
 /// Set the reader's prev/next context to `nregs` (the rendered display
 /// order) and reset the position; shared by the search and the cache-search

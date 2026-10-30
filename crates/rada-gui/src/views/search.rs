@@ -193,6 +193,9 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
             if ui.add_enabled(has, egui::Button::new("Експорт .txt")).clicked() {
                 app.export_search_list(false);
             }
+            if ui.add_enabled(has, egui::Button::new("Експорт .csv")).clicked() {
+                app.export_search_list_csv();
+            }
             if let Some((d, t)) = app.search.live_export {
                 ui.spinner();
                 ui.label(
@@ -990,6 +993,31 @@ fn stan_label(stan: &[(i64, String)], id: i64) -> String {
     opt_label(stan, id, "стан")
 }
 
+/// The current search results page rendered as CSV (UTF-8 with BOM so Excel
+/// opens Cyrillic correctly): `nreg,nazva,status,org_num,org_date,poddat` —
+/// the arrivals/favorites export family; `status` goes through the stan
+/// dictionary (same label the rows show) and dates stay raw 8-digit machine
+/// data like the year-window export.
+pub fn search_rows_csv(hits: &[rada_db::SearchHit], stan: &[(i64, String)]) -> String {
+    let esc = |s: &str| crate::views::arrivals::csv_esc(s);
+    let mut out = String::from("\u{FEFF}nreg,nazva,status,org_num,org_date,poddat\n");
+    for h in hits {
+        out.push_str(&esc(&h.nreg));
+        out.push(',');
+        out.push_str(&esc(&h.nazva));
+        out.push(',');
+        out.push_str(&esc(&stan_label(stan, h.status)));
+        out.push(',');
+        out.push_str(&esc(&h.org_num));
+        out.push(',');
+        out.push_str(&esc(&h.org_date));
+        out.push(',');
+        out.push_str(&esc(&h.poddat));
+        out.push('\n');
+    }
+    out
+}
+
 /// `YYYYMMDD` → `DD.MM.YYYY`; passthrough when not 8 digits.
 pub fn fmt_date(d: &str) -> String {
     if d.len() == 8 && d.chars().all(|c| c.is_ascii_digit()) {
@@ -1662,5 +1690,36 @@ mod tests {
             "%D0%BA%D0%BE%D0%B4"
         );
         assert!(portal_search_url("код").ends_with("text=%D0%BA%D0%BE%D0%B4"));
+    }
+
+    fn hit(nreg: &str, nazva: &str, status: i64, org_num: &str, org_date: &str, poddat: &str) -> rada_db::SearchHit {
+        rada_db::SearchHit {
+            nreg: nreg.into(),
+            nazva: nazva.into(),
+            status,
+            org_date: org_date.into(),
+            org_num: org_num.into(),
+            poddat: poddat.into(),
+        }
+    }
+
+    #[test]
+    fn search_rows_csv_boms_resolves_status_and_escapes() {
+        let hits = vec![
+            hit("16-15", "Про освіту", 5, "16", "20170905", "20171003"),
+            hit("2-2", "А, \"цитата\"", 0, "", "", ""),
+        ];
+        let csv = search_rows_csv(&hits, &[]);
+        assert!(csv.starts_with('\u{FEFF}'), "BOM first (Excel Cyrillic)");
+        assert!(csv.starts_with("\u{FEFF}nreg,nazva,status,org_num,org_date,poddat\n"));
+        // row order as displayed; raw 8-digit dates stay machine data
+        assert!(csv.contains("16-15,Про освіту,чинний,16,20170905,20171003\n"));
+        // empty dict falls back to the built-in labels; empty fields unquoted
+        assert!(csv.contains("2-2,\"А, \"\"цитата\"\"\",невизначено,,,\n"));
+        // empty list still yields the BOM'd header
+        assert_eq!(search_rows_csv(&[], &[]), "\u{FEFF}nreg,nazva,status,org_num,org_date,poddat\n");
+        // a populated dict wins over the fallback table
+        let dict = vec![(5i64, "ЧИННИЙ (словник)".to_string())];
+        assert!(search_rows_csv(&hits[0..1], &dict).contains("ЧИННИЙ (словник)"));
     }
 }

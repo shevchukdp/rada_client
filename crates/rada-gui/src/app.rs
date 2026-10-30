@@ -1722,6 +1722,27 @@ impl App {
         });
     }
 
+    /// Export the CURRENT search results page as a CSV file (`nreg,nazva,
+    /// status,org_num,org_date,poddat`, the arrivals export's own format).
+    pub fn export_search_list_csv(&mut self) {
+        if self.search.hits.is_empty() {
+            return;
+        }
+        let body = views::search::search_rows_csv(&self.search.hits, &self.dicts.stan);
+        let q = self.search.query.trim();
+        let name_q = if q.is_empty() { "all".to_string() } else { sanitize(q) };
+        let default_name = format!("zakon-{name_q}-list.csv");
+        let Some(path) = self.dlg_save(default_name) else {
+            return;
+        };
+        self.spawn(move |tx| {
+            let res = std::fs::write(&path, &body)
+                .map(|_| path)
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Msg::Exported(res));
+        });
+    }
+
     /// Live export of the CHECKED results as individual numbered files
     /// (`NNN - number - title.ext`) into a chosen folder. Cache first, then
     /// paced live fetch (which refreshes the cache). Progress = LiveExport.

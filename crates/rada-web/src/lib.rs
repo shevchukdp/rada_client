@@ -5891,4 +5891,131 @@ mod tests {
         assert!(ui::INDEX_HTML.contains("selectDictKind(b.dataset.kind)"));
         assert!(ui::INDEX_HTML.contains("let dictsHomeKind = \"organs\";"), "organs is the default kind");
     }
+
+    #[test]
+    fn ui_page_has_search_csv_builder() {
+        // ONE pure searchCsv(hits) builder in the arrivals arrivalsCsv /
+        // favorites favoritesCsv format family: UTF-8 BOM up front (Excel
+        // opens Cyrillic correctly), the «nreg,org_date,poddat,status,
+        // org_num,nazva» header (what a result row carries in the index:
+        // nreg first, the two dates, the status label shown on screen, the
+        // org number, the title), comma separator, and rows appended in the
+        // given order — the file always mirrors the on-screen order.
+        assert!(ui::INDEX_HTML.contains("function searchCsv(hits)"));
+        let start = ui::INDEX_HTML
+            .find("function searchCsv(hits) {")
+            .expect("searchCsv defined");
+        let b = &ui::INDEX_HTML[start..];
+        let b = &b[..b.find("\n}").expect("searchCsv end")];
+        // BOM + header row, comma separator.
+        assert!(
+            b.contains(r#""\uFEFFnreg,org_date,poddat,status,org_num,nazva\n""#),
+            "BOM + the results header row"
+        );
+        // Every field ships through the arrivals escaper (shared quoting):
+        // titles/labels with quotes, commas or newlines are wrapped and
+        // their quotes doubled (GUI csv_esc parity).
+        assert!(
+            b.contains("arrCsvEsc(h.nreg) + \",\" + arrCsvEsc(h.org_date)"),
+            "nreg + org_date columns"
+        );
+        assert!(
+            b.contains("arrCsvEsc(h.poddat) + \",\" + arrCsvEsc(statusLabel(h.status))"),
+            "poddat + the on-screen status label columns"
+        );
+        assert!(
+            b.contains("arrCsvEsc(h.org_num) + \",\" + arrCsvEsc(h.nazva)"),
+            "org_num + nazva columns"
+        );
+        let e = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function arrCsvEsc(s) {")
+            .expect("arrCsvEsc")..];
+        let e = &e[..e.find("\n}").expect("arrCsvEsc end")];
+        assert!(e.contains(r#"/["\n\r,]/.test(v)"#), "quote, comma and line breaks trigger quoting");
+        assert!(e.contains(r#".replace(/"/g, "\"\"")"#), "quotes are doubled inside the field");
+        // Row order: the builder iterates the given hits verbatim — no
+        // sort, no filter in here — and the header is emitted before the
+        // loop, so an empty page still answers header-only.
+        assert!(b.contains("for (const h of hits)"), "rows appended in the given order");
+        assert!(!b.contains(".sort("), "the builder never sorts");
+        let hdr = b.find("nreg,org_date").expect("header row");
+        let loop_ = b.find("for (const h of hits)").expect("row loop");
+        assert!(hdr < loop_, "the header precedes the loop: empty hits → header-only");
+        let comment = &ui::INDEX_HTML[start.saturating_sub(900)..start];
+        assert!(comment.contains("BOM"), "the BOM choice is documented");
+        assert!(comment.contains("header-only"), "the empty-list choice is documented");
+    }
+
+    #[test]
+    fn ui_page_has_search_csv_button() {
+        // «експорт .csv» chip trailing the sort chips on the results
+        // toolbar (the row above #results): plain <button> in the arrivals
+        // chip language (no .chip class, so renderSortBar's chip loops and
+        // the chip wiring never touch it), disabled while the current page
+        // is empty (the favorites idiom), click through the shared
+        // exportSearchCsv entry point.
+        assert!(
+            ui::INDEX_HTML.contains("<button id=\"search-export-csv\" type=\"button\" disabled"),
+            "the button starts disabled (the page loads without results)"
+        );
+        assert!(ui::INDEX_HTML.contains(">експорт .csv</button>"));
+        // Lives on the results toolbar: everything between the sort bar and
+        // the results list — and it trails the four sort chips.
+        let row = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("id=\"sort-bar\"")
+            .expect("sort bar")..ui::INDEX_HTML
+            .find("<div id=\"results\"></div>")
+            .expect("results list")];
+        for id in ["sort-nazva", "sort-date", "sort-podd", "sort-relevance", "search-export-csv"] {
+            assert!(row.contains(&format!("id=\"{id}\"")), "{id}: lives on the results toolbar row");
+        }
+        let rel = row.find("id=\"sort-relevance\"").expect("relevance chip");
+        let csv = row.find("id=\"search-export-csv\"").expect("csv chip");
+        assert!(rel < csv, "the export chip trails the sort chips");
+        // The bar row starts hidden, so the landing view shows no extra row.
+        assert!(
+            ui::INDEX_HTML.contains("<div class=\"row\" id=\"sort-bar\" hidden>"),
+            "the toolbar (and with it the export chip) is hidden until results render"
+        );
+        // Chip CSS reuses the arrivals export chip language, hover included.
+        assert!(ui::INDEX_HTML.contains("#search-export-csv {"), "chip CSS reuses the arrivals chip language");
+        assert!(ui::INDEX_HTML.contains("#search-export-csv:hover {"), "accent hover like the arrivals chip");
+        assert!(
+            ui::INDEX_HTML.contains("$(\"search-export-csv\").onclick = () => exportSearchCsv();"),
+            "click goes through the shared export entry point"
+        );
+        // The exporter feeds the CURRENT displayed page: state.hits is the
+        // very d.hits the renderer iterated (assigned inside doSearch), and
+        // both entry points clear it + disable the chip while nothing shows.
+        assert!(ui::INDEX_HTML.contains("state.hits = d.hits;"), "the renderer mirrors the shown page into state.hits");
+        assert!(
+            ui::INDEX_HTML.contains("$(\"search-export-csv\").disabled = !d.hits.length;"),
+            "the favorites gate: disabled while the current page is empty"
+        );
+        assert!(
+            ui::INDEX_HTML.split(r##"state.hits = [];"##).count() - 1 >= 2,
+            "doSearch and the cache search both drop the stale page"
+        );
+        let gates = ui::INDEX_HTML
+            .split(r##"$("search-export-csv").disabled = true;"##)
+            .count()
+            - 1;
+        assert!(gates >= 2, "doSearch and the cache search both disable the chip: {gates}");
+        let x = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("function exportSearchCsv() {")
+            .expect("exportSearchCsv")..];
+        let x = &x[..x.find("\n}").expect("exportSearchCsv end")];
+        assert!(x.contains("searchCsv(state.hits);"), "the builder feeds on the displayed page");
+        assert!(!x.contains("/api/"), "no network: the export ships the page already on screen");
+        // Blob download through the arrivals/favorites idiom under the fixed name.
+        assert!(
+            x.contains("new Blob([csv], { type: \"text/csv;charset=utf-8\" });"),
+            "the BOM'd text ships as the Blob content"
+        );
+        assert!(x.contains("URL.createObjectURL(blob)"));
+        assert!(x.contains("a.download = \"search-results.csv\";"), "fixed file name in the arrivals idiom");
+        assert!(x.contains("a.click();"));
+        assert!(x.contains("a.remove();"));
+        assert!(x.contains("URL.revokeObjectURL(url);"));
+    }
 }

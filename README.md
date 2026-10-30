@@ -36,7 +36,8 @@ official open-data API:
      remembered across launches),
     paging, live name resolver; a **«Розширений пошук на порталі»** button that
     opens the zakon.rada.gov.ua search with the current query in the browser;
-    **export of the results list** (.md/.txt);
+    **export of the results list** (.md/.txt/.csv — the CSV keeps the shown
+    page in display order, UTF-8 with BOM, status label-resolved);
     **checkbox-select results → individual numbered files** in a chosen folder;
     one-click **copy nreg** from any result row.
   - **Offline number search** — typing an nreg (`1556-18`, `1178-2022-п`,
@@ -302,6 +303,10 @@ official open-data API:
   за назвою», a text/title/nreg filter with «показано X з Y», collapsible
   per-document groups, choices in localStorage, and an **«експорт .csv»** of the
   visible list — UTF-8 with BOM, the desktop app's own CSV format),
+  **a «експорт .csv» on the search results toolbar** (the current page of hits
+  in display order — `nreg,org_date,poddat,status,org_num,nazva`, status
+  already label-resolved; the third export beside arrivals and favorites,
+  dimmed when there is nothing to show),
   and the same 17 themes (CSS variables, localStorage).
 - **Modular Rust workspace** — the database is an independent crate
   (`rada-db`) that can be reused or swapped without touching the clients.
@@ -403,6 +408,7 @@ Launch arguments:
 .\rada-client.exe months                 # offline month histogram of one year (--year РРРР, always 12 rows + «разом»); --json / --out too
 .\rada-client.exe years                  # offline per-year histogram of a closed range (--from РРРР --to РРРР, zero years omitted + «разом» + «без дати»); --org <ID> gives one publisher's activity timeline («Документи видавця … за роками:», no «без дати»); --json / --out too
 .\rada-client.exe docs --org 1           # offline documents, newest first: one publisher («Документи видавця …:»), one year (--year РРРР alone or combined); --limit ≤500, --json / --out too
+.\rada-client.exe doc 2755-17            # offline one-document card: title + «НРЕГ/Статус/Орган/Дата прийняття/Дата оприлюднення/Текст»; --json / --out too
 .\rada-client.exe annots 2341-14         # offline annotations of one document («Анотації документа …:» + «разом»); --kind коментар|закладка|виділення, --limit ≤500, --json / --out too
 
 # 4) Keep the index current.
