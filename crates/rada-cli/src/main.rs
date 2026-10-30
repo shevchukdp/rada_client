@@ -49,6 +49,15 @@
 //!               `org_date` carries that year, `--json` for
 //!               machine-readable output, `--out` to write the report;
 //!               informational — exits 1 only on a malformed `--year`);
+//! - `docs`      offline per-publisher document list on the `org_num`
+//!               column — the drill-down companion of `orgs`: the
+//!               documents one publisher issued, newest first
+//!               (`--org` required — the same publisher key `orgs`
+//!               prints, `--year РРРР` restricts to documents whose
+//!               `org_date` carries that year exactly like `orgs --year`,
+//!               `--json` for machine-readable output, `--out` to write
+//!               the report; informational — exits 1 only on a missing
+//!               index or a malformed `--year`);
 //! - `statuses`  offline document-status histogram on `status` — how many
 //!               documents are чинний / не чинний / …, labels from the
 //!               offline `stan` dictionary
@@ -635,6 +644,52 @@ enum Cmd {
         #[arg(long)]
         out: Option<PathBuf>,
     },
+    /// Offline «what did this publisher issue»: the document list of one
+    /// publisher on the TEXT `org_num` column of `docs` — the drill-down
+    /// companion of `orgs` (feed an `orgs` row's `[org_num]` key into
+    /// `--org`). `--org` is required and matches `org_num` exactly; a
+    /// numeric key also resolves its label from the offline `organs`
+    /// dictionary and the header names the label when found
+    /// («Документи видавця {label}:»), the raw key otherwise
+    /// («Документи видавця {org}:»). Only documents whose `org_date` is
+    /// a full 8-digit date are listed, ordered `org_date DESC, nreg ASC`
+    /// (newest first); `--year РРРР` restricts them exactly like
+    /// `orgs --year`. Rows render «{dd.mm.yyyy}  {nreg}  {nazva}» (the
+    /// `recent` docs idiom) and the «разом: N» verdict counts the
+    /// PRINTED rows (post-`--limit`), the `recent` rule. `--limit N`
+    /// (default 50) clamps to 1..=500 — no hard error. Pure offline: the
+    /// command never touches the network; informational — an unknown
+    /// publisher exits 0 with the empty report (header + «немає
+    /// документів за цей період» + «разом: 0»); only a missing index or
+    /// a malformed `--year` exit 1.
+    Docs {
+        /// Publisher key to list (the `[org_num]` value `orgs` prints;
+        /// required).
+        #[arg(long)]
+        org: String,
+        /// Restrict the list to documents whose `org_date` starts with
+        /// these four digits and is a full 8-digit date (e.g. `2026`);
+        /// anything else than four ASCII digits exits 1 with the same
+        /// error as `orgs --year`; absent lists all dated documents of
+        /// the publisher.
+        #[arg(long)]
+        year: Option<String>,
+        /// Max documents to print (default 50, clamped to 1..=500).
+        #[arg(long, default_value_t = 50)]
+        limit: usize,
+        /// Emit the JSON body
+        /// (`{"docs":[{date,nreg,title},…],"org":…,"org_label":…,
+        /// "total":N[,"year":"yyyy"]` — pretty, keys alphabetical,
+        /// `total` counts the listed rows) instead of the report.
+        #[arg(long)]
+        json: bool,
+        /// Write the exact stdout report (or the `--json` body) to this file
+        /// instead of stdout (parent dirs created). Plain report gets a
+        /// UTF-8 BOM (Excel-friendly); with `--json` the file is written
+        /// BOM-less; the `[docs] записано …` note goes to stderr.
+        #[arg(long)]
+        out: Option<PathBuf>,
+    },
     /// Offline «what condition is my index in»: document-status
     /// distribution on the `status` column of `docs` — how many documents
     /// are чинний / не чинний / …, with labels resolved from the offline
@@ -911,6 +966,13 @@ fn run() -> Result<()> {
             json,
             out,
         } => cmd_orgs(&cli.db, year.as_deref(), limit, json, out.as_deref()),
+        Cmd::Docs {
+            org,
+            year,
+            limit,
+            json,
+            out,
+        } => cmd_docs(&cli.db, &org, year.as_deref(), limit, json, out.as_deref()),
         Cmd::Statuses { json, out } => {
             cmd_statuses(&cli.db, json, out.as_deref())
         }
@@ -5545,6 +5607,214 @@ fn cmd_orgs(
     Ok(())
 }
 
+/// Cap the `docs --limit` option at the `hits`/`recent` row budget:
+/// `0` renders one row and anything above `500` is truncated to `500`
+/// (`usize::clamp`, the same house idiom as the `orgs` 1..=200 bound);
+/// 1..=500 passes through untouched (no hard error).
+fn docs_limit(limit: usize) -> usize {
+    limit.clamp(1, 500)
+}
+
+/// The report body of `docs` (shared by stdout and `--out` so the two
+/// cannot drift): «Документи видавця {org}:» header — `org` is what the
+/// caller resolved for display: the `organs`-dictionary label when the
+/// numeric key resolved, the raw publisher key otherwise — then one
+/// `{dd.mm.yyyy}  {nreg}  {nazva}` line per document in input order (the
+/// SQL orders by `org_date` descending, `nreg` ascending; the rendering
+/// mirrors [`recent_docs_lines`]), then the verdict «разом: {count}»
+/// over the RENDERED rows (post-`--limit`, the `recent` rule, NOT the
+/// publisher's whole archive). Informational: an unknown publisher or an
+/// empty year window renders the header + «немає документів за цей
+/// період» + «разом: 0» and the run still exits 0.
+fn docs_list_lines(org: &str, rows: &[RecentDocRow]) -> Vec<String> {
+    let mut lines = vec![format!("Документи видавця {org}:")];
+    if rows.is_empty() {
+        lines.push("немає документів за цей період".to_string());
+    }
+    for r in rows {
+        lines.push(format!("{}  {}  {}", fmt_date(&r.org_date), r.nreg, r.title));
+    }
+    lines.push(format!("разом: {}", rows.len()));
+    lines
+}
+
+/// The `--json` body of `docs` (shared by stdout and `--out` so the two
+/// cannot drift): the pretty
+/// `{"docs":[{date,nreg,title},…],"org":…,"org_label":…,"total":N}`
+/// object over the rendered rows, built as hand-rolled
+/// `serde_json::Value`s like the other commands' JSON bodies (map keys
+/// sort, so `docs`/`org`/`org_label`/`total` and the
+/// `date`/`nreg`/`title` inside every entry keep their alphabetical
+/// order). `date` is the raw 8-digit `org_date` (machine data; the plain
+/// report renders it `dd.mm.yyyy` via [`fmt_date`]); `org` is the key as
+/// given, `org_label` the header's display string (the resolved label,
+/// or the raw key when the dictionary had nothing); `total` counts the
+/// LISTED rows (the «разом» rule, post-`--limit`). With `year` (the
+/// validated four-digit `--year` filter) the object gains
+/// `"year": "yyyy"` — map keys sort, so it lands last, after `total`
+/// (the `orgs` rule); absent omits the key entirely. stdout prints
+/// exactly this string plus a trailing newline; the `--out` file
+/// receives the same bytes BOM-less (machine data, the house JSON rule).
+fn docs_list_json(org: &str, org_label: &str, year: Option<&str>, rows: &[RecentDocRow]) -> String {
+    let docs: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|r| {
+            serde_json::json!({
+                "date": r.org_date,
+                "nreg": r.nreg,
+                "title": r.title,
+            })
+        })
+        .collect();
+    let mut value = serde_json::json!({
+        "docs": docs,
+        "org": org,
+        "org_label": org_label,
+        "total": rows.len(),
+    });
+    if let Some(y) = year {
+        value["year"] = serde_json::Value::from(y);
+    }
+    serde_json::to_string_pretty(&value).unwrap_or_else(|_| "{}".to_string())
+}
+
+/// The stderr note printed after `docs --out` has written `file`
+/// (`n` rendered document rows, the same wording in both modes):
+/// `[docs] записано {n} документів → {file}`.
+fn docs_list_out_note(n: usize, file: &Path) -> String {
+    format!("[docs] записано {n} документів → {}", file.display())
+}
+
+/// Offline «what did this publisher issue» (`docs`): the per-publisher
+/// document list over the TEXT `org_num` column of `docs` — the
+/// drill-down companion of [`cmd_orgs`], fed with the same publisher key
+/// the histogram prints. Never builds a client, never touches the
+/// network. A missing index file is a hard error («індекс не знайдено:
+/// …», the `stats`/`verify` rule). `--year` passes the
+/// `years`/`months`/`orgs` [`normalize_year_arg`] validator (exactly
+/// four ASCII digits or «рік має бути РРРР (наприклад 2026)», exit 1
+/// through `main`); `--limit` passes [`docs_limit`] (clamped to
+/// 1..=500, never an error). The rows come straight from `docs` through
+/// the connection `rada_db::open` returns (the `verify` / `dict-stats`
+/// direct-SQL idiom): `org_num` bound as a parameter, `org_date`
+/// guarded to a full 8-digit date (the `recent` digit-GLOB; with
+/// `--year` the four validated digits are pinned as the GLOB prefix,
+/// the `orgs` idiom), ordered `org_date DESC, nreg ASC`, `LIMIT`
+/// interpolated from the clamped `usize` (ASCII digits only — the same
+/// interpolation-safety reasoning as the validated year prefix). The
+/// header label comes from the offline `organs` dictionary exactly like
+/// the `orgs` rows (one `query_row`, resolved only when the key parses
+/// to a nonzero id; a miss keeps the raw key in the header).
+/// Informational: an unknown publisher (or an empty year window) exits
+/// 0 with the zero-rows report. With `--out` the exact stdout body goes
+/// to the file (parent dirs created) and nothing prints to stdout: the
+/// plain report is written UTF-8 with a BOM (Excel-friendly, like
+/// search/arrivals/stats/verify), the `--json` body BOM-less; one
+/// `[docs] записано {n} документів → {file}` note goes to stderr. The
+/// header always renders, so the file is never BOM-alone.
+fn cmd_docs(
+    db: &PathBuf,
+    org: &str,
+    year: Option<&str>,
+    limit: usize,
+    json: bool,
+    out: Option<&Path>,
+) -> Result<()> {
+    if !db.exists() {
+        return Err(anyhow::anyhow!("індекс не знайдено: {}", db.display()));
+    }
+    // the `years`/`months`/`orgs` house validator: absent keeps the
+    // whole-archive report, present must be exactly four ASCII digits;
+    // the canonical `yyyy` string drives the JSON key and the GLOB prefix
+    let year = match year {
+        Some(_) => Some(format!("{:04}", normalize_year_arg(year)?)),
+        None => None,
+    };
+    let limit = docs_limit(limit);
+    let conn = rada_db::open(db).with_context(|| format!("open db {}", db.display()))?;
+    // Offline label lookup, the `orgs` rule: the TEXT key resolves
+    // through the `organs` dictionary only when it parses to a nonzero
+    // id; a non-numeric / zero / empty key or a dict miss leaves the
+    // label empty and the header names the raw key instead.
+    let label = match org.trim().parse::<i64>() {
+        Ok(id) if id != 0 => conn
+            .query_row(
+                "SELECT label FROM dict WHERE kind = 'organs' AND id = ?1",
+                [id],
+                |r| r.get::<_, String>(0),
+            )
+            .unwrap_or_default(),
+        _ => String::new(),
+    };
+    let header_org = if label.is_empty() {
+        org.to_string()
+    } else {
+        label
+    };
+    // a row qualifies only with a full 8-digit `org_date` (the `recent`
+    // digit-GLOB guard); `--year yyyy` pins the four validated digits as
+    // the prefix — year + four digit-classes is still exactly 8 digits,
+    // the digits are interpolated only after `normalize_year_arg` (ASCII
+    // digits cannot carry SQL or GLOB metacharacters)
+    let glob = match &year {
+        None => "[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]".to_string(),
+        Some(y) => format!("{y}[0-9][0-9][0-9][0-9]"),
+    };
+    // `org` is bound as a parameter (never interpolated); `limit` is
+    // interpolated only after `docs_limit` — a clamped usize renders as
+    // plain ASCII digits, no SQL metacharacters possible
+    let sql = format!(
+        "SELECT nreg, nazva, org_date FROM docs
+         WHERE org_num = ?1 AND org_date GLOB '{glob}'
+         ORDER BY org_date DESC, nreg ASC LIMIT {limit}"
+    );
+    let mut stmt = conn
+        .prepare(&sql)
+        .context("prepare docs list")?;
+    let mut mapped = stmt
+        .query_map([org], |r| {
+            Ok(RecentDocRow {
+                nreg: r.get(0)?,
+                title: r.get(1)?,
+                org_date: r.get(2)?,
+            })
+        })
+        .context("run docs list")?;
+    let mut rows: Vec<RecentDocRow> = Vec::new();
+    while let Some(row) = mapped.next().transpose()? {
+        rows.push(row);
+    }
+    if json {
+        let body = docs_list_json(org, &header_org, year.as_deref(), &rows);
+        match out {
+            Some(p) => {
+                // machine data: raw UTF-8 JSON, no BOM, nothing on stdout
+                write_out_file(p, format!("{body}\n").as_bytes())?;
+                eprintln!("{}", docs_list_out_note(rows.len(), p));
+            }
+            None => println!("{body}"),
+        }
+        return Ok(());
+    }
+    let lines = docs_list_lines(&header_org, &rows);
+    match out {
+        Some(p) => {
+            // UTF-8 BOM prefix: the same Excel-friendly convention as
+            // search/arrivals/stats/verify; the bytes are exactly the
+            // stdout report (the header always renders, so never
+            // BOM-alone).
+            write_out_file(p, format!("\u{FEFF}{}\n", lines.join("\n")).as_bytes())?;
+            eprintln!("{}", docs_list_out_note(rows.len(), p));
+        }
+        None => {
+            for line in lines {
+                println!("{line}");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// One `statuses` histogram row: the status id as stored in the INTEGER
 /// `status` column (0 is the «status unknown» default), its label resolved
 /// from the offline `stan` dictionary (fallback: the built-in
@@ -5844,6 +6114,7 @@ mod tests {
         dict_fresh_json, dict_fresh_lines, dict_json_body,
         dict_json_out_note, dict_matches, dict_out_note, dict_plain_lines, dict_stats_json,
         dict_stats_lines, dict_stats_out_note, dates_json, dates_lines, dates_out_note,
+        docs_limit, docs_list_json, docs_list_lines, docs_list_out_note,
         export_html,
         grep_body, grep_render,
         export_markdown, export_out_note, export_plain, favorites_json_body,
@@ -8156,6 +8427,139 @@ mod tests {
             let err = normalize_year_arg(Some(bad)).unwrap_err().to_string();
             assert_eq!(err, "рік має бути РРРР (наприклад 2026)");
         }
+    }
+
+    #[test]
+    fn docs_list_lines_renders_header_rows_and_verdict() {
+        // header «Документи видавця {org}:» + one
+        // «{dd.mm.yyyy}  {nreg}  {nazva}» line per document in input
+        // order (the SQL orders by org_date DESC, nreg ASC — the
+        // `recent` docs row idiom) + the «разом» verdict over the
+        // RENDERED rows (post-limit, the `recent` rule)
+        let rows = vec![
+            RecentDocRow {
+                nreg: "123/26".into(),
+                title: "Про щоось".into(),
+                org_date: "20261029".into(),
+            },
+            RecentDocRow {
+                nreg: "9/26".into(),
+                title: "Інше".into(),
+                org_date: "20261027".into(),
+            },
+        ];
+        // resolved dictionary label: the header names the label
+        assert_eq!(
+            docs_list_lines("Кабінет Міністрів України", &rows),
+            vec![
+                "Документи видавця Кабінет Міністрів України:".to_string(),
+                "29.10.2026  123/26  Про щоось".to_string(),
+                "27.10.2026  9/26  Інше".to_string(),
+                "разом: 2".to_string(),
+            ]
+        );
+        // dict miss / non-numeric key: the header names the raw key
+        assert_eq!(
+            docs_list_lines("2", &rows[..1]),
+            vec![
+                "Документи видавця 2:".to_string(),
+                "29.10.2026  123/26  Про щоось".to_string(),
+                "разом: 1".to_string(),
+            ]
+        );
+        // unknown publisher / empty year window: header + the «немає»
+        // line + «разом: 0» still render (the informational empty rule,
+        // the `--out` file is never BOM-alone)
+        assert_eq!(
+            docs_list_lines("999999", &[]),
+            vec![
+                "Документи видавця 999999:".to_string(),
+                "немає документів за цей період".to_string(),
+                "разом: 0".to_string(),
+            ]
+        );
+    }
+
+    #[test]
+    fn docs_list_json_renders_alphabetical_keys_and_optional_year() {
+        // stdout prints EXACTLY this body (+ newline); the `--out` file
+        // receives the same bytes BOM-less (+ trailing newline). Map keys
+        // sort, so «docs» < «org» < «org_label» < «total» (< «year») and
+        // «date»/«nreg»/«title» keep their alphabetical order inside
+        // every entry; `date` is the raw 8-digit org_date and `total`
+        // counts the listed rows (the «разом» rule)
+        let rows = vec![RecentDocRow {
+            nreg: "123/24".into(),
+            title: "Про бюджет".into(),
+            org_date: "20240517".into(),
+        }];
+        let body = docs_list_json("2", "Кабінет Міністрів України", None, &rows);
+        assert_eq!(
+            body,
+            "{\n  \"docs\": [\n    {\n      \"date\": \"20240517\",\n      \"nreg\": \"123/24\",\n      \"title\": \"Про бюджет\"\n    }\n  ],\n  \"org\": \"2\",\n  \"org_label\": \"Кабінет Міністрів України\",\n  \"total\": 1\n}"
+        );
+        assert!(!body.starts_with('\u{FEFF}'), "JSON body stays BOM-less");
+        // with `--year` the body gains "year": "yyyy"; map keys sort, so
+        // «year» lands last, after «total» (the `orgs` rule)
+        let with_year = docs_list_json("2", "Кабінет Міністрів України", Some("2024"), &rows);
+        assert!(
+            with_year.ends_with(",\n  \"year\": \"2024\"\n}"),
+            "the year key renders last"
+        );
+        let v: serde_json::Value = serde_json::from_str(&with_year).unwrap();
+        assert_eq!(v["year"], "2024");
+        assert_eq!(v["total"], 1);
+        assert_eq!(v["docs"][0]["date"], "20240517");
+        // absent year: exactly today's shape, no "year" key at all
+        assert!(!body.contains("\"year\""), "absent year omits the key");
+        // unknown publisher: a well-formed empty body with total 0
+        assert_eq!(
+            docs_list_json("999999", "999999", None, &[]),
+            "{\n  \"docs\": [],\n  \"org\": \"999999\",\n  \"org_label\": \"999999\",\n  \"total\": 0\n}"
+        );
+    }
+
+    #[test]
+    fn docs_list_out_note_formats_count_arrow_and_path() {
+        // double separator keeps the test path-separator-stable via display()
+        let file = std::path::Path::new("out//d.txt");
+        let line = docs_list_out_note(50, file);
+        assert_eq!(
+            line,
+            format!("[docs] записано 50 документів → {}", file.display())
+        );
+        assert!(line.starts_with("[docs] "));
+        assert!(line.contains("50"));
+        assert!(line.contains("документів"));
+        assert!(line.contains('→'));
+        assert!(line.contains(&file.display().to_string()));
+        // the informational zero rule: the note still formats with 0 rows
+        assert_eq!(
+            docs_list_out_note(0, file),
+            format!("[docs] записано 0 документів → {}", file.display())
+        );
+    }
+
+    #[test]
+    fn docs_list_year_arg_and_limit_validation() {
+        // `docs --year` reuses the `years`/`months`/`orgs` validator and
+        // `--limit` the house clamp: absent is the whole-archive report,
+        // exactly four ASCII digits pass, everything else — two digits,
+        // letters, the empty string — fails with the house message
+        // (exit 1 through `main`); the limit clamps to 1..=500 (never a
+        // hard error, the `hits`/`recent` budget idiom)
+        assert_eq!(normalize_year_arg(None).unwrap(), 0);
+        assert_eq!(normalize_year_arg(Some("2024")).unwrap(), 2024);
+        for bad in ["26", "abcd", ""] {
+            let err = normalize_year_arg(Some(bad)).unwrap_err().to_string();
+            assert_eq!(err, "рік має бути РРРР (наприклад 2026)");
+        }
+        assert_eq!(docs_limit(50), 50);
+        assert_eq!(docs_limit(1), 1);
+        assert_eq!(docs_limit(500), 500);
+        assert_eq!(docs_limit(0), 1);
+        assert_eq!(docs_limit(501), 500);
+        assert_eq!(docs_limit(usize::MAX), 500);
     }
 
     #[test]

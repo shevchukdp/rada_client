@@ -146,6 +146,24 @@ pub struct ReaderTab {
     pub saved: Option<views::ReaderState>,
 }
 
+/// Push a closed tab `(nreg, title)` onto the redo stack (most recent last):
+/// a repeat of the same nreg moves to the top instead of doubling up, and
+/// the stack is capped at 10 (oldest dropped).
+fn closed_push(stack: &mut Vec<(String, String)>, item: (String, String)) {
+    if let Some(pos) = stack.iter().position(|(n, _)| *n == item.0) {
+        stack.remove(pos);
+    }
+    stack.push(item);
+    while stack.len() > 10 {
+        stack.remove(0);
+    }
+}
+
+/// Pop the most recently closed tab for reopening; empty stack → `None`.
+fn closed_pop(stack: &mut Vec<(String, String)>) -> Option<(String, String)> {
+    stack.pop()
+}
+
 /// Which app page is on screen.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
@@ -198,6 +216,9 @@ pub struct App {
     /// `reader` mirrors the active tab's live state.
     pub tabs: Vec<ReaderTab>,
     pub active_tab: Option<usize>,
+    /// Recently closed tabs `(nreg, title)`, oldest first; Ctrl+Shift+T pops
+    /// the last entry back. Cap 10.
+    pub closed_tabs: Vec<(String, String)>,
     /// Results list the reader was opened from (for prev/next paging).
     pub nav: Option<(Vec<rada_db::SearchHit>, usize)>,
     pub arrivals: views::ArrivalsState,
@@ -260,6 +281,7 @@ impl App {
             reader: None,
             tabs: Vec::new(),
             active_tab: None,
+            closed_tabs: Vec::new(),
             nav: None,
             arrivals: views::ArrivalsState::default(),
             fav: views::FavoritesState::default(),
@@ -702,11 +724,14 @@ impl App {
     }
 
     /// Close tab `i`; its left neighbour (or the new first tab) takes focus.
+    /// The closed document lands on the redo stack (Ctrl+Shift+T).
     pub fn tab_close(&mut self, i: usize) {
         if i >= self.tabs.len() {
             return;
         }
         let was_active = self.active_tab == Some(i);
+        let closed = (self.tabs[i].nreg.clone(), self.tabs[i].title.clone());
+        closed_push(&mut self.closed_tabs, closed);
         self.tabs.remove(i);
         if let Some(a) = self.active_tab {
             if a > i {
@@ -723,6 +748,23 @@ impl App {
             }
         }
         self.remember_tabs();
+    }
+
+    /// Ctrl+Shift+T: reopen the most recently closed tab (redo stack).
+    pub fn tab_reopen(&mut self) {
+        if let Some((nreg, title)) = closed_pop(&mut self.closed_tabs) {
+            if self.reader_open_on(&nreg) || self.tabs.iter().any(|t| t.nreg == nreg) {
+                return;
+            }
+            self.open_reader(rada_db::SearchHit {
+                nreg,
+                nazva: title,
+                status: 0,
+                org_date: String::new(),
+                org_num: String::new(),
+                poddat: String::new(),
+            });
+        }
     }
 
     /// Ctrl+Tab / Ctrl+Shift+Tab: cycle through the open tabs (wrap-around).
@@ -2383,6 +2425,14 @@ impl eframe::App for App {
                 self.tab_close(a);
             }
         }
+        // Ctrl+Shift+T: reopen the most recently closed reader tab (works
+        // from any page, like the browser idiom it copies).
+        let ctrl_shift_t = ctx.input_mut(|i| {
+            i.consume_key(egui::Modifiers::COMMAND | egui::Modifiers::SHIFT, egui::Key::T)
+        });
+        if ctrl_shift_t {
+            self.tab_reopen();
+        }
 
         // toast lifetime
         self.toasts
@@ -2572,7 +2622,8 @@ fn stamp_from_secs(secs: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        hhmm_from_secs, page_for_alt_digit, stamp_from_secs, sync_log_line, Page,
+        closed_pop, closed_push, hhmm_from_secs, page_for_alt_digit, stamp_from_secs,
+        sync_log_line, Page,
     };
 
     #[test]
@@ -2608,5 +2659,34 @@ mod tests {
         assert_eq!(stamp_from_secs(secs), "20000229-1234");
         // 2026-10-27 00:00:00
         assert_eq!(stamp_from_secs(20753 * 86_400), "20261027-0000");
+    }
+
+    #[test]
+    fn closed_tab_stack_pops_most_recent_first() {
+        let mut s: Vec<(String, String)> = Vec::new();
+        assert_eq!(closed_pop(&mut s), None, "empty stack reopens nothing");
+        closed_push(&mut s, ("1-1".into(), "Перший".into()));
+        closed_push(&mut s, ("2-2".into(), "Другий".into()));
+        assert_eq!(closed_pop(&mut s), Some(("2-2".into(), "Другий".into())));
+        assert_eq!(closed_pop(&mut s), Some(("1-1".into(), "Перший".into())));
+        assert_eq!(closed_pop(&mut s), None);
+    }
+
+    #[test]
+    fn closed_tab_stack_dedupes_and_caps_at_ten() {
+        let mut s: Vec<(String, String)> = Vec::new();
+        closed_push(&mut s, ("1-1".into(), "А".into()));
+        closed_push(&mut s, ("2-2".into(), "Б".into()));
+        closed_push(&mut s, ("1-1".into(), "А-новіше".into()));
+        // the repeat moved to the top instead of doubling up
+        assert_eq!(s.len(), 2);
+        assert_eq!(s[1], ("1-1".into(), "А-новіше".into()));
+        // 12 pushes leave the 10 newest, oldest dropped first
+        for i in 1..=12 {
+            closed_push(&mut s, (format!("n{i}"), format!("Т{i}")));
+        }
+        assert_eq!(s.len(), 10);
+        assert_eq!(s[0], ("n3".into(), "Т3".into()));
+        assert_eq!(s[9], ("n12".into(), "Т12".into()));
     }
 }

@@ -502,6 +502,24 @@
   #fresh-list li:hover { background: rgba(128, 128, 128, 0.12); }
   #fresh-list li .date { color: var(--muted); font-size: 12px; margin-right: 8px; }
   #fresh-list li .nreg { color: var(--muted); font-size: 12px; margin-right: 8px; }
+  /* Landing year histogram («Документи за роками», the CLI `years` twin):
+     one compact row per year — year label · proportional bar · count.
+     Rows are plain text/bars (non-clickable), same list language as
+     #fresh-list above, minus its hover affordance. */
+  #years-home { margin: 6px 0; }
+  #years-list { list-style: none; padding: 0; margin: 6px 0 10px; }
+  #years-list li {
+    display: grid; grid-template-columns: 42px 1fr auto; gap: 8px;
+    align-items: center;
+    padding: 3px 8px;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  #years-list li .y { color: var(--muted); font-size: 12px; }
+  #years-list li .bar {
+    height: 8px; min-width: 2px; border-radius: 4px; background: var(--accent);
+  }
+  #years-list li .cnt { color: var(--muted); font-size: 12px; }
   #annotations li {
     display: flex; gap: 8px; align-items: center; padding: 6px 10px;
     border: 1px solid var(--border); border-radius: 7px; margin: 5px 0;
@@ -678,6 +696,7 @@
       <button id="recent-clear" class="clear" type="button" title="Очистити історію">✕</button>
     </div>
     <div id="fresh-home" hidden></div>
+    <div id="years-home" hidden></div>
     <div id="results-meta"></div>
     <div class="row" id="sort-bar" hidden>
       <button class="chip" type="button" id="sort-nazva" data-col="nazva" title="Сортувати за назвою">Назва</button>
@@ -921,6 +940,11 @@ let navPos = -1;
 // not dismiss it, any later search retires it for good.
 let freshHomeStarted = false;
 let freshHomeDismissed = false;
+// Landing year histogram («Документи за роками», the CLI `years` twin): same
+// lifetime as the fresh card — the startup search leaves it alone, every
+// later search retires it for good.
+let yearsHomeStarted = false;
+let yearsHomeDismissed = false;
 
 function api(path, opts) {
   return fetch(path, opts).then(async (r) => {
@@ -1062,6 +1086,7 @@ async function init() {
   renderRecent();
   renderRecentQ();
   renderFreshHome();
+  renderYearsHome();
   const dl = readDeepLink();
   if (dl.doc) { openDoc(dl.doc); } else { doSearch(0); }
   // Re-attach to jobs that are still running after a page reload.
@@ -1193,6 +1218,51 @@ async function renderFreshHome() {
       row.onclick = () => openDoc(doc.nreg);
     }
   } catch (_) { /* no index, no card: the landing simply skips it */ }
+}
+
+/// Pure: the landing year histogram's markup — the heading plus one compact
+/// bar row per year («2026 · 5 492»-style: label, bar, thousands-spaced
+/// count). Rows arrive ascending from /api/years; only the LAST 15 years
+/// present are shown (`slice(-15)`, the documented cap: a whole-index
+/// histogram can span centuries, the landing keeps it one screenful), and
+/// each bar's width is the count scaled against the largest count inside
+/// that shown window. Empty input (or a non-array) returns "" so the
+/// painter can skip silently. Rows carry no click behaviour by design.
+function yearsHomeHtml(rows) {
+  if (!Array.isArray(rows) || !rows.length) return "";
+  const shown = rows.slice(-15);
+  let max = 0;
+  for (const r of shown) {
+    const c = Number(r.count) || 0;
+    if (c > max) max = c;
+  }
+  let html = '<div class="hint"><strong>Документи за роками:</strong></div>';
+  html += '<ul id="years-list">';
+  for (let i = 0; i < shown.length; i++) {
+    const r = shown[i];
+    const c = Number(r.count) || 0;
+    const w = max > 0 ? ((c / max) * 100).toFixed(1) : "0";
+    html += '<li data-i="' + i + '"><span class="y">' + escHtml(String(r.year)) +
+      '</span><div class="bar" style="width:' + w + '%"></div><span class="cnt">' +
+      escHtml(String(c).replace(/\B(?=(\d{3})+(?!\d))/g, " ")) + "</span></li>";
+  }
+  return html + "</ul>";
+}
+
+/// Paint the landing histogram once: ask the offline endpoint, render
+/// through the pure builder. Rows stay plain text/bars (no router hooks).
+/// A failed fetch (or an index without dated docs) skips silently; a
+/// search the user has already run keeps the block retired
+/// (yearsHomeDismissed).
+async function renderYearsHome() {
+  try {
+    const d = await api("/api/years");
+    const rows = (d && d.rows) || [];
+    if (!rows.length || yearsHomeDismissed) return;
+    const box = $("years-home");
+    box.innerHTML = yearsHomeHtml(rows);
+    box.hidden = false;
+  } catch (_) { /* no index, no histogram: the landing simply skips it */ }
 }
 
 // Original option labels per select + option value, captured once when the
@@ -1561,6 +1631,14 @@ async function doSearch(offset) {
     $("fresh-home").hidden = true;
   }
   freshHomeStarted = true;
+  // The year histogram answers to the initial view only, exactly like the
+  // fresh card above: the startup search leaves it alone, every later
+  // search retires it (renderYearsHome).
+  if (yearsHomeStarted) {
+    yearsHomeDismissed = true;
+    $("years-home").hidden = true;
+  }
+  yearsHomeStarted = true;
   resetFacetLabels(); // never show counts from the previous result set
   renderActiveFilters(); // the chips mirror exactly the filters this query goes out with
   syncStatusChips(); // the quick status chips mirror the select the query goes out with

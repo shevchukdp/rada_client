@@ -5,6 +5,13 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ---
 
+## 2026-10-30
+
+### 0.10.55: `docs --org` у CLI, «Документи за роками» у веб-клієнті та Ctrl+Shift+T для вкладок / CLI `docs --org`, web years bar chart & Ctrl+Shift+T tabs
+
+- **UKR:** 1) **`docs --org <ORG>` у CLI**: список документів одного видавця з індексу, найновіші попереду — продовження `orgs`: той самий ключ видавця та та сама цифра в «разом» (перевірено на org 1: 308 = 308); `--year РРРР`, `--limit ≤500`, `--json` і `--out` за загальним стандартом. 2) **«Документи за роками» на сторінці веб-клієнта**: міні-гістограма з пропорційними смужками — веб-двійник CLI `years` (`/api/years`), останні 15 років; зникає після першого пошуку, як і картка свіжих документів. 3) **Ctrl+Shift+T повертає щойно закриту вкладку читалки** (стек до 10 записів, як у браузерів). 4) Тести: 386/386.
+- **ENG:** 1) **`docs --org <ORG>` in the CLI**: one publisher's documents straight from the index, newest first — the drill-down companion to `orgs`: the same publisher key and the same «разом» number (verified on org 1: 308 = 308); `--year YYYY`, `--limit ≤500`, `--json`/`--out` to the common standard. 2) **A «Документи за роками» mini bar chart on the web client's landing page**: proportional bars, the whole index — the CLI `years` twin via `/api/years`, the last 15 years; it retires after the first search like the fresh-docs card. 3) **Ctrl+Shift+T brings the last closed reader tab back** (a 10-entry redo stack, browser-style). 4) Tests: 386/386.
+
 ## 2026-10-29
 
 ### 0.10.54: `orgs --year` у CLI, «Свіжі документи» у веб-клієнті та Ctrl+W для вкладок / CLI `orgs --year`, web fresh-docs card & Ctrl+W tabs

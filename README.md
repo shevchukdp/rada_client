@@ -105,7 +105,7 @@ official open-data API:
   - **Reader tabs** — every document you open becomes a tab («Вкладки:» above
     the title): tabs keep their text, find query and edition when you switch
     between them; **Ctrl+Tab / Ctrl+Shift+Tab** cycle them, **Ctrl+W** (or **×**)
-    closes one,
+    closes one and **Ctrl+Shift+T** brings the last closed one back,
     opening an already-open act just activates its tab; the open set (up to 12)
     is saved and comes back as instant shells on the next launch.
   - **Reader outline («Зміст»)** — a collapsible panel listing every
@@ -132,7 +132,7 @@ official open-data API:
     форматований/простий text mode; **Ctrl+Enter** opens the top search hit (or
     the top visible arrival) in the reader; **F5** re-fetches the reader text; **Esc** clears the find query;
     **Ctrl+Tab / Ctrl+Shift+Tab** cycle the reader's document tabs, **Ctrl+W**
-    closes the active one;
+    closes the active one and **Ctrl+Shift+T** reopens the last closed one;
     **Alt+←/→**
     pages through the results list from inside the reader; **Alt+↑/↓** cycles
     the reader's edition combo (поточна ↔ dated, wrap-around); **Shift+Enter** steps
@@ -274,6 +274,10 @@ official open-data API:
   offline index via `GET /api/fresh?limit=N`, «дд.мм.рррр  nreg  title» rows
   that open the reader — the desktop home card's twin; hidden after the first
   search, silent on failure),
+  **a «Документи за роками» mini bar chart** (per-year counts from the whole
+  offline index via `GET /api/years` — the CLI `years` twin: proportional
+  accent bars with thousands-spaced counts, the last 15 years present;
+  same lifetime as the fresh card),
   and a **Favorites page with desktop parity** (sort chips «новіші / старіші /
   за назвою», a text/title/nreg filter with «показано X з Y», and collapsible
   per-document groups, choices in localStorage),
@@ -375,6 +379,8 @@ Launch arguments:
 .\rada-client.exe orgs                   # offline top publishers by document count + «всього документів»; --year РРРР filters to one adoption year, --limit ≤200, --json / --out too
 .\rada-client.exe statuses               # offline status distribution (dict labels) + «всього документів»; --json / --out too
 .\rada-client.exe months                 # offline month histogram of one year (--year РРРР, always 12 rows + «разом»); --json / --out too
+.\rada-client.exe years                  # offline per-year histogram of a closed range (--from РРРР --to РРРР, zero years omitted + «разом» + «без дати»); --json / --out too
+.\rada-client.exe docs --org 1           # offline documents of one publisher, newest first («Документи видавця …:» + «разом»); --year РРРР, --limit ≤500, --json / --out too
 
 # 4) Keep the index current.
 .\rada-client.exe sync                   # dictionaries + updated-documents feed

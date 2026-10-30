@@ -222,6 +222,13 @@ fn route(
                     json_err(405, "method not allowed")
                 }
             }
+            "years" => {
+                if method == &Method::Get {
+                    years_handler(st)
+                } else {
+                    json_err(405, "method not allowed")
+                }
+            }
             "resolve" => {
                 if method == &Method::Get {
                     resolve_handler(st, q)
@@ -390,6 +397,47 @@ fn fresh_handler(st: &State, q: &[(String, String)]) -> Resp {
     match rows {
         Ok(docs) => json_ok(&json!({ "docs": docs })),
         Err(e) => json_err(500, &format!("fresh error: {e:#}")),
+    }
+}
+
+/// Pure normalizer behind `GET /api/years`: keeps only full 4-digit ASCII
+/// year keys carrying a positive count (zero-count years are simply
+/// absent, exactly like the CLI `years` histogram) and orders the rows
+/// ascending by the year string.
+fn years_rows(rows: Vec<(String, i64)>) -> Vec<Value> {
+    let mut rows: Vec<(String, i64)> = rows
+        .into_iter()
+        .filter(|(y, c)| *c > 0 && y.len() == 4 && y.bytes().all(|b| b.is_ascii_digit()))
+        .collect();
+    rows.sort_by(|a, b| a.0.cmp(&b.0));
+    rows.into_iter()
+        .map(|(year, count)| json!({ "count": count, "year": year }))
+        .collect()
+}
+
+/// `GET /api/years` — the whole-index year histogram: document counts per
+/// calendar year over every doc with a full 8-digit `org_date` (the same
+/// anchor rule as `/api/fresh`), ascending, no range params, zero-count
+/// years omitted — the web twin of the CLI `years` report without its
+/// `--from`/`--to` window. Fully offline through the index.
+fn years_handler(st: &State) -> Resp {
+    let conn = match open_db(st) {
+        Ok(c) => c,
+        Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
+    };
+    let rows = conn
+        .prepare(
+            "SELECT substr(org_date,1,4) AS y, COUNT(*) FROM docs \
+             WHERE org_date GLOB '[0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]' \
+             GROUP BY y ORDER BY y ASC",
+        )
+        .and_then(|mut ps| {
+            let rows = ps.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+            rows.collect::<Result<Vec<(String, i64)>, _>>()
+        });
+    match rows {
+        Ok(rows) => json_ok(&json!({ "rows": years_rows(rows) })),
+        Err(e) => json_err(500, &format!("years error: {e:#}")),
     }
 }
 
@@ -5087,5 +5135,136 @@ mod tests {
         let body = &ui::INDEX_HTML[start..];
         let body = &body[..body.find("\n}").expect("init end")];
         assert!(body.contains("renderFreshHome();"), "init paints the card");
+    }
+
+    // ---- «Документи за роками» landing histogram (`/api/years`) -------------
+
+    /// Fresh indexed db for the `/api/years` tests: dated rows across three
+    /// years (2024 the densest, 2025 deliberately absent so the zero-count
+    /// omission shows), plus mis-dated rows (short, empty, dashed and a
+    /// non-digit 8-char value) that must stay out of the histogram. Unique
+    /// dir per tag keeps parallel tests from colliding.
+    fn years_state(tag: &str) -> Arc<State> {
+        let dir = std::env::temp_dir().join(format!("rada-web-years-test-{tag}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let st = Arc::new(State {
+            db_path: dir.join("test.sqlite"),
+            client: RadaClient::with_pacing(Duration::from_secs(3600)),
+            pace_secs: 3600,
+            jobs: Mutex::new(HashMap::new()),
+            job_seq: AtomicU64::new(0),
+        });
+        let conn = db_open(&st.db_path).expect("open test index");
+        conn.execute_batch(
+            "INSERT INTO docs(nreg, nazva, org_date) VALUES
+             ('7100-01', 'Травень',  '20240501'),
+             ('7101-02', 'Січень',   '20240115'),
+             ('7102-03', 'Березень', '20240310'),
+             ('7103-04', 'Грудень',  '20261231'),
+             ('7104-05', 'Липень',   '20260704'),
+             ('7105-06', 'Квітень',  '20010401'),
+             ('7106-07', 'Шаблон',   '2025'),
+             ('7107-08', 'Порожньо', ''),
+             ('7108-09', 'Різник',   '2026-01-02'),
+             ('7109-10', 'Нецифра',  '20AB1231');",
+        )
+        .expect("seed docs");
+        drop(conn);
+        st
+    }
+
+    #[test]
+    fn years_endpoint_orders_filters_and_answers_json() {
+        let st = years_state("main");
+        let mut req: Request = TestRequest::new()
+            .with_method(Method::Get)
+            .with_path("/api/years")
+            .into();
+        let resp = route(&Method::Get, "/api/years", &[], &mut req, &st).expect("route");
+        assert_eq!(resp.status_code().0, 200);
+        let ct = resp
+            .headers()
+            .iter()
+            .find(|x| x.field.as_str().as_str().eq_ignore_ascii_case("content-type"))
+            .map(|x| x.value.to_string())
+            .unwrap_or_default();
+        assert!(ct.contains("application/json"), "content-type: {ct}");
+        let v: Value = serde_json::from_slice(&resp.into_reader().into_inner()).unwrap();
+        let rows = v["rows"].as_array().unwrap();
+        // Ascending order over ALL full-8-digit-dated docs, counts exact.
+        let years: Vec<&str> = rows.iter().map(|r| r["year"].as_str().unwrap()).collect();
+        assert_eq!(years, ["2001", "2024", "2026"], "{v}");
+        let counts: Vec<i64> = rows.iter().map(|r| r["count"].as_i64().unwrap()).collect();
+        assert_eq!(counts, [1, 3, 2], "{v}");
+        // A year with no rows never appears (GROUP BY omits it: zero-count
+        // years stay out, the CLI `years` rule).
+        let raw = v.to_string();
+        assert!(!raw.contains("\"2025\""), "zero-count year omitted: {raw}");
+        // Mis-dated rows never surface: short, empty, dashed and non-digit
+        // org_date values all sit outside the 8-digit GLOB anchor.
+        assert!(!raw.contains("7106-07"), "short date excluded: {raw}");
+        assert!(!raw.contains("7107-08"), "empty date excluded: {raw}");
+        assert!(!raw.contains("7108-09"), "dashed date excluded: {raw}");
+        assert!(!raw.contains("7109-10"), "non-digit date excluded: {raw}");
+        // Only GET is routed.
+        assert_eq!(call(&st, Method::Post, "/api/years", "").0, 405);
+    }
+
+    #[test]
+    fn years_home_page_integration() {
+        // The landing view paints the CLI `years` report's web twin right
+        // under the fresh-docs card.
+        assert!(
+            ui::INDEX_HTML.contains("Документи за роками:"),
+            "heading names the histogram"
+        );
+        assert!(
+            ui::INDEX_HTML.contains("id=\"years-home\""),
+            "the landing block exists in the search tab"
+        );
+        // The pure builder: empty in → empty out, the documented last-15
+        // cap, and bars painted as proportional percent widths.
+        let start = ui::INDEX_HTML
+            .find("function yearsHomeHtml(rows) {")
+            .expect("pure builder present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("yearsHomeHtml end")];
+        assert!(body.contains("return \"\""), "empty rows paint nothing");
+        assert!(body.contains("slice(-15)"), "only the last 15 years show");
+        assert!(body.contains("width:"), "bar width scales with count/max");
+        assert!(body.contains("Документи за роками:"), "the builder owns the heading");
+        // The painter: asks the endpoint, renders through the pure builder,
+        // and swallows failures so the landing stays untouched.
+        let start = ui::INDEX_HTML
+            .find("async function renderYearsHome() {")
+            .expect("home painter present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("renderYearsHome end")];
+        assert!(body.contains("/api/years"), "fetches the years endpoint");
+        assert!(
+            body.contains("yearsHomeHtml(rows)"),
+            "rows built by the pure builder"
+        );
+        assert!(body.contains("catch"), "a failed fetch skips silently");
+        // The startup wiring: init paints the histogram alongside the card.
+        let start = ui::INDEX_HTML
+            .find("async function init() {")
+            .expect("init present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("init end")];
+        assert!(body.contains("renderYearsHome();"), "init paints the histogram");
+        // Same lifetime as the fresh card: a search the user has already
+        // run retires the block for good.
+        let start = ui::INDEX_HTML
+            .find("async function doSearch(offset) {")
+            .expect("doSearch defined");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("doSearch end")];
+        assert!(body.contains("yearsHomeDismissed = true;"), "later searches retire it");
+        assert!(
+            body.contains("$(\"years-home\").hidden = true;"),
+            "the block hides on the first real search"
+        );
     }
 }
