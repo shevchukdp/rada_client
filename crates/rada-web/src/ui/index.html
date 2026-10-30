@@ -504,8 +504,8 @@
   #fresh-list li .nreg { color: var(--muted); font-size: 12px; margin-right: 8px; }
   /* Landing year histogram («Документи за роками», the CLI `years` twin):
      one compact row per year — year label · proportional bar · count.
-     Rows are plain text/bars (non-clickable), same list language as
-     #fresh-list above, minus its hover affordance. */
+     Rows are clickable (the #fresh-list affordance: cursor + hover): a click
+     opens that year's document list below the bars (renderYearDocs). */
   #years-home { margin: 6px 0; }
   #years-list { list-style: none; padding: 0; margin: 6px 0 10px; }
   #years-list li {
@@ -514,12 +514,26 @@
     padding: 3px 8px;
     border-bottom: 1px solid var(--border);
     font-size: 13px;
+    cursor: pointer;
   }
+  #years-list li:hover { background: rgba(128, 128, 128, 0.12); }
   #years-list li .y { color: var(--muted); font-size: 12px; }
   #years-list li .bar {
     height: 8px; min-width: 2px; border-radius: 4px; background: var(--accent);
   }
   #years-list li .cnt { color: var(--muted); font-size: 12px; }
+  /* Per-year document list opened under the bars (same row language as
+     #fresh-list: date · nreg · title, clickable into the reader). */
+  #yeardocs { margin: 2px 0 8px; }
+  #yeardocs-list { list-style: none; padding: 0; margin: 6px 0 10px; }
+  #yeardocs-list li {
+    padding: 5px 8px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  #yeardocs-list li:hover { background: rgba(128, 128, 128, 0.12); }
+  #yeardocs-list li .date { color: var(--muted); font-size: 12px; margin-right: 8px; }
+  #yeardocs-list li .nreg { color: var(--muted); font-size: 12px; margin-right: 8px; }
   #annotations li {
     display: flex; gap: 8px; align-items: center; padding: 6px 10px;
     border: 1px solid var(--border); border-radius: 7px; margin: 5px 0;
@@ -956,6 +970,11 @@ let freshHomeDismissed = false;
 // later search retires it for good.
 let yearsHomeStarted = false;
 let yearsHomeDismissed = false;
+// Per-year document list opened under the histogram bars: the year currently
+// open ("" = closed, re-clicking it toggles the list away) and a generation
+// counter so a late fetch never double-paints or paints a left-behind year.
+let yearsDocsYear = "";
+let yearsDocsSeq = 0;
 
 function api(path, opts) {
   return fetch(path, opts).then(async (r) => {
@@ -1238,7 +1257,8 @@ async function renderFreshHome() {
 /// histogram can span centuries, the landing keeps it one screenful), and
 /// each bar's width is the count scaled against the largest count inside
 /// that shown window. Empty input (or a non-array) returns "" so the
-/// painter can skip silently. Rows carry no click behaviour by design.
+/// painter can skip silently. Rows carry no inline handlers: the painter
+/// binds each one to renderYearDocs through its data-i index.
 function yearsHomeHtml(rows) {
   if (!Array.isArray(rows) || !rows.length) return "";
   const shown = rows.slice(-15);
@@ -1261,7 +1281,9 @@ function yearsHomeHtml(rows) {
 }
 
 /// Paint the landing histogram once: ask the offline endpoint, render
-/// through the pure builder. Rows stay plain text/bars (no router hooks).
+/// through the pure builder, then bind every bar row to the per-year
+/// document list (renderYearDocs) through its data-i index — the shown
+/// window is the builder's last 15 years, so re-slice the same way.
 /// A failed fetch (or an index without dated docs) skips silently; a
 /// search the user has already run keeps the block retired
 /// (yearsHomeDismissed).
@@ -1273,7 +1295,82 @@ async function renderYearsHome() {
     const box = $("years-home");
     box.innerHTML = yearsHomeHtml(rows);
     box.hidden = false;
+    const shown = rows.slice(-15);
+    yearsDocsYear = "";
+    yearsDocsSeq += 1;
+    for (const row of box.querySelectorAll("#years-list li[data-i]")) {
+      const r = shown[Number(row.dataset.i)];
+      row.onclick = () => renderYearDocs(r.year);
+    }
   } catch (_) { /* no index, no histogram: the landing simply skips it */ }
+}
+
+/// Pure: one year's document list markup — the «Документи РРРР року:»
+/// heading plus one row per doc (date · nreg · title, the #fresh-list row
+/// shape; the year comes off the newest row's 8-digit date). Rows carry
+/// data-i so the caller can re-bind openDoc without putting raw nregs into
+/// HTML attributes. Empty input (or a non-array) returns "".
+function yearDocsHtml(docs) {
+  if (!Array.isArray(docs) || !docs.length) return "";
+  const year = String(docs[0].date || "").slice(0, 4);
+  let html = '<div class="hint"><strong>Документи ' + escHtml(year) + ' року:</strong></div>';
+  html += '<ul id="yeardocs-list">';
+  for (let i = 0; i < docs.length; i++) {
+    const d = docs[i];
+    html += '<li data-i="' + i + '"><span class="date">' + escHtml(fmtYmd8(d.date)) +
+      '</span><span class="nreg">' + escHtml(d.nreg) + "</span><span>" +
+      escHtml(d.title || d.nreg) + "</span></li>";
+  }
+  return html + "</ul>";
+}
+
+/// Toggle one year's document list under the histogram bars, inside the
+/// same «years-home» container: a bar row shows a «завантаження…» line,
+/// asks the offline endpoint and repaints through the pure builder, binding
+/// every row to the reader-open flow. Re-clicking the SAME year closes the
+/// list; another year simply swaps it. The yearsDocsSeq generation counter
+/// keeps a late answer from double-painting or painting a left-behind year,
+/// and a failed fetch removes the placeholder silently. A search the user
+/// has already run keeps the whole card retired (yearsHomeDismissed).
+async function renderYearDocs(year) {
+  if (yearsHomeDismissed) return;
+  const y = String(year);
+  const box = $("years-home");
+  const old = $("yeardocs");
+  if (old) old.remove();
+  if (yearsDocsYear === y) {
+    yearsDocsYear = "";
+    yearsDocsSeq += 1;
+    return;
+  }
+  yearsDocsYear = y;
+  const seq = ++yearsDocsSeq;
+  const holder = document.createElement("div");
+  holder.id = "yeardocs";
+  holder.innerHTML = '<div class="hint">завантаження…</div>';
+  box.appendChild(holder);
+  try {
+    const d = await api("/api/yeardocs?year=" + encodeURIComponent(y) + "&limit=200");
+    if (seq !== yearsDocsSeq) return;
+    const docs = (d && d.docs) || [];
+    if (!docs.length) {
+      holder.remove();
+      yearsDocsYear = "";
+      return;
+    }
+    holder.innerHTML = yearDocsHtml(docs);
+    for (const row of holder.querySelectorAll("li[data-i]")) {
+      const doc = docs[Number(row.dataset.i)];
+      row.onclick = () => openDoc(doc.nreg);
+    }
+  } catch (_) {
+    // A dead endpoint leaves no trace — but only while this is still the
+    // year the user is looking at (a newer generation owns the container).
+    if (seq === yearsDocsSeq) {
+      holder.remove();
+      yearsDocsYear = "";
+    }
+  }
 }
 
 // Original option labels per select + option value, captured once when the

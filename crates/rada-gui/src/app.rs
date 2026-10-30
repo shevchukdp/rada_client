@@ -24,6 +24,13 @@ pub enum Msg {
     Status(IndexStatus),
     /// `(rows, body bytes)` from the offline text cache (home page row).
     CacheStats((i64, i64)),
+    /// Rows of one adoption year for the home «Документи за роками» drill-down:
+    /// `(org_date YYYYMMDD, nreg, nazva)`, newest first, capped at 200.
+    YearDocs {
+        run: u64,
+        yyyy: String,
+        res: Result<Vec<(String, String, String)>, String>,
+    },
     /// Result of the home page cache purge: deleted rows.
     CachePurged(Outcome<usize>),
     Dicts {
@@ -457,6 +464,48 @@ impl App {
                     let _ = tx.send(Msg::CacheStats(pair));
                 }
             }
+        });
+    }
+
+    /// Open the home «Документи за роками» drill-down: the newest 200 cards
+    /// of one adoption year, queried offline straight from the index.
+    pub fn open_year_docs(&mut self, yyyy: &str) {
+        let run = self.next_run();
+        self.home.year_docs = Some(crate::views::home::YearDocs {
+            yyyy: yyyy.to_string(),
+            run,
+            loading: true,
+            rows: Vec::new(),
+            error: None,
+            open: true,
+        });
+        let db = self.db_path.clone();
+        let yyyy = yyyy.to_string();
+        self.spawn(move |tx| {
+            let res = rada_db::open(&db)
+                .map_err(|e| e.to_string())
+                .and_then(|conn| {
+                    let mut ps = conn
+                        .prepare(
+                            "SELECT org_date, nreg, nazva FROM docs \
+                             WHERE org_date GLOB ?1 \
+                             ORDER BY org_date DESC, nreg ASC LIMIT 200",
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let rows = ps
+                        .query_map([format!("{yyyy}[0-9][0-9][0-9][0-9]")], |r| {
+                            Ok((
+                                r.get::<_, String>(0)?,
+                                r.get::<_, String>(1)?,
+                                r.get::<_, String>(2)?,
+                            ))
+                        })
+                        .map_err(|e| e.to_string())?
+                        .collect::<Result<Vec<_>, _>>()
+                        .map_err(|e| e.to_string())?;
+                    Ok(rows)
+                });
+            let _ = tx.send(Msg::YearDocs { run, yyyy, res });
         });
     }
 
@@ -1829,6 +1878,23 @@ impl App {
         match msg {
             Msg::CacheStats(pair) => {
                 self.cache_stats = Some(pair);
+            }
+            Msg::YearDocs { run, yyyy, res } => {
+                // Route to the open drill-down only while it still shows the
+                // same year and the same request (stale runs are dropped).
+                if let Some(y) = self.home.year_docs.as_mut() {
+                    if y.yyyy != yyyy || run != y.run {
+                        return;
+                    }
+                    y.loading = false;
+                    match res {
+                        Ok(rows) => {
+                            y.rows = rows;
+                            y.error = None;
+                        }
+                        Err(e) => y.error = Some(e),
+                    }
+                }
             }
             Msg::CachePurged(res) => match res {
                 Ok(n) => {

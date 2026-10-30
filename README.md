@@ -101,7 +101,10 @@ official open-data API:
     cache size («кеш текстів») with an «очистити» button (confirm dialog), and
     an offline **«Свіжі документи (за датою)»** card — the freshest cards by
     adoption date straight from the index (no network; same anchor rules as the
-    CLI `recent` command), each row opening the reader with one click.
+    CLI `recent` command), each row opening the reader with one click — plus a
+    **«Документи за роками»** chip row (the last 15 years from the index,
+    «2026 · 5 492»…): a chip opens a window with the newest 200 acts of that
+    year, each row opening the reader.
   - **Reader tabs** — every document you open becomes a tab («Вкладки:» above
     the title): tabs keep their text, find query and edition when you switch
     between them; **Ctrl+Tab / Ctrl+Shift+Tab** cycle them, **Ctrl+W** (or **×**)
@@ -277,7 +280,8 @@ official open-data API:
   **a «Документи за роками» mini bar chart** (per-year counts from the whole
   offline index via `GET /api/years` — the CLI `years` twin: proportional
   accent bars with thousands-spaced counts, the last 15 years present;
-  same lifetime as the fresh card),
+  a bar opens that year's newest acts via `GET /api/yeardocs`, each row
+  opening the reader, click again to collapse; same lifetime as the fresh card),
   and a **Favorites page with desktop parity** (sort chips «новіші / старіші /
   за назвою», a text/title/nreg filter with «показано X з Y», collapsible
   per-document groups, choices in localStorage, and an **«експорт .csv»** of the
@@ -381,7 +385,7 @@ Launch arguments:
 .\rada-client.exe statuses               # offline status distribution (dict labels) + «всього документів»; --json / --out too
 .\rada-client.exe months                 # offline month histogram of one year (--year РРРР, always 12 rows + «разом»); --json / --out too
 .\rada-client.exe years                  # offline per-year histogram of a closed range (--from РРРР --to РРРР, zero years omitted + «разом» + «без дати»); --json / --out too
-.\rada-client.exe docs --org 1           # offline documents of one publisher, newest first («Документи видавця …:» + «разом»); --year РРРР, --limit ≤500, --json / --out too
+.\rada-client.exe docs --org 1           # offline documents, newest first: one publisher («Документи видавця …:»), one year (--year РРРР alone or combined); --limit ≤500, --json / --out too
 .\rada-client.exe annots 2341-14         # offline annotations of one document («Анотації документа …:» + «разом»); --kind коментар|закладка|виділення, --limit ≤500, --json / --out too
 
 # 4) Keep the index current.

@@ -229,6 +229,13 @@ fn route(
                     json_err(405, "method not allowed")
                 }
             }
+            "yeardocs" => {
+                if method == &Method::Get {
+                    yeardocs_handler(st, q)
+                } else {
+                    json_err(405, "method not allowed")
+                }
+            }
             "resolve" => {
                 if method == &Method::Get {
                     resolve_handler(st, q)
@@ -438,6 +445,51 @@ fn years_handler(st: &State) -> Resp {
     match rows {
         Ok(rows) => json_ok(&json!({ "rows": years_rows(rows) })),
         Err(e) => json_err(500, &format!("years error: {e:#}")),
+    }
+}
+
+/// `GET /api/yeardocs?year=РРРР&limit=N` — the documents behind one year of
+/// the landing histogram (`/api/years`): only full 8-digit `org_date` rows
+/// whose first four digits are the requested year (the same anchor rule as
+/// `/api/fresh`), newest first, same-day rows tie on the nreg. The year must
+/// be exactly 4 ASCII digits (anything else is a 400 in the file's error
+/// family); answers up to N rows (default 200, clamped 1..=500, the
+/// arrivals/fresh clamp idiom), fully offline through the index.
+fn yeardocs_handler(st: &State, q: &[(String, String)]) -> Resp {
+    let Some(year) = qget(q, "year") else {
+        return json_err(400, "year required");
+    };
+    if year.len() != 4 || !year.bytes().all(|b| b.is_ascii_digit()) {
+        return json_err(400, "year must be 4 digits");
+    }
+    let limit = qget(q, "limit")
+        .and_then(|s| s.parse::<usize>().ok())
+        .unwrap_or(200)
+        .max(1)
+        .min(500);
+    let conn = match open_db(st) {
+        Ok(c) => c,
+        Err(e) => return json_err(500, &format!("index unavailable: {e:#}")),
+    };
+    let glob = format!("{year}[0-9][0-9][0-9][0-9]");
+    let rows = conn
+        .prepare(
+            "SELECT org_date, nreg, nazva FROM docs \
+             WHERE org_date GLOB ?1 ORDER BY org_date DESC, nreg ASC LIMIT ?2",
+        )
+        .and_then(|mut ps| {
+            let rows = ps.query_map(rusqlite::params![glob, limit as i64], |r| {
+                Ok(json!({
+                    "date": r.get::<_, String>(0)?,
+                    "nreg": r.get::<_, String>(1)?,
+                    "title": r.get::<_, Option<String>>(2)?.unwrap_or_default(),
+                }))
+            })?;
+            rows.collect::<Result<Vec<Value>, _>>()
+        });
+    match rows {
+        Ok(docs) => json_ok(&json!({ "docs": docs, "year": year })),
+        Err(e) => json_err(500, &format!("yeardocs error: {e:#}")),
     }
 }
 
@@ -5391,5 +5443,149 @@ mod tests {
             .expect("renderFavorites gates on the visible list");
         let items = r.find("const items = sorted").expect("visible items");
         assert!(items < gate, "the gate reads the filtered items");
+    }
+
+    // ---- «Документи за роками» per-year list (`/api/yeardocs`) -----------------
+
+    #[test]
+    fn yeardocs_endpoint_orders_filters_and_validates() {
+        // Seeded temp index in the fresh_state/years_state idiom: four 2024
+        // rows (two sharing a date, so the nreg tie rule shows), one other
+        // year and three mis-dated rows (short, non-digit, empty) that must
+        // stay out. Unique dir keeps parallel tests from colliding.
+        let dir = std::env::temp_dir().join("rada-web-yeardocs-test-main");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("create test dir");
+        let st = Arc::new(State {
+            db_path: dir.join("test.sqlite"),
+            client: RadaClient::with_pacing(Duration::from_secs(3600)),
+            pace_secs: 3600,
+            jobs: Mutex::new(HashMap::new()),
+            job_seq: AtomicU64::new(0),
+        });
+        let conn = db_open(&st.db_path).expect("open test index");
+        conn.execute_batch(
+            "INSERT INTO docs(nreg, nazva, org_date) VALUES
+             ('9101-02', 'Грудень',      '20241231'),
+             ('9102-03', 'Травень',      '20240501'),
+             ('9107-08', 'Травень друг', '20240501'),
+             ('9100-01', 'Січень',       '20240115'),
+             ('9103-04', 'Інший рік',    '20231231'),
+             ('9104-05', 'Короткий',     '2024'),
+             ('9105-06', 'Нецифра',      '2O240501'),
+             ('9106-07', 'Порожньо',     '');",
+        )
+        .expect("seed docs");
+        drop(conn);
+        // `GET /api/yeardocs?{query}` through `route` (query parsed exactly
+        // as `handle_request` does), answering status + JSON body.
+        let yeardocs_get = |query: &str| -> (u16, Value) {
+            let mut req: Request = TestRequest::new()
+                .with_method(Method::Get)
+                .with_path("/api/yeardocs")
+                .into();
+            let resp = route(&Method::Get, "/api/yeardocs", &parse_query(query), &mut req, &st)
+                .expect("route");
+            let code = resp.status_code().0;
+            let v = serde_json::from_slice(&resp.into_reader().into_inner())
+                .unwrap_or(Value::Null);
+            (code, v)
+        };
+        // Newest adoption date first, same-day rows tie on the nreg, the
+        // requested year echoes back, titles ride along.
+        let (code, v) = yeardocs_get("year=2024");
+        assert_eq!(code, 200);
+        assert_eq!(v["year"], "2024");
+        let docs = v["docs"].as_array().unwrap();
+        let nregs: Vec<&str> = docs.iter().map(|d| d["nreg"].as_str().unwrap()).collect();
+        assert_eq!(nregs, ["9101-02", "9102-03", "9107-08", "9100-01"], "{v}");
+        let dates: Vec<&str> = docs.iter().map(|d| d["date"].as_str().unwrap()).collect();
+        assert_eq!(dates, ["20241231", "20240501", "20240501", "20240115"]);
+        let titles: Vec<&str> = docs.iter().map(|d| d["title"].as_str().unwrap()).collect();
+        assert_eq!(titles, ["Грудень", "Травень", "Травень друг", "Січень"]);
+        // Other years and mis-dated rows never surface (the 8-digit GLOB
+        // anchor with the year prefix keeps them all out).
+        let raw = v.to_string();
+        assert!(!raw.contains("9103-04"), "other year excluded: {raw}");
+        assert!(!raw.contains("9104-05"), "short date excluded: {raw}");
+        assert!(!raw.contains("9105-06"), "non-digit date excluded: {raw}");
+        assert!(!raw.contains("9106-07"), "empty date excluded: {raw}");
+        // The limit is respected (and the order kept on the truncated page);
+        // the clamp floors a zero at one row, the arrivals/fresh idiom.
+        let (code, v2) = yeardocs_get("year=2024&limit=2");
+        assert_eq!(code, 200);
+        let docs2 = v2["docs"].as_array().unwrap();
+        assert_eq!(docs2.len(), 2);
+        assert_eq!(docs2[0]["nreg"], "9101-02");
+        assert_eq!(docs2[1]["nreg"], "9102-03");
+        let (code, v3) = yeardocs_get("year=2024&limit=0");
+        assert_eq!(code, 200);
+        assert_eq!(v3["docs"].as_array().unwrap().len(), 1, "limit floors at 1");
+        // A year is exactly 4 ASCII digits: short, non-digit and missing
+        // values are all 400s in the file's json_err error family.
+        assert_eq!(yeardocs_get("year=26").0, 400);
+        assert_eq!(yeardocs_get("year=2O24").0, 400);
+        assert_eq!(yeardocs_get("year=").0, 400);
+        assert_eq!(yeardocs_get("").0, 400);
+        // Only GET is routed.
+        assert_eq!(call(&st, Method::Post, "/api/yeardocs", "").0, 405);
+    }
+
+    #[test]
+    fn yeardocs_page_integration() {
+        // Histogram bar rows are clickable rows now: the #fresh-list row
+        // affordance (cursor + hover) on every #years-list row.
+        let css = &ui::INDEX_HTML[ui::INDEX_HTML
+            .find("#years-list li {")
+            .expect("year row style present")..];
+        let css = &css[..css.find("}").expect("year row style end")];
+        assert!(css.contains("cursor: pointer"), "rows invite a click");
+        assert!(
+            ui::INDEX_HTML.contains("#years-list li:hover"),
+            "rows answer with the shared hover tint"
+        );
+        // The pure builder: empty in → empty out, the heading names the
+        // year off the newest row's date, and rows carry the #fresh-list
+        // row shape (data-i, dd.mm.yyyy date, nreg, title).
+        let start = ui::INDEX_HTML
+            .find("function yearDocsHtml(docs) {")
+            .expect("pure builder present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("yearDocsHtml end")];
+        assert!(body.contains("return \"\""), "empty docs paint nothing");
+        assert!(body.contains("Документи "), "the builder owns the heading");
+        assert!(body.contains(" року:"), "the heading names the year");
+        assert!(body.contains("data-i=\""), "rows matched by index, not raw nregs");
+        assert!(body.contains("fmtYmd8(d.date)"), "dates reuse the 8-digit fmt");
+        // The painter: binds every bar row to the per-year list, fetches
+        // the endpoint through the loading line, paints via the pure
+        // builder, rebinds rows to the reader-open idiom, toggles the same
+        // year closed and fences stale answers with the generation counter.
+        let start = ui::INDEX_HTML
+            .find("async function renderYearsHome() {")
+            .expect("histogram painter present");
+        let home = &ui::INDEX_HTML[start..];
+        let home = &home[..home.find("\n}").expect("renderYearsHome end")];
+        assert!(home.contains("renderYearDocs(r.year)"), "bar rows open the year list");
+        assert!(home.contains("rows.slice(-15)"), "binding matches the shown window");
+        let start = ui::INDEX_HTML
+            .find("async function renderYearDocs(year) {")
+            .expect("year painter present");
+        let body = &ui::INDEX_HTML[start..];
+        let body = &body[..body.find("\n}").expect("renderYearDocs end")];
+        assert!(body.contains("завантаження…"), "a loading line shows while fetching");
+        assert!(
+            body.contains("/api/yeardocs?year="),
+            "fetches the per-year endpoint"
+        );
+        assert!(body.contains("yearDocsHtml(docs)"), "rows built by the pure builder");
+        assert!(
+            body.contains("row.onclick = () => openDoc(doc.nreg);"),
+            "rows open through the reader-open idiom"
+        );
+        assert!(body.contains("yearsDocsYear === y"), "same-year click toggles");
+        assert!(body.contains("yearsDocsSeq"), "a generation counter fences late answers");
+        assert!(body.contains("holder.remove()"), "a failed fetch leaves no placeholder");
+        assert!(body.contains("yearsHomeDismissed"), "a searched-away card stays retired");
     }
 }

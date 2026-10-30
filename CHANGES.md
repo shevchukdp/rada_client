@@ -7,6 +7,11 @@ Bilingual change log for this project: **Ukrainian** and **English**.
 
 ## 2026-10-30
 
+### 0.10.57: роки стають клікабельними всюди — вікно року на головній, смужки у вебі, `docs --year` у CLI / clickable years everywhere: home year window, web bars & CLI `docs --year`
+
+- **UKR:** 1) **Головна сторінка**: чипи «Документи за роками» тепер кнопки — клік відкриває вікно «Документи {yyyy} року» з найновішими 200 актами того року (офлайн, з індексу); рядок відкриває читалку. 2) **Веб-клієнт**: смужки річної гістограми клікабельні — під ними розгортається список актів року (`/api/yeardocs`), повторний клік згортає. 3) **`docs` у CLI** більше не вимагає `--org`: `docs --year РРРР` перелічує акти року («Документи 2024 року:»), org+разом дає спільний заголовок «…: 2024 року:»; без обох прапорів — «вкажіть --org або --year». 4) Тести: 399/399.
+- **ENG:** 1) **Home page**: the «Документи за роками» chips are now buttons — a click opens a «Документи {yyyy} року» window with the year's 200 newest acts (offline, from the index); a row opens the reader. 2) **Web client**: the year histogram bars are clickable — the year's act list expands beneath them (`/api/yeardocs`), clicking again collapses it. 3) **`docs` in the CLI** no longer requires `--org`: `docs --year YYYY` lists a year's acts («Документи 2024 року:»), and org+year share the header «…: 2024 року:»; with neither flag it reports «вкажіть --org або --year». 4) Tests: 399/399.
+
 ### 0.10.56: `annots` у CLI, «експорт .csv» обраного у вебі та «Документи за роками» на головній / CLI `annots`, web favorites CSV & home years histogram
 
 - **UKR:** 1) **`annots <НРЕГ>` у CLI**: анотації одного документа просто з індексу — той самий формат рядків, що у `recent-annots`; `--kind коментар|закладка|виділення` (ще й без регістру), `--limit ≤500`, `--json` і `--out` за загальним стандартом. 2) **«експорт .csv» на сторінці «Обране» у веб-клієнті**: показаний список (фільтр + сортування) виїжджає файлом у форматі CSV самої програми — з BOM; кнопка гасне, коли показувати нічого. 3) **«Документи за роками» на головній сторінці програми**: останні 15 років з індексу («2026 · 5492»…) — третій двійник `years` поряд із CLI та вебом. 4) Тести: 394/394.

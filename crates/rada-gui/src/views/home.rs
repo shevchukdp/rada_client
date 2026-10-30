@@ -169,22 +169,33 @@ pub fn show(app: &mut App, ctx: &egui::Context) {
                     }
                     if !year_rows.is_empty() {
                         // Offline per-year mini histogram: the CLI `years` /
-                        // web landing twin — «yyyy · count» rows, the last 15
-                        // years present, newest last (index-only, no network).
+                        // web landing twin — clickable «yyyy · count» chips,
+                        // the last 15 years present (index-only, no network);
+                        // a chip opens the year's documents in a window.
                         ui.add_space(8.0);
                         ui.label(egui::RichText::new("Документи за роками:").strong());
+                        let mut open_year: Option<String> = None;
                         ui.horizontal_wrapped(|ui| {
                             for (i, (y, c)) in year_rows.into_iter().enumerate() {
                                 if i > 0 {
                                     ui.label(egui::RichText::new("·").weak());
                                 }
-                                ui.label(
-                                    egui::RichText::new(format!("{y} · {c}"))
-                                        .small()
-                                        .weak(),
+                                let label = format!(
+                                    "{y} · {}",
+                                    crate::views::reader::group_thousands(c as usize)
                                 );
+                                if ui
+                                    .button(egui::RichText::new(label).small())
+                                    .on_hover_text("показати документи цього року")
+                                    .clicked()
+                                {
+                                    open_year = Some(y);
+                                }
                             }
                         });
+                        if let Some(y) = open_year {
+                            app.open_year_docs(&y);
+                        }
                     }
                 }
             }
@@ -593,6 +604,55 @@ fn init_controls(app: &mut App, ui: &mut egui::Ui) {
                 });
             });
     }
+
+    // ---- «Документи за роками» drill-down window (offline index query) ----
+    let mut open_nreg: Option<(String, String, String)> = None;
+    if let Some(y) = app.home.year_docs.as_mut() {
+        let title = format!("Документи {} року", y.yyyy);
+        let mut open = y.open;
+        let rows = y.rows.clone();
+        let loading = y.loading;
+        let error = y.error.clone();
+        egui::Window::new(title)
+            .default_size([560.0, 420.0])
+            .open(&mut open)
+            .show(ui.ctx(), |ui| {
+                if loading {
+                    ui.label("завантаження…");
+                } else if let Some(e) = &error {
+                    ui.label(egui::RichText::new(e).color(err()));
+                } else if rows.is_empty() {
+                    ui.label("немає документів за цей рік");
+                } else {
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "показано найновіших: {}",
+                            crate::views::reader::group_thousands(rows.len())
+                        ))
+                        .small()
+                        .weak(),
+                    );
+                    egui::ScrollArea::vertical()
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            for (d, n, t) in rows.iter() {
+                                let label = fresh_row_label(d, n, t);
+                                if ui
+                                    .button(egui::RichText::new(label).small())
+                                    .on_hover_text("відкрити в читалці")
+                                    .clicked()
+                                {
+                                    open_nreg = Some((n.clone(), t.clone(), d.clone()));
+                                }
+                            }
+                        });
+                }
+            });
+        y.open = open && open_nreg.is_none();
+    }
+    if let Some((n, t, d)) = open_nreg {
+        app.open_reader_by_nreg(&n, &t, 0, &d, "", "");
+    }
 }
 
 fn sync_log(app: &mut App, ui: &mut egui::Ui) {
@@ -635,6 +695,21 @@ pub struct HomeState {
     pub confirm_purge: bool,
     /// Quick substring query over the three dictionaries (session-only).
     pub dict_query: String,
+    /// Open «Документи за роками» drill-down window (session-only).
+    pub year_docs: Option<YearDocs>,
+}
+
+/// State of the home «Документи за роками» drill-down window: the year being
+/// shown, its background fetch (run-id filtered) and its rows
+/// `(org_date YYYYMMDD, nreg, nazva)`, newest first, capped at 200.
+#[derive(Clone)]
+pub struct YearDocs {
+    pub yyyy: String,
+    pub run: u64,
+    pub loading: bool,
+    pub rows: Vec<(String, String, String)>,
+    pub error: Option<String>,
+    pub open: bool,
 }
 
 /// Which search filter a dictionary feeds (for click-to-filter jumps from
